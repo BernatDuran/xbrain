@@ -6,7 +6,7 @@ from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Response
 
-from xkb.extract.browser import x_context
+from xkb.extract.browser import is_logged_out, x_context
 from xkb.extract.graphql import parse_tweets
 from xkb.models import Content, ContentSource, Item
 
@@ -65,10 +65,17 @@ def _fetch_thread_text(context: BrowserContext, item: Item) -> str:
                 pass
 
     page.on("response", on_response)
-    page.goto(item.url, wait_until="domcontentloaded")
-    page.wait_for_timeout(_SETTLE_MS)
-    page.close()
-    return assemble_thread(captured, item.author.handle)
+    try:
+        try:
+            page.goto(item.url, wait_until="domcontentloaded")
+            page.wait_for_timeout(_SETTLE_MS)
+        except Exception:  # noqa: BLE001 - navigation failure -> empty thread
+            return ""
+        if is_logged_out(page.url):
+            raise RuntimeError("Sesión de X caducada. Ejecuta `xkb login`.")
+        return assemble_thread(captured, item.author.handle)
+    finally:
+        page.close()
 
 
 def _already_expanded(item: Item, force: bool) -> bool:
