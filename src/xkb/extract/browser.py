@@ -18,7 +18,10 @@ def login(storage_state_path: Path) -> None:
     """
     storage_state_path.parent.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context()
         context.new_page().goto(X_LOGIN_URL)
         print("Inicia sesión en X en la ventana del navegador.")
@@ -39,7 +42,10 @@ def x_context(
             f"No hay sesión guardada en {storage_state_path}. Ejecuta `xkb login`."
         )
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
+        browser = playwright.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(storage_state=str(storage_state_path))
         try:
             yield context

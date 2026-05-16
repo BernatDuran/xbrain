@@ -1,6 +1,7 @@
 """Orchestrate scrolling X and intercepting GraphQL responses."""
 from __future__ import annotations
 
+import random
 from datetime import datetime
 
 from playwright.sync_api import BrowserContext, Response
@@ -10,9 +11,11 @@ from xkb.extract.graphql import parse_tweets
 from xkb.models import Item
 
 _OPERATIONS = {"bookmark": "Bookmarks", "own_tweet": "UserTweets"}
-_SCROLL_PAUSE_MS = 2000
-_SETTLE_MS = 3000
-_MAX_IDLE_SCROLLS = 3
+# Deliberately slow, human-paced scrolling — avoids X rate-limiting / account bans.
+_SETTLE_MS = 6000
+_SCROLL_PAUSE_MIN_MS = 5000
+_SCROLL_PAUSE_MAX_MS = 12000
+_MAX_IDLE_SCROLLS = 4
 
 
 def collect_new_items(
@@ -71,7 +74,9 @@ def extract_source(
         if hit_known:
             break
         page.mouse.wheel(0, 4000)
-        page.wait_for_timeout(_SCROLL_PAUSE_MS)
+        page.wait_for_timeout(
+            random.randint(_SCROLL_PAUSE_MIN_MS, _SCROLL_PAUSE_MAX_MS)
+        )
         if len(captured) == last_count:
             idle += 1
         else:
