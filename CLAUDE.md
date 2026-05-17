@@ -1,6 +1,6 @@
-# CLAUDE.md — x-knowledge-base
+# CLAUDE.md — xbrain
 
-Python CLI (`xkb`) that extracts X bookmarks/tweets into a JSON store and
+Python CLI (`xbrain`) that extracts X bookmarks/tweets into a JSON store and
 generates an Obsidian wiki.
 
 ## Stack
@@ -17,7 +17,8 @@ generates an Obsidian wiki.
 ## Conventions
 - TDD: every module has a `tests/test_*.py`. Run `uv run pytest -v`.
 - The X GraphQL parser anchors on key names, not paths — X's private API drifts.
-- Never commit `auth/storage_state.json`.
+- Never commit personal data: `auth/storage_state.json`, `data/`, `config.toml`,
+  `courses.yaml`. All are gitignored.
 
 ## Git workflow
 - This repo has only `main`: `feature-branch → PR → main`.
