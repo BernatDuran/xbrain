@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 from urllib.parse import urlparse
 
-from xbrain.models import Author, Item, Link, Media, ThreadInfo
+from xbrain.models import Author, Item, Link, Media, SourceName, ThreadInfo
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ X_DATE_FORMAT = "%a %b %d %H:%M:%S %z %Y"
 _NESTED_TWEET_KEYS = ("quoted_status_result", "retweeted_status_result")
 
 
-def parse_tweets(response: dict[str, Any], source: str) -> list[Item]:
+def parse_tweets(response: dict[str, Any], source: SourceName) -> list[Item]:
     """Extract every timeline tweet from one X GraphQL response.
 
     Walks the response tree recursively looking for `tweet_results` blocks,
@@ -75,7 +75,7 @@ def _unwrap(result: dict[str, Any]) -> dict[str, Any] | None:
     return result if "legacy" in result else None
 
 
-def _tweet_to_item(tweet: dict[str, Any], source: str) -> Item | None:
+def _tweet_to_item(tweet: dict[str, Any], source: SourceName) -> Item | None:
     legacy = tweet.get("legacy")
     rest_id = tweet.get("rest_id")
     if not isinstance(legacy, dict) or not rest_id:
@@ -124,7 +124,9 @@ def _extract_media(legacy: dict[str, Any]) -> list[Media]:
     )
     media: list[Media] = []
     for entry in entries:
-        kind = "video" if entry.get("type") in ("video", "animated_gif") else "photo"
+        kind: Literal["photo", "video"] = (
+            "video" if entry.get("type") in ("video", "animated_gif") else "photo"
+        )
         url = entry.get("media_url_https") or entry.get("expanded_url")
         if url:
             media.append(Media(type=kind, url=url))

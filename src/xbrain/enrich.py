@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import get_args
+from typing import cast, get_args
 
 from xbrain.executors.base import EnrichmentExecutor
 from xbrain.models import Enrichment, ExecutorName, Item, Topic
@@ -49,6 +49,10 @@ def _validate_and_attach(
     )
     if errors:
         return errors
+    # validate_judgment guarantees `topics` is a list once it returns no errors;
+    # the isinstance guard makes that proof visible to the type checker.
+    if not isinstance(topics, list):
+        return ["topics must be a list"]
     item = store.get(item_id)
     if item is None:
         return [f"unknown item id: {item_id}"]
@@ -56,7 +60,10 @@ def _validate_and_attach(
         item,
         Enrichment(
             enriched_at=datetime.now(timezone.utc),
-            executor=executor_name,
+            # Both callers supply a validated executor name: enrich_with_executor
+            # passes the literal "api"; apply_worksheet_judgments checks the value
+            # against get_args(ExecutorName) before calling.
+            executor=cast(ExecutorName, executor_name),
             summary=summary,
             primary_topic=primary_topic,
             topics=list(topics),

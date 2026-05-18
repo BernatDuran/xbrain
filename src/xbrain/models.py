@@ -11,6 +11,10 @@ from pydantic import BaseModel, Field
 # data model, the config loader and the enrichment phase.
 ExecutorName = Literal["manual", "api", "claude-code"]
 
+# The set of item source names — one source of truth shared by the data model
+# and the GraphQL parser.
+SourceName = Literal["bookmark", "own_tweet"]
+
 
 class Author(BaseModel):
     handle: str
@@ -65,7 +69,7 @@ class Topic(BaseModel):
 
 class Item(BaseModel):
     id: str
-    source: Literal["bookmark", "own_tweet"]
+    source: SourceName
     url: str
     author: Author
     text: str

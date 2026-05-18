@@ -21,7 +21,7 @@ from xbrain.extract.extractor import extract_source
 from xbrain.extract.threads import expand_threads
 from xbrain.fetch import fetch_pending
 from xbrain.generate import generate as run_generate
-from xbrain.models import ArchiveImport, Author
+from xbrain.models import ArchiveImport, Author, SourceName
 from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import load_state, load_store, merge_items, save_state, save_store
 from xbrain.vocab import induce_vocab
@@ -96,11 +96,12 @@ def _run_extract(cfg: Config, source: str, since: datetime | None, until: dateti
         "bookmark": _BOOKMARKS_URL,
         "own_tweet": f"https://x.com/{cfg.x_handle}",
     }
-    chosen = {
+    source_sets: dict[str, list[SourceName]] = {
         "bookmarks": ["bookmark"],
         "tweets": ["own_tweet"],
         "all": ["bookmark", "own_tweet"],
-    }[source]
+    }
+    chosen = source_sets[source]
     known_ids = set(store)
     with x_context(cfg.storage_state_path) as context:
         for src in chosen:
