@@ -277,6 +277,50 @@ def test_cli_fetch_reports_x_articles(tmp_path, monkeypatch):
     assert "3 de X" in result.output
 
 
+def test_cli_fetch_persists_partial_work_when_a_stage_raises(tmp_path, monkeypatch):
+    # `_run_fetch` wraps the three fetch stages in `try:` and `save_store` in
+    # `finally:` — a stage error must not discard the in-memory work the
+    # earlier stages already produced. This proves that `finally` contract.
+    _setup_repo(tmp_path, monkeypatch)
+    import xbrain.cli as cli
+    from xbrain.models import Content, ContentSource
+    from xbrain.store import load_store
+
+    save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
+
+    def _fake_fetch_pending(store, *a, **k):
+        # Mutate the SAME store object _run_fetch passed in — that is what
+        # the `finally` block later persists to disk.
+        store["1"].content = Content(
+            fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
+            sources=[
+                ContentSource(
+                    kind="external_article",
+                    url="https://example.com/p",
+                    text="cuerpo",
+                    ok=True,
+                )
+            ],
+        )
+        return 1
+
+    def _fake_fetch_x_articles(*a, **k):
+        raise RuntimeError("Sesión de X caducada")
+
+    monkeypatch.setattr(cli, "fetch_pending", _fake_fetch_pending)
+    monkeypatch.setattr(cli, "fetch_x_articles", _fake_fetch_x_articles)
+
+    result = runner.invoke(app, ["fetch"])
+    # The stage error still surfaces via _handle_cli_errors.
+    assert result.exit_code == 1
+
+    # ...but the partial work from fetch_pending survived: save_store ran in
+    # the `finally` despite the raise.
+    store = load_store(tmp_path / "data" / "items.json")
+    assert store["1"].content is not None
+    assert store["1"].content.sources[0].text == "cuerpo"
+
+
 def _enriched_item(item_id: str = "1"):
     from xbrain.models import Enrichment
 
