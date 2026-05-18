@@ -23,7 +23,13 @@ def _extract_json(text: str) -> dict:
     match = _JSON_OBJECT.search(text)
     if not match:
         raise ValueError(f"no JSON object in model response: {text[:200]!r}")
-    return json.loads(match.group(0))
+    snippet = match.group(0)
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"malformed JSON in model response: {exc} -- snippet: {snippet[:200]!r}"
+        ) from exc
 
 
 def _vocab_block(vocab: list[Topic]) -> str:
@@ -90,7 +96,15 @@ class ApiExecutor:
                 messages=[{"role": "user",
                            "content": _user_prompt(item, vocab)}],
             )
-            judgment = _extract_json(response.content[0].text)
+            blocks = [
+                b for b in response.content
+                if getattr(b, "type", None) == "text"
+            ]
+            if not blocks:
+                raise ValueError(
+                    f"no text block in model response for item {item.id}"
+                )
+            judgment = _extract_json(blocks[0].text)
             results.append(EnrichmentJudgment(
                 item_id=item.id,
                 summary=str(judgment.get("summary", "")),
