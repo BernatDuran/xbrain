@@ -172,3 +172,25 @@ def test_topics_needing_synth_resynth_takes_any_changed_topic():
     assert topics_needing_synth([_VOCAB[0]], posts, pages, threshold=25, resynth=True) == [
         "ai-coding"
     ]
+
+
+def test_build_topic_inputs_collects_post_summaries():
+    from xbrain.topics import build_topic_inputs
+
+    posts = {"ai-coding": TopicPosts()}
+    posts["ai-coding"].primary.append(_enriched("1", "ai-coding", ["ai-coding"]))
+    inputs = build_topic_inputs(["ai-coding"], _VOCAB, posts)
+    assert inputs[0].slug == "ai-coding"
+    assert inputs[0].summaries == ["s"]
+
+
+def test_merge_overviews_records_the_synthesis_count():
+    from xbrain.topic_synth import OverviewJudgment
+    from xbrain.topics import merge_overviews
+
+    posts = {"ai-coding": TopicPosts()}
+    posts["ai-coding"].primary.append(_enriched("1", "ai-coding", ["ai-coding"]))
+    pages: dict = {}
+    merge_overviews(pages, [OverviewJudgment(slug="ai-coding", overview="o", notes=["n"])], posts)
+    assert pages["ai-coding"].overview == "o"
+    assert pages["ai-coding"].post_count_at_synth == 1

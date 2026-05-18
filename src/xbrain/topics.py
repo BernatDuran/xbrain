@@ -8,10 +8,12 @@ topics need (re)synthesis.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from xbrain import notes_io
 from xbrain.models import Item, Topic, TopicPage
+from xbrain.topic_synth import OverviewJudgment, TopicInput
 
 
 @dataclass
@@ -168,3 +170,40 @@ def topics_needing_synth(
         elif not resynth and delta >= threshold:
             needing.append(topic.slug)
     return needing
+
+
+def build_topic_inputs(
+    slugs: list[str], vocab: list[Topic], all_posts: dict[str, TopicPosts]
+) -> list[TopicInput]:
+    """Build the synthesis input for each slug — its description + post summaries."""
+    by_slug = {topic.slug: topic for topic in vocab}
+    inputs: list[TopicInput] = []
+    for slug in slugs:
+        posts = all_posts.get(slug, TopicPosts())
+        summaries = [
+            item.enriched.summary
+            for item in (posts.primary + posts.also)
+            if item.enriched and item.enriched.summary
+        ]
+        inputs.append(
+            TopicInput(slug=slug, description=by_slug[slug].description, summaries=summaries)
+        )
+    return inputs
+
+
+def merge_overviews(
+    pages: dict[str, TopicPage],
+    judgments: list[OverviewJudgment],
+    all_posts: dict[str, TopicPosts],
+) -> None:
+    """Fold synthesized overviews into the topic-page store (in place)."""
+    now = datetime.now(timezone.utc)
+    for judgment in judgments:
+        posts = all_posts.get(judgment.slug, TopicPosts())
+        pages[judgment.slug] = TopicPage(
+            slug=judgment.slug,
+            overview=judgment.overview,
+            notes=judgment.notes,
+            synthesized_at=now,
+            post_count_at_synth=posts.total,
+        )

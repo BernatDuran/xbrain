@@ -275,3 +275,80 @@ def test_cli_fetch_reports_x_articles(tmp_path, monkeypatch):
     result = runner.invoke(app, ["fetch"])
     assert result.exit_code == 0
     assert "3 de X" in result.output
+
+
+def _enriched_item(item_id: str = "1"):
+    from xbrain.models import Enrichment
+
+    item = _linked_item(item_id)
+    item.enriched = Enrichment(
+        enriched_at=datetime.now(timezone.utc),
+        executor="api",
+        summary="resumen",
+        primary_topic="misc",
+        topics=["misc"],
+    )
+    return item
+
+
+def test_topics_claude_code_exports_a_worksheet(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    from xbrain.models import Topic
+    from xbrain.rubrics import save_vocab
+
+    save_store({"1": _enriched_item("1")}, tmp_path / "data" / "items.json")
+    save_vocab([Topic(slug="misc", description="d")], tmp_path / "data" / "vocab.yaml")
+    result = runner.invoke(app, ["topics", "--executor", "claude-code"])
+    assert result.exit_code == 0
+    assert (tmp_path / "data" / "topic-worksheet.json").exists()
+    assert (tmp_path / "vault" / "x-knowledge" / "topics" / "misc.md").exists()
+
+
+def test_topics_apply_writes_the_overview(tmp_path, monkeypatch):
+    import json
+
+    _setup_repo(tmp_path, monkeypatch)
+    from xbrain.models import Topic
+    from xbrain.rubrics import save_vocab
+
+    save_store({"1": _enriched_item("1")}, tmp_path / "data" / "items.json")
+    save_vocab([Topic(slug="misc", description="d")], tmp_path / "data" / "vocab.yaml")
+    ws = tmp_path / "ws.json"
+    ws.write_text(
+        json.dumps(
+            {"judgments": [{"slug": "misc", "overview": "Resumen del cajón.", "notes": []}]}
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["topics", "--apply", str(ws)])
+    assert result.exit_code == 0
+    page = (tmp_path / "vault" / "x-knowledge" / "topics" / "misc.md").read_text(encoding="utf-8")
+    assert "Resumen del cajón." in page
+
+
+def test_topics_api_executor_synthesizes(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    import xbrain.cli as cli
+    from xbrain.models import Topic
+    from xbrain.rubrics import save_vocab
+    from xbrain.topic_synth import OverviewJudgment
+
+    save_store({"1": _enriched_item("1")}, tmp_path / "data" / "items.json")
+    save_vocab([Topic(slug="misc", description="d")], tmp_path / "data" / "vocab.yaml")
+
+    def _fake_synth(inputs, model, **kwargs):
+        return [OverviewJudgment(slug="misc", overview="Sintetizado por API.", notes=[])]
+
+    monkeypatch.setattr(cli, "synthesize_overviews_api", _fake_synth)
+    result = runner.invoke(app, ["topics", "--executor", "api"])
+    assert result.exit_code == 0
+    page = (tmp_path / "vault" / "x-knowledge" / "topics" / "misc.md").read_text(encoding="utf-8")
+    assert "Sintetizado por API." in page
+
+
+def test_topics_without_vocab_fails(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    save_store({"1": _enriched_item("1")}, tmp_path / "data" / "items.json")
+    result = runner.invoke(app, ["topics"])
+    assert result.exit_code == 1
+    assert "vocabulario" in result.output

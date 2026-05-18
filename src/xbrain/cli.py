@@ -24,7 +24,28 @@ from xbrain.fetch_x import fetch_x_articles
 from xbrain.generate import generate as run_generate
 from xbrain.models import ArchiveImport, Author, SourceName
 from xbrain.rubrics import load_vocab, save_vocab
-from xbrain.store import load_state, load_store, merge_items, save_state, save_store
+from xbrain.store import (
+    load_state,
+    load_store,
+    load_topic_pages,
+    merge_items,
+    save_state,
+    save_store,
+    save_topic_pages,
+)
+from xbrain.topic_synth import (
+    apply_overview_judgments,
+    export_topic_worksheet,
+    import_topic_worksheet,
+    synthesize_overviews_api,
+)
+from xbrain.topics import (
+    build_topic_inputs,
+    compute_topic_posts,
+    merge_overviews,
+    topics_needing_synth,
+    write_topic_pages,
+)
 from xbrain.vocab import induce_vocab
 from xbrain.worksheet import export_worksheet, import_worksheet
 
@@ -259,6 +280,72 @@ def vocab(
         save_store(store, cfg.items_path)
         typer.echo("Todos los items marcados para re-enriquecer.")
     typer.echo(f"Vocabulario inducido: {len(topics)} topics → {cfg.data_dir / 'vocab.yaml'}")
+
+
+def _topics_apply(cfg: Config, store: dict, vocab: list, apply: Path) -> None:
+    """`xbrain topics --apply` — import a filled overview worksheet."""
+    pages = load_topic_pages(cfg.topics_path)
+    posts = compute_topic_posts(store, vocab)
+    valid, invalid = apply_overview_judgments(import_topic_worksheet(apply))
+    merge_overviews(pages, valid, posts)
+    save_topic_pages(pages, cfg.topics_path)
+    written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+    typer.echo(f"Worksheet aplicada: {len(valid)} overviews · {written} páginas escritas")
+    _report_invalid(invalid)
+
+
+def _topics_run(cfg: Config, store: dict, vocab: list, resynth: bool, executor: str | None) -> None:
+    """`xbrain topics` — update lists and (re)synthesize stale overviews."""
+    pages = load_topic_pages(cfg.topics_path)
+    posts = compute_topic_posts(store, vocab)
+    stale = topics_needing_synth(vocab, posts, pages, cfg.topics_resynth_threshold, resynth)
+    inputs = build_topic_inputs(stale, vocab, posts)
+
+    if not inputs:
+        written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+        typer.echo(f"Topic pages actualizadas: {written} páginas (sin overviews pendientes).")
+        return
+
+    chosen = executor or cfg.enrich_executor
+    if chosen in ("manual", "claude-code"):
+        worksheet = cfg.data_dir / "topic-worksheet.json"
+        export_topic_worksheet(inputs, worksheet)
+        written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+        typer.echo(
+            f"{len(inputs)} topics exportados a {worksheet} · {written} páginas escritas\n"
+            f"Rellena el array `judgments` y ejecuta:\n"
+            f"  xbrain topics --apply {worksheet}"
+        )
+        return
+    if chosen != "api":
+        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+
+    judgments = synthesize_overviews_api(inputs, cfg.enrich_model)
+    merge_overviews(pages, judgments, posts)
+    save_topic_pages(pages, cfg.topics_path)
+    written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+    typer.echo(f"Topics sintetizados: {len(judgments)} · {written} páginas escritas")
+
+
+@app.command()
+@_handle_cli_errors
+def topics(
+    resynth: bool = typer.Option(False, help="Re-sintetizar todos los overviews obsoletos"),
+    apply: Path = typer.Option(None, "--apply", help="Importar un worksheet de overviews relleno"),
+    executor: str = typer.Option(
+        None, help="api | manual | claude-code (default: el de config.toml)"
+    ),
+) -> None:
+    """Genera las páginas de topic: listas de posts + overviews sintetizados."""
+    cfg = _config()
+    store = load_store(cfg.items_path)
+    vocab = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    if apply is not None:
+        _topics_apply(cfg, store, vocab, apply)
+    else:
+        _topics_run(cfg, store, vocab, resynth, executor)
 
 
 @app.command()
