@@ -82,6 +82,21 @@ class Topic(BaseModel):
     description: str
 
 
+class TopicPage(BaseModel):
+    """One synthesized topic-page overview, persisted in data/topics.json.
+
+    `post_count_at_synth` records how many posts the topic had when the overview
+    was synthesized — comparing it to the live count derives staleness without a
+    stored flag that could desync.
+    """
+
+    slug: str
+    overview: str
+    notes: list[str] = Field(default_factory=list)
+    synthesized_at: datetime
+    post_count_at_synth: int
+
+
 class Item(BaseModel):
     id: str
     source: SourceName

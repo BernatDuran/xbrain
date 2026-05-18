@@ -106,3 +106,21 @@ def test_content_source_failure_fields_default_cleanly():
     assert src.http_status is None
     assert src.failure_reason is None
     assert src.attempts == 0
+
+
+def test_topic_page_model_round_trips():
+    from datetime import datetime, timezone
+
+    from xbrain.models import TopicPage
+
+    page = TopicPage(
+        slug="ai-coding",
+        overview="Resumen del tema.",
+        notes=["Nota uno.", "Nota dos."],
+        synthesized_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        post_count_at_synth=42,
+    )
+    restored = TopicPage.model_validate(page.model_dump(mode="json"))
+    assert restored.slug == "ai-coding"
+    assert restored.post_count_at_synth == 42
+    assert restored.notes == ["Nota uno.", "Nota dos."]
