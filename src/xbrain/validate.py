@@ -36,6 +36,9 @@ def validate_judgment(judgment: dict, vocab_slugs: Iterable[str]) -> list[str]:
     if not (lo <= len(topics) <= hi):
         errors.append(f"topics has {len(topics)} entries, must be {lo}-{hi}")
 
+    if len(set(topics)) != len(topics):
+        errors.append("topics has duplicate entries")
+
     if rules.get("topics_must_be_in_vocab", True):
         for slug in topics:
             if slug not in vocab:

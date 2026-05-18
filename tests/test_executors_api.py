@@ -81,3 +81,57 @@ def test_user_prompt_includes_link_domains_when_no_folder():
     prompt = _user_prompt(item, VOCAB)
     assert "arxiv.org" in prompt
     assert not item.bookmark_folder
+
+
+class _SequencedMessages:
+    """A fake `messages` that returns a different payload per call."""
+
+    def __init__(self, payloads: list):
+        self._payloads = list(payloads)
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = self._payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
+
+        class _Block:
+            type = "text"
+            text = json.dumps(payload)
+
+        class _Resp:
+            content = [_Block()]
+
+        return _Resp()
+
+
+class _SequencedClient:
+    def __init__(self, payloads):
+        self.messages = _SequencedMessages(payloads)
+
+
+def test_api_executor_skips_wrong_shape_response(capsys):
+    # A response that is valid JSON but not a judgment object must be skipped
+    # with a warning, not silently become an empty enrichment.
+    client = _SequencedClient([
+        {"not": "a judgment"},
+        {"summary": "r", "primary_topic": "misc", "topics": ["misc"]},
+    ])
+    ex = ApiExecutor(model="m", client=client)
+    out = ex.enrich_items([_item("1"), _item("2")], VOCAB)
+    assert {j.item_id for j in out} == {"2"}  # item 1 skipped
+    err = capsys.readouterr().err
+    assert "enrichment failed for item 1" in err
+
+
+def test_api_executor_skips_item_on_api_failure(capsys):
+    # A transient API failure on one item must not abort the whole batch.
+    client = _SequencedClient([
+        RuntimeError("503 service unavailable"),
+        {"summary": "r", "primary_topic": "misc", "topics": ["misc"]},
+    ])
+    ex = ApiExecutor(model="m", client=client)
+    out = ex.enrich_items([_item("1"), _item("2")], VOCAB)
+    assert {j.item_id for j in out} == {"2"}
+    assert "enrichment failed for item 1" in capsys.readouterr().err

@@ -61,3 +61,19 @@ def test_induce_vocab_chunks_the_corpus():
     ])
     induce_vocab(store, target_count=1, model="m", client=client, chunk_size=2)
     assert len(client.messages.calls) == 4  # 3 map chunks + 1 reduce
+
+
+def test_induce_vocab_raises_when_map_response_has_no_candidates():
+    import pytest
+
+    # A truncated / malformed map response with no 'candidates' list must
+    # surface as an error, not silently contribute nothing (BLOCKING B1).
+    store = {str(i): _item(str(i), f"post {i}") for i in range(3)}
+    client = _FakeClient([
+        {"wrong_key": "the map call failed"},
+        {"topics": [{"slug": "misc", "description": "Noise."}]},
+    ])
+    with pytest.raises(ValueError) as exc_info:
+        induce_vocab(store, target_count=1, model="m", client=client,
+                     chunk_size=50)
+    assert "candidates" in str(exc_info.value)

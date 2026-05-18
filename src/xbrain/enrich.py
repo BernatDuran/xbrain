@@ -32,7 +32,7 @@ def apply_enrichment(item: Item, enrichment: Enrichment) -> None:
 
 def _validate_and_attach(
     store: dict[str, Item], item_id: str, summary: str, primary_topic: str,
-    topics: list[str], vocab_slugs: set[str], executor_name: str,
+    topics: object, vocab_slugs: set[str], executor_name: str,
 ) -> list[str]:
     """Validate one judgment; attach it if valid. Return errors (empty = ok)."""
     errors = validate_judgment(
@@ -80,6 +80,9 @@ def apply_worksheet_judgments(
     executor_name: str = "claude-code",
 ) -> tuple[int, list[tuple[str, list[str]]]]:
     """Validate + attach judgments from a filled worksheet (the worksheet track)."""
+    if executor_name not in ("manual", "api", "claude-code"):
+        raise ValueError(
+            f"worksheet has an invalid executor: {executor_name!r}")
     vocab_slugs = {t.slug for t in vocab}
     enriched = 0
     invalid: list[tuple[str, list[str]]] = []
@@ -87,7 +90,7 @@ def apply_worksheet_judgments(
         item_id = str(j.get("item_id", ""))
         errors = _validate_and_attach(
             store, item_id, str(j.get("summary", "")),
-            str(j.get("primary_topic", "")), j.get("topics") or [],
+            str(j.get("primary_topic", "")), j.get("topics"),
             vocab_slugs, executor_name)
         if errors:
             invalid.append((item_id, errors))

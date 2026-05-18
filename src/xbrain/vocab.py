@@ -6,7 +6,7 @@ consolidation call merges all candidates into exactly `target_count` topics
 """
 from __future__ import annotations
 
-from xbrain.llm_json import extract_json
+from xbrain.llm_json import json_from_response
 from xbrain.models import Item, Topic
 from xbrain.rubrics import load_rubric
 
@@ -23,10 +23,7 @@ def _call(client, model: str, max_tokens: int, system: str, user: str) -> dict:
         model=model, max_tokens=max_tokens, system=system,
         messages=[{"role": "user", "content": user}],
     )
-    blocks = [b for b in response.content if getattr(b, "type", None) == "text"]
-    if not blocks:
-        raise ValueError("no text block in model response")
-    return extract_json(blocks[0].text)
+    return json_from_response(response, context="vocab")
 
 
 def induce_vocab(
@@ -54,9 +51,13 @@ def induce_vocab(
             'JSON: {"candidates": [{"slug": "...", "description": "..."}]}\n\n'
             + posts
         )
-        candidates.extend(
-            _call(client, model, _MAP_MAX_TOKENS, system, user).get(
-                "candidates", []))
+        result = _call(client, model, _MAP_MAX_TOKENS, system, user)
+        cands = result.get("candidates")
+        if not isinstance(cands, list):
+            raise ValueError(
+                "vocab map step: response has no 'candidates' list — "
+                "the map call failed or was truncated")
+        candidates.extend(cands)
 
     # --- Reduce: consolidate into exactly target_count topics ---
     cand_block = "\n".join(

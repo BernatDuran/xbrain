@@ -243,7 +243,8 @@ def enrich(
 @_handle_cli_errors
 def vocab(
     regenerate: bool = typer.Option(
-        False, help="Regenerate the taxonomy and re-enrich every item"),
+        False,
+        help="Regenerate the taxonomy and mark every item for re-enrichment"),
 ) -> None:
     """Induce the topic vocabulary (data/vocab.yaml) from the corpus."""
     cfg = _config()

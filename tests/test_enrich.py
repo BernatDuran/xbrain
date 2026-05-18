@@ -96,6 +96,25 @@ def test_apply_worksheet_judgments_handles_null_topics():
     assert store["1"].enriched is None
 
 
+def test_apply_worksheet_judgments_rejects_invalid_executor():
+    import pytest
+
+    from xbrain.enrich import apply_worksheet_judgments
+    from xbrain.models import Topic
+
+    # A bad worksheet `executor` must be a clean up-front error, not an
+    # uncaught pydantic.ValidationError raised mid-loop (BLOCKING B2).
+    store = {"1": _item("1")}
+    judgments = [{"item_id": "1", "summary": "s", "primary_topic": "misc",
+                  "topics": ["misc"]}]
+    with pytest.raises(ValueError) as exc_info:
+        apply_worksheet_judgments(
+            store, judgments, [Topic(slug="misc", description="d")],
+            executor_name="bogus-executor")
+    assert "invalid executor" in str(exc_info.value)
+    assert store["1"].enriched is None
+
+
 def test_items_pending_respects_date_range():
     old_item = _item("1")
     old_item.created_at = datetime(2020, 1, 1, tzinfo=timezone.utc)

@@ -7,8 +7,10 @@ the article body was not fetched (design §15.2).
 """
 from __future__ import annotations
 
+import sys
+
 from xbrain.executors.base import EnrichmentJudgment
-from xbrain.llm_json import extract_json
+from xbrain.llm_json import json_from_response
 from xbrain.models import Item, Topic
 from xbrain.rubrics import load_rubric
 
@@ -72,26 +74,32 @@ class ApiExecutor:
         system = _system_prompt()
         results: list[EnrichmentJudgment] = []
         for item in items:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=_MAX_TOKENS,
-                system=system,
-                messages=[{"role": "user",
-                           "content": _user_prompt(item, vocab)}],
-            )
-            blocks = [
-                b for b in response.content
-                if getattr(b, "type", None) == "text"
-            ]
-            if not blocks:
-                raise ValueError(
-                    f"no text block in model response for item {item.id}"
+            try:
+                response = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=_MAX_TOKENS,
+                    system=system,
+                    messages=[{"role": "user",
+                               "content": _user_prompt(item, vocab)}],
                 )
-            judgment = extract_json(blocks[0].text)
-            results.append(EnrichmentJudgment(
-                item_id=item.id,
-                summary=str(judgment.get("summary", "")),
-                primary_topic=str(judgment.get("primary_topic", "")),
-                topics=list(judgment.get("topics", [])),
-            ))
+                judgment = json_from_response(
+                    response, context=f"item {item.id}")
+                if not {"summary", "primary_topic", "topics"} <= judgment.keys():
+                    raise ValueError(
+                        f"item {item.id}: response is not a judgment object, "
+                        f"keys={sorted(judgment)}")
+                results.append(EnrichmentJudgment(
+                    item_id=item.id,
+                    summary=str(judgment["summary"]),
+                    primary_topic=str(judgment["primary_topic"]),
+                    topics=list(judgment["topics"]),
+                ))
+            except Exception as exc:  # noqa: BLE001
+                # One transient/malformed response must not abort the batch:
+                # the item stays pending and is retried on the next run.
+                print(
+                    f"warn: enrichment failed for item {item.id}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
         return results

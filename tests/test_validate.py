@@ -41,3 +41,10 @@ def test_non_judgment_keys_are_rejected():
     bad = _ok()
     bad["filename"] = "ai-coding.md"
     assert any("filename" in e for e in validate_judgment(bad, VOCAB))
+
+
+def test_duplicate_topics_are_rejected():
+    bad = _ok()
+    bad["topics"] = ["ai-coding", "ai-coding"]
+    bad["primary_topic"] = "ai-coding"
+    assert any("duplicate" in e for e in validate_judgment(bad, VOCAB))
