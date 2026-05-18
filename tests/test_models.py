@@ -76,3 +76,33 @@ def test_item_has_optional_bookmark_folder():
     )
     assert Item(**base).bookmark_folder is None
     assert Item(**base, bookmark_folder="AI papers").bookmark_folder == "AI papers"
+
+
+def test_content_source_carries_failure_evidence():
+    from xbrain.models import ContentSource
+
+    src = ContentSource(
+        kind="external_article",
+        url="https://example.com/x",
+        ok=False,
+        http_status=404,
+        failure_reason="not_found",
+        attempts=2,
+        error="HTTP 404",
+    )
+    assert src.http_status == 404
+    assert src.failure_reason == "not_found"
+    assert src.attempts == 2
+
+
+def test_content_source_failure_fields_default_cleanly():
+    # An old-shape dict (no failure fields) must still validate — the existing
+    # items.json predates these fields.
+    from xbrain.models import ContentSource
+
+    src = ContentSource.model_validate(
+        {"kind": "external_article", "url": "https://e.com", "ok": True}
+    )
+    assert src.http_status is None
+    assert src.failure_reason is None
+    assert src.attempts == 0

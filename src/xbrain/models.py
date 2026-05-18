@@ -15,6 +15,18 @@ ExecutorName = Literal["manual", "api", "claude-code"]
 # and the GraphQL parser.
 SourceName = Literal["bookmark", "own_tweet"]
 
+# Categorised reasons a content fetch can fail — structured evidence so a
+# broken link is demonstrable, not assumed (design §4).
+FailureReason = Literal[
+    "not_found",
+    "forbidden",
+    "paywall",
+    "timeout",
+    "dns_error",
+    "js_required",
+    "empty_content",
+]
+
 
 class Author(BaseModel):
     handle: str
@@ -44,6 +56,9 @@ class ContentSource(BaseModel):
     text: str | None = None
     ok: bool = True
     error: str | None = None
+    http_status: int | None = None
+    failure_reason: FailureReason | None = None
+    attempts: int = 0
 
 
 class Content(BaseModel):
