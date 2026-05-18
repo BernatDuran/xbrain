@@ -12,7 +12,9 @@ import typer
 
 from xbrain.archive import parse_archive
 from xbrain.config import Config, load_config
-from xbrain.enrich import enrich as run_enrich
+from xbrain.enrich import (apply_worksheet_judgments, enrich_with_executor,
+                           items_pending_enrichment)
+from xbrain.executors.api import ApiExecutor
 from xbrain.extract.browser import login as run_login
 from xbrain.extract.browser import x_context
 from xbrain.extract.extractor import extract_source
@@ -20,9 +22,10 @@ from xbrain.extract.threads import expand_threads
 from xbrain.fetch import fetch_pending
 from xbrain.generate import generate as run_generate
 from xbrain.models import ArchiveImport, Author
-from xbrain.rubrics import save_vocab
+from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import load_state, load_store, merge_items, save_state, save_store
 from xbrain.vocab import induce_vocab
+from xbrain.worksheet import export_worksheet, import_worksheet
 
 app = typer.Typer(help="XBrain — bookmarks y tweets de X a un wiki de Obsidian")
 
@@ -77,6 +80,13 @@ def _handle_cli_errors(func: Callable) -> Callable:
             raise typer.Exit(code=1) from exc
 
     return wrapper
+
+
+def _report_invalid(invalid: list[tuple[str, list[str]]]) -> None:
+    if invalid:
+        typer.echo(f"Rechazados por el validador: {len(invalid)}", err=True)
+        for item_id, errors in invalid:
+            typer.echo(f"  {item_id}: {'; '.join(errors)}", err=True)
 
 
 def _run_extract(cfg: Config, source: str,
@@ -177,16 +187,55 @@ def fetch(
 @app.command()
 @_handle_cli_errors
 def enrich(
-    executor: str = typer.Option("manual", help="manual | api | claude-code"),
+    executor: str = typer.Option(
+        None, help="api | manual | claude-code (default: config [enrich].executor)"),
+    apply: Path = typer.Option(
+        None, "--apply", help="Import a filled worksheet and apply it"),
     since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
     until: str = typer.Option(None, help="ISO date, e.g. 2025-12-31"),
 ) -> None:
-    """Enriquecimiento con LLM (en pausa — ver spec §9)."""
-    pending = run_enrich(
-        load_store(_config().items_path), executor,
-        _parse_date(since), _parse_date(until),
-    )
-    typer.echo(f"{len(pending)} items pendientes de enriquecer")
+    """Enriquece los items con resumen + topics."""
+    cfg = _config()
+    store = load_store(cfg.items_path)
+    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+
+    if apply is not None:
+        if not vocab_topics:
+            raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+        enriched, invalid = apply_worksheet_judgments(
+            store, import_worksheet(apply), vocab_topics)
+        save_store(store, cfg.items_path)
+        typer.echo(f"Worksheet aplicada: {enriched} items enriquecidos")
+        _report_invalid(invalid)
+        return
+
+    if not vocab_topics:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    chosen = executor or cfg.enrich_executor
+
+    if chosen in ("manual", "claude-code"):
+        pending = items_pending_enrichment(
+            store, _parse_date(since), _parse_date(until))
+        if not pending:
+            typer.echo("No hay items pendientes de enriquecer.")
+            return
+        worksheet = cfg.data_dir / "enrich-worksheet.json"
+        export_worksheet(pending, vocab_topics, worksheet)
+        typer.echo(
+            f"{len(pending)} items exportados a {worksheet}\n"
+            f"Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
+            f"  xbrain enrich --apply {worksheet}")
+        return
+
+    if chosen != "api":
+        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+
+    enriched, invalid = enrich_with_executor(
+        store, ApiExecutor(model=cfg.enrich_model), vocab_topics,
+        _parse_date(since), _parse_date(until))
+    save_store(store, cfg.items_path)
+    typer.echo(f"Enriquecidos: {enriched} items")
+    _report_invalid(invalid)
 
 
 @app.command()

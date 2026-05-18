@@ -125,3 +125,36 @@ def test_vocab_command_persists_induced_topics(tmp_path, monkeypatch):
     assert result.exit_code == 0
     from xbrain.rubrics import load_vocab
     assert [t.slug for t in load_vocab(tmp_path / "data" / "vocab.yaml")] == ["misc"]
+
+
+def test_enrich_manual_exports_a_worksheet(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    from xbrain.store import save_store
+    from xbrain.rubrics import save_vocab
+    from xbrain.models import Topic
+    save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
+    save_vocab([Topic(slug="misc", description="d")],
+               tmp_path / "data" / "vocab.yaml")
+    result = runner.invoke(app, ["enrich", "--executor", "manual"])
+    assert result.exit_code == 0
+    assert (tmp_path / "data" / "enrich-worksheet.json").exists()
+
+
+def test_enrich_apply_imports_a_filled_worksheet(tmp_path, monkeypatch):
+    import json
+    _setup_repo(tmp_path, monkeypatch)
+    from xbrain.store import save_store
+    from xbrain.rubrics import save_vocab
+    from xbrain.models import Topic
+    save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
+    save_vocab([Topic(slug="misc", description="d")],
+               tmp_path / "data" / "vocab.yaml")
+    ws = tmp_path / "ws.json"
+    ws.write_text(json.dumps({"judgments": [
+        {"item_id": "1", "summary": "s", "primary_topic": "misc",
+         "topics": ["misc"]}]}), encoding="utf-8")
+    result = runner.invoke(app, ["enrich", "--apply", str(ws)])
+    assert result.exit_code == 0
+    from xbrain.store import load_store
+    store = load_store(tmp_path / "data" / "items.json")
+    assert store["1"].enriched is not None
