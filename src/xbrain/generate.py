@@ -129,10 +129,14 @@ def _render_note(item: Item) -> str:
 
 
 def _frontmatter(item: Item) -> str:
-    topics = ", ".join(item.enriched.topics) if item.enriched else ""
     domains = ", ".join(sorted({link.domain for link in item.links}))
-    tags = "x-knowledge" + (f", {topics}" if topics else "")
-    return "\n".join([
+    tags = ["x-knowledge"]
+    if item.enriched:
+        tags += item.enriched.topics  # topics already includes primary_topic
+    if item.bookmark_folder:
+        tags.append(_slugify(item.bookmark_folder))
+    tags = list(dict.fromkeys(tags))
+    lines = [
         "---",
         f'id: "{item.id}"',
         f"source: {item.source}",
@@ -140,9 +144,12 @@ def _frontmatter(item: Item) -> str:
         f"created: {item.created_at.date().isoformat()}",
         f"author: {item.author.handle}",
         f"domains: [{domains}]",
-        f"tags: [{tags}]",
-        "---",
-    ])
+        f"tags: [{', '.join(tags)}]",
+    ]
+    if item.bookmark_folder:
+        lines.append(f"bookmark_folder: {item.bookmark_folder}")
+    lines.append("---")
+    return "\n".join(lines)
 
 
 def _render_index(items: list[Item]) -> str:
