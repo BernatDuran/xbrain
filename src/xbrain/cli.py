@@ -1,4 +1,5 @@
 """Command-line interface for XBrain."""
+
 from __future__ import annotations
 
 import enum
@@ -12,15 +13,46 @@ import typer
 
 from xbrain.archive import parse_archive
 from xbrain.config import Config, load_config
-from xbrain.enrich import enrich as run_enrich
+from xbrain.enrich import apply_worksheet_judgments, enrich_with_executor, items_pending_enrichment
+from xbrain.executors.api import ApiExecutor
 from xbrain.extract.browser import login as run_login
 from xbrain.extract.browser import x_context
 from xbrain.extract.extractor import extract_source
 from xbrain.extract.threads import expand_threads
 from xbrain.fetch import fetch_pending
+from xbrain.fetch_x import fetch_x_articles
 from xbrain.generate import generate as run_generate
-from xbrain.models import ArchiveImport, Author
-from xbrain.store import load_state, load_store, merge_items, save_state, save_store
+from xbrain.models import ArchiveImport, Author, SourceName
+from xbrain.rubrics import load_vocab, save_vocab
+from xbrain.store import (
+    load_state,
+    load_store,
+    load_topic_pages,
+    merge_items,
+    save_state,
+    save_store,
+    save_topic_pages,
+)
+from xbrain.topic_synth import (
+    apply_overview_judgments,
+    export_topic_worksheet,
+    import_topic_worksheet,
+    synthesize_overviews_api,
+)
+from xbrain.topics import (
+    build_topic_inputs,
+    compute_topic_posts,
+    merge_overviews,
+    topics_needing_synth,
+    write_topic_pages,
+)
+from xbrain.vocab import (
+    apply_vocab_worksheet,
+    export_vocab_worksheet,
+    import_vocab_worksheet,
+    induce_vocab,
+)
+from xbrain.worksheet import export_worksheet, import_worksheet
 
 app = typer.Typer(help="XBrain — bookmarks y tweets de X a un wiki de Obsidian")
 
@@ -77,26 +109,32 @@ def _handle_cli_errors(func: Callable) -> Callable:
     return wrapper
 
 
-def _run_extract(cfg: Config, source: str,
-                  since: datetime | None, until: datetime | None) -> None:
+def _report_invalid(invalid: list[tuple[str, list[str]]]) -> None:
+    if invalid:
+        typer.echo(f"Rechazados por el validador: {len(invalid)}", err=True)
+        for item_id, errors in invalid:
+            typer.echo(f"  {item_id}: {'; '.join(errors)}", err=True)
+
+
+def _run_extract(cfg: Config, source: str, since: datetime | None, until: datetime | None) -> None:
     store = load_store(cfg.items_path)
     state = load_state(cfg.state_path)
     targets = {
         "bookmark": _BOOKMARKS_URL,
         "own_tweet": f"https://x.com/{cfg.x_handle}",
     }
-    chosen = {
+    source_sets: dict[str, list[SourceName]] = {
         "bookmarks": ["bookmark"],
         "tweets": ["own_tweet"],
         "all": ["bookmark", "own_tweet"],
-    }[source]
+    }
+    chosen = source_sets[source]
     known_ids = set(store)
     with x_context(cfg.storage_state_path) as context:
         for src in chosen:
             cursor = state.bookmarks if src == "bookmark" else state.own_tweets
             first_run = cursor.last_seen_id is None
-            items = extract_source(context, src, targets[src], known_ids,
-                                   since, until)
+            items = extract_source(context, src, targets[src], known_ids, since, until)
             if not items and first_run:
                 typer.echo(
                     f"AVISO: {src} devolvió 0 items en una extracción inicial — "
@@ -112,17 +150,20 @@ def _run_extract(cfg: Config, source: str,
     save_state(state, cfg.state_path)
 
 
-def _run_fetch(cfg: Config, since: datetime | None,
-               until: datetime | None, force: bool) -> None:
+def _run_fetch(cfg: Config, since: datetime | None, until: datetime | None, force: bool) -> None:
     store = load_store(cfg.items_path)
-    articles = fetch_pending(store, since, until, force)
-    threads = expand_threads(store, cfg.storage_state_path, force)
-    save_store(store, cfg.items_path)
-    typer.echo(f"Contenido descargado: {articles} artículos, {threads} hilos")
+    try:
+        articles = fetch_pending(store, since, until, force)
+        x_articles = fetch_x_articles(store, cfg.storage_state_path, force, since, until)
+        threads = expand_threads(store, cfg.storage_state_path, force)
+    finally:
+        # Persist whatever was fetched even if a later stage raised — a stage
+        # error (e.g. an expired X session) must not discard in-memory work.
+        save_store(store, cfg.items_path)
+    typer.echo(f"Contenido descargado: {articles} artículos, {x_articles} de X, {threads} hilos")
 
 
-def _run_generate(cfg: Config, since: datetime | None,
-                  until: datetime | None) -> None:
+def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -> None:
     store = load_store(cfg.items_path)
     run_generate(store, cfg.output_dir, since, until)
     typer.echo(f"Markdown generado en {cfg.output_dir}")
@@ -175,16 +216,192 @@ def fetch(
 @app.command()
 @_handle_cli_errors
 def enrich(
-    executor: str = typer.Option("manual", help="manual | api | claude-code"),
+    executor: str | None = typer.Option(
+        None, help="api | manual | claude-code (default: the enrich executor set in config.toml)"
+    ),
+    apply: Path | None = typer.Option(
+        None, "--apply", help="Import a filled worksheet and apply it"
+    ),
     since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
     until: str = typer.Option(None, help="ISO date, e.g. 2025-12-31"),
 ) -> None:
-    """Enriquecimiento con LLM (en pausa — ver spec §9)."""
-    pending = run_enrich(
-        load_store(_config().items_path), executor,
-        _parse_date(since), _parse_date(until),
+    """Enriquece los items con resumen + topics."""
+    cfg = _config()
+    store = load_store(cfg.items_path)
+    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab_topics:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+
+    if apply is not None:
+        executor_name, judgments = import_worksheet(apply)
+        enriched, invalid = apply_worksheet_judgments(store, judgments, vocab_topics, executor_name)
+        save_store(store, cfg.items_path)
+        typer.echo(f"Worksheet aplicada: {enriched} items enriquecidos")
+        _report_invalid(invalid)
+        return
+
+    chosen = executor or cfg.enrich_executor
+
+    if chosen in ("manual", "claude-code"):
+        pending = items_pending_enrichment(store, _parse_date(since), _parse_date(until))
+        if not pending:
+            typer.echo("No hay items pendientes de enriquecer.")
+            return
+        worksheet = cfg.data_dir / "enrich-worksheet.json"
+        export_worksheet(pending, vocab_topics, worksheet, chosen)
+        typer.echo(
+            f"{len(pending)} items exportados a {worksheet}\n"
+            f"Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
+            f"  xbrain enrich --apply {worksheet}"
+        )
+        return
+
+    if chosen != "api":
+        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+
+    enriched, invalid = enrich_with_executor(
+        store,
+        ApiExecutor(model=cfg.enrich_model),
+        vocab_topics,
+        _parse_date(since),
+        _parse_date(until),
     )
-    typer.echo(f"{len(pending)} items pendientes de enriquecer")
+    save_store(store, cfg.items_path)
+    typer.echo(f"Enriquecidos: {enriched} items")
+    _report_invalid(invalid)
+
+
+def _mark_for_regenerate(store: dict, cfg: Config, regenerate: bool) -> None:
+    """When `--regenerate` is set, drop every item's enrichment and persist."""
+    if regenerate:
+        for item in store.values():
+            item.enriched = None
+        save_store(store, cfg.items_path)
+        typer.echo("Todos los items marcados para re-enriquecer.")
+
+
+def _vocab_apply(cfg: Config, store: dict, apply: Path, regenerate: bool) -> None:
+    """`xbrain vocab --apply` — import a filled vocab worksheet."""
+    topics, invalid = apply_vocab_worksheet(import_vocab_worksheet(apply))
+    _report_invalid(invalid)
+    if not topics:
+        raise RuntimeError("La worksheet no produjo ningún topic válido.")
+    # Mark the store first: a crash here leaves items pending (a re-run re-marks
+    # idempotently) — safer than vocab.yaml updated while items stay stale.
+    _mark_for_regenerate(store, cfg, regenerate)
+    save_vocab(topics, cfg.data_dir / "vocab.yaml")
+    typer.echo(f"Vocabulario aplicado: {len(topics)} topics → {cfg.data_dir / 'vocab.yaml'}")
+
+
+def _vocab_run(cfg: Config, store: dict, executor: str | None, regenerate: bool) -> None:
+    """`xbrain vocab` — induce the taxonomy (worksheet export, or `api`)."""
+    chosen = executor or cfg.enrich_executor
+    if chosen in ("manual", "claude-code"):
+        worksheet = cfg.data_dir / "vocab-worksheet.json"
+        export_vocab_worksheet(store, cfg.vocab_target_count, worksheet)
+        regen = " --regenerate" if regenerate else ""
+        typer.echo(
+            f"Corpus exportado a {worksheet}\n"
+            f"Induce la taxonomía (con Claude Code o a mano) y ejecuta:\n"
+            f"  xbrain vocab --apply {worksheet}{regen}"
+        )
+        return
+    if chosen != "api":
+        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+    topics = induce_vocab(store, cfg.vocab_target_count, cfg.enrich_model)
+    save_vocab(topics, cfg.data_dir / "vocab.yaml")
+    _mark_for_regenerate(store, cfg, regenerate)
+    typer.echo(f"Vocabulario inducido: {len(topics)} topics → {cfg.data_dir / 'vocab.yaml'}")
+
+
+@app.command()
+@_handle_cli_errors
+def vocab(
+    regenerate: bool = typer.Option(
+        False, help="Marca todos los items para re-enriquecer contra la taxonomía nueva"
+    ),
+    executor: str | None = typer.Option(
+        None, help="api | manual | claude-code (default: el de config.toml)"
+    ),
+    apply: Path | None = typer.Option(None, "--apply", help="Importar una vocab worksheet rellena"),
+) -> None:
+    """Induce el vocabulario de topics (data/vocab.yaml) desde el corpus."""
+    cfg = _config()
+    store = load_store(cfg.items_path)
+    if not store:
+        raise RuntimeError("El store está vacío — ejecuta `xbrain extract` antes.")
+    if apply is not None:
+        _vocab_apply(cfg, store, apply, regenerate)
+    else:
+        _vocab_run(cfg, store, executor, regenerate)
+
+
+def _topics_apply(cfg: Config, store: dict, vocab: list, apply: Path) -> None:
+    """`xbrain topics --apply` — import a filled overview worksheet."""
+    pages = load_topic_pages(cfg.topics_path)
+    posts = compute_topic_posts(store, vocab)
+    valid, invalid = apply_overview_judgments(import_topic_worksheet(apply))
+    merge_overviews(pages, valid, posts)
+    save_topic_pages(pages, cfg.topics_path)
+    written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+    typer.echo(f"Worksheet aplicada: {len(valid)} overviews · {written} páginas escritas")
+    _report_invalid(invalid)
+
+
+def _topics_run(cfg: Config, store: dict, vocab: list, resynth: bool, executor: str | None) -> None:
+    """`xbrain topics` — update lists and (re)synthesize stale overviews."""
+    pages = load_topic_pages(cfg.topics_path)
+    posts = compute_topic_posts(store, vocab)
+    stale = topics_needing_synth(vocab, posts, pages, cfg.topics_resynth_threshold, resynth)
+    inputs = build_topic_inputs(stale, vocab, posts)
+
+    if not inputs:
+        written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+        typer.echo(f"Topic pages actualizadas: {written} páginas (sin overviews pendientes).")
+        return
+
+    chosen = executor or cfg.enrich_executor
+    if chosen in ("manual", "claude-code"):
+        worksheet = cfg.data_dir / "topic-worksheet.json"
+        export_topic_worksheet(inputs, worksheet)
+        written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+        typer.echo(
+            f"{len(inputs)} topics exportados a {worksheet} · {written} páginas escritas\n"
+            f"Rellena el array `judgments` y ejecuta:\n"
+            f"  xbrain topics --apply {worksheet}"
+        )
+        return
+    if chosen != "api":
+        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+
+    judgments = synthesize_overviews_api(inputs, cfg.enrich_model)
+    merge_overviews(pages, judgments, posts)
+    save_topic_pages(pages, cfg.topics_path)
+    written = write_topic_pages(cfg.output_dir, vocab, posts, pages)
+    typer.echo(f"Topics sintetizados: {len(judgments)}/{len(inputs)} · {written} páginas escritas")
+
+
+@app.command()
+@_handle_cli_errors
+def topics(
+    resynth: bool = typer.Option(False, help="Re-sintetizar todos los overviews obsoletos"),
+    apply: Path | None = typer.Option(
+        None, "--apply", help="Importar un worksheet de overviews relleno"
+    ),
+    executor: str | None = typer.Option(
+        None, help="api | manual | claude-code (default: el de config.toml)"
+    ),
+) -> None:
+    """Genera las páginas de topic: listas de posts + overviews sintetizados."""
+    cfg = _config()
+    store = load_store(cfg.items_path)
+    vocab = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    if apply is not None:
+        _topics_apply(cfg, store, vocab, apply)
+    else:
+        _topics_run(cfg, store, vocab, resynth, executor)
 
 
 @app.command()

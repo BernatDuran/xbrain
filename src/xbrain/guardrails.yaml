@@ -1,0 +1,20 @@
+# Mechanical constraints the validator (src/xbrain/validate.py) enforces on
+# every enrichment record. Checked by code — not judged by an LLM.
+enrichment:
+  # primary_topic and every entry of `topics` must be a slug in data/vocab.yaml
+  topics_must_be_in_vocab: true
+  # primary_topic must also appear inside `topics`
+  primary_topic_must_be_in_topics: true
+  # allowed size of the `topics` list
+  topics_min: 1
+  topics_max: 4
+  # `summary` must be present and non-empty
+  summary_required: true
+
+# Mechanical constraints on a topic-overview judgment (validate_overview).
+topic_overview:
+  # `overview` must be present and non-empty
+  overview_required: true
+  # allowed size of the `notes` list
+  notes_min: 0
+  notes_max: 15

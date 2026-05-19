@@ -1,9 +1,13 @@
 """Configuration loading for XBrain."""
+
 from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
+
+from xbrain.models import ExecutorName
 
 
 @dataclass(frozen=True)
@@ -13,6 +17,10 @@ class Config:
     output_dir: Path
     data_dir: Path
     x_handle: str
+    enrich_executor: ExecutorName
+    enrich_model: str
+    vocab_target_count: int
+    topics_resynth_threshold: int
 
     @property
     def items_path(self) -> Path:
@@ -21,6 +29,10 @@ class Config:
     @property
     def state_path(self) -> Path:
         return self.data_dir / "state.json"
+
+    @property
+    def topics_path(self) -> Path:
+        return self.data_dir / "topics.json"
 
     @property
     def storage_state_path(self) -> Path:
@@ -35,10 +47,29 @@ def load_config(repo_root: Path) -> Config:
     if not x_settings.get("handle"):
         raise ValueError("config.toml: [x].handle is empty — set your X handle")
     vault = Path(paths["vault"]).expanduser()
+    enrich = settings.get("enrich", {})
+    vocab = settings.get("vocab", {})
+    executor = enrich.get("executor", "claude-code")
+    valid_executors = get_args(ExecutorName)
+    if executor not in valid_executors:
+        raise ValueError(
+            f"config.toml: [enrich].executor must be manual|api|claude-code, got {executor!r}"
+        )
+    target_count = int(vocab.get("target_count", 30))
+    if target_count < 1:
+        raise ValueError("config.toml: [vocab].target_count must be >= 1")
+    topics = settings.get("topics", {})
+    resynth_threshold = int(topics.get("resynth_threshold", 25))
+    if resynth_threshold < 1:
+        raise ValueError("config.toml: [topics].resynth_threshold must be >= 1")
     return Config(
         repo_root=repo_root,
         vault=vault,
         output_dir=vault / paths["output_subdir"],
         data_dir=repo_root / paths["data_dir"],
         x_handle=x_settings["handle"],
+        enrich_executor=executor,
+        enrich_model=enrich.get("model", "claude-haiku-4-5-20251001"),
+        vocab_target_count=target_count,
+        topics_resynth_threshold=resynth_threshold,
     )
