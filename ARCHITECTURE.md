@@ -37,19 +37,12 @@ The system is built around one principle: **the JSON store is the source of trut
 
 ```mermaid
 flowchart TB
-    subgraph Sources["External"]
+    subgraph Sources["🌐 External"]
         X[X / Twitter]
         Web[The open web]
     end
 
-    subgraph Data["data/ (gitignored — source of truth)"]
-        State[state.json<br/>extractor cursors]
-        Items[items.json<br/>Items: raw + fetched + enrichment]
-        Vocab[vocab.yaml<br/>controlled taxonomy]
-        Topics[topics.json<br/>synthesized topic pages]
-    end
-
-    subgraph Pipeline["Pipeline stages"]
+    subgraph Pipeline["⚙️ Pipeline stages"]
         E[extract]
         F[fetch]
         V[vocab]
@@ -58,7 +51,14 @@ flowchart TB
         G[generate]
     end
 
-    subgraph Wiki["Obsidian vault (derivable)"]
+    subgraph Data["💾 data/ — source of truth (gitignored)"]
+        State[(state.json)]
+        Items[(items.json)]
+        Vocab[(vocab.yaml)]
+        Topics[(topics.json)]
+    end
+
+    subgraph Wiki["📚 Obsidian vault (derivable)"]
         ItemNotes[items/*.md]
         TopicNotes[topics/*.md]
         Index[_index.md, log.md]
@@ -84,6 +84,15 @@ flowchart TB
     G --> ItemNotes
     G --> TopicNotes
     G --> Index
+
+    classDef ext fill:#dbeafe,stroke:#2563eb,color:#1f2937
+    classDef stage fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#1f2937
+    classDef artifact fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#1f2937
+    classDef wiki fill:#dcfce7,stroke:#16a34a,color:#1f2937
+    class X,Web ext
+    class E,F,V,En,T,G stage
+    class State,Items,Vocab,Topics artifact
+    class ItemNotes,TopicNotes,Index wiki
 ```
 
 Each stage is a separate command (`xbrain extract`, `xbrain fetch`, …). You can run them individually or chain them. The pipeline is intentionally idempotent at every step: re-running a stage on a corpus that already has its outputs is a cheap no-op except where you explicitly ask for regeneration.
@@ -117,6 +126,13 @@ flowchart TB
     done([Wiki ready in Obsidian])
 
     start --> s0 --> s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> done
+
+    classDef mech fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#1f2937,text-align:left
+    classDef llm fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#1f2937,text-align:left
+    classDef io fill:#dbeafe,stroke:#2563eb,color:#1f2937
+    class s0,s1,s2,s6 mech
+    class s3,s4,s5 llm
+    class start,done io
 ```
 
 Three extra ops sit outside the main loop:

@@ -69,12 +69,41 @@ A **three-layer wiki** inside your Obsidian vault. Each layer is denser than the
 one below it — read top-down for the map, or bottom-up for a single post.
 
 ```mermaid
-flowchart TB
-    Index["<b>Index + Log</b><br/>the map — every topic, the full chronology"]
-    Topics["<b>Topics</b><br/>an essay per theme,<br/>distilling dozens-to-hundreds of posts"]
-    Items["<b>Items</b><br/>one note per bookmark / tweet —<br/>summary, topics, the linked article fetched in full"]
-    Index --> Topics --> Items
+flowchart LR
+    subgraph L1["📄 Items"]
+        direction TB
+        I1[Post 1]
+        I2[Post 2]
+        I3[...]
+        I4[Post ~1k+]
+    end
+
+    subgraph L2["📑 Topics"]
+        direction TB
+        T1["AI coding"]
+        T2["Software engineering"]
+        T3["..."]
+        T4["~30-45 topics"]
+    end
+
+    subgraph L3["🗺️ Index"]
+        IDX["_index.md<br/>the map"]
+    end
+
+    L1 -->|grouped under| L2
+    L2 -->|listed in| L3
+
+    classDef item fill:#ede9fe,stroke:#7c3aed,color:#1f2937
+    classDef topic fill:#fef3c7,stroke:#d97706,color:#1f2937
+    classDef idx fill:#dcfce7,stroke:#16a34a,color:#1f2937
+    class I1,I2,I3,I4 item
+    class T1,T2,T3,T4 topic
+    class IDX idx
 ```
+
+- **Items** — one note per saved X post: original text, fetched article, summary, topics.
+- **Topics** — one note per theme: a synthesised essay across every post in that theme.
+- **Index** — the map: every topic with its counts, links to everything.
 
 ### Layer 1 — Items
 
@@ -305,9 +334,35 @@ Six stages. `data/items.json` is the hub — every stage reads it, enriches it,
 and writes it back. The wiki is generated from it at the end.
 
 ```mermaid
-flowchart LR
-    X((X)) --> E1["① extract"] --> E2["② fetch"] --> E3["③ vocab"] --> E4["④ enrich"] --> E5["⑤ topics"] --> E6["⑥ generate"] --> W[/Obsidian wiki/]
+flowchart TB
+    X((X / Twitter)) --> E1["① extract"]
+    E1 --> E2["② fetch"]
+    E2 --> E3["③ vocab"]
+    E3 --> E4["④ enrich"]
+    E4 --> E5["⑤ topics"]
+    E5 --> E6["⑥ generate"]
+    E6 --> W[/Obsidian wiki/]
+
+    E1 -.->|writes| Items[("data/items.json")]
+    E2 -.->|mutates| Items
+    E3 -.->|writes| Vy[("data/vocab.yaml")]
+    E4 -.->|mutates| Items
+    E5 -.->|writes| Tj[("data/topics.json")]
+
+    classDef stage fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#1f2937
+    classDef artifact fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#1f2937
+    classDef ext fill:#dbeafe,stroke:#2563eb,color:#1f2937
+    classDef wiki fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#1f2937
+    class E1,E2,E3,E4,E5,E6 stage
+    class Items,Vy,Tj artifact
+    class X ext
+    class W wiki
 ```
+
+Six stages, one direction. The chain on the left is the order of execution; the
+artifacts on the right are what each stage writes. `data/items.json` is the
+hub — three stages mutate it, every later stage reads it. The Obsidian wiki is
+a pure render — safe to delete and regenerate from `data/`.
 
 | # | Stage | Mechanical / LLM | Writes to | What it does |
 |---|-------|------------------|-----------|--------------|
@@ -317,11 +372,6 @@ flowchart LR
 | ④ | `enrich` | **LLM** | `items.json` | Per item: a summary + a primary topic + 1-4 topics, all from the taxonomy. |
 | ⑤ | `topics` | **LLM** | `topics.json` | Synthesises each topic page's overview; builds the mechanical post lists. |
 | ⑥ | `generate` | mechanical | the Obsidian vault | Renders the three-layer wiki: `items/*.md`, `topics/*.md`, `_index.md`. |
-
-`data/items.json` is the hub — most stages read from it and three of them write
-back into it. `vocab.yaml` and `topics.json` are the artifacts of their own
-stages and feed the ones downstream. The Obsidian wiki is a pure render of all
-three — safe to delete and regenerate.
 
 Every stage is **idempotent and incremental** — re-running it only processes
 what is new. `vocab --regenerate` is the deliberate exception: it re-induces the
