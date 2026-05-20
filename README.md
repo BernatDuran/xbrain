@@ -81,9 +81,9 @@ posts → fewer topics → one index.
 <th align="center" width="34%">🗺️ Index</th>
 </tr>
 <tr>
-<td align="center"><sub><b>~1k+ notes</b> · one per saved post</sub></td>
-<td align="center"><sub><b>~30-45 notes</b> · one per theme</sub></td>
-<td align="center"><sub><b>1 note</b> · the map</sub></td>
+<td align="center"><sub>one per saved post · scales with your X corpus</sub></td>
+<td align="center"><sub>one per topic · ~30 by default (configurable)</sub></td>
+<td align="center"><sub>one note · the map</sub></td>
 </tr>
 <tr>
 <td valign="top">
@@ -413,8 +413,8 @@ flowchart TB
 
     subgraph KB["🧠 Obsidian knowledge base"]
         direction TB
-        ItemsMd["📄 items/*.md<br/>~1k+ notes"]
-        TopicsMd["📑 topics/*.md<br/>~30-45 notes"]
+        ItemsMd["📄 items/*.md<br/>one note per post"]
+        TopicsMd["📑 topics/*.md<br/>one note per topic"]
         IndexMd["🗺️ _index.md"]
     end
 
