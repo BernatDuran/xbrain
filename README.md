@@ -68,48 +68,95 @@ own, you already have the raw material.
 A **three-layer wiki** inside your Obsidian vault. Each layer is denser than the
 one below it — read top-down for the map, or bottom-up for a single post.
 
-```mermaid
-flowchart LR
-    subgraph KB["🧠 Obsidian knowledge base"]
-        direction LR
+All three layers are markdown notes inside a single Obsidian vault, under
+`learnings/x-knowledge/`. Each layer is denser than the one below it: many
+posts → fewer topics → one index.
 
-        subgraph L1["📄 Items · ~1k+ notes"]
-            direction TB
-            I1>"Post 1<br/>summary · topics<br/>fetched article"]
-            I2>"Post 2"]
-            I3>"..."]
-            I4>"Post ~1k+"]
-        end
+<table>
+<tr>
+<th align="center" width="33%">📄 Items</th>
+<th align="center" width="33%">📑 Topics</th>
+<th align="center" width="34%">🗺️ Index</th>
+</tr>
+<tr>
+<td align="center"><sub><b>~1k+ notes</b> · one per saved post</sub></td>
+<td align="center"><sub><b>~30-45 notes</b> · one per theme</sub></td>
+<td align="center"><sub><b>1 note</b> · the map</sub></td>
+</tr>
+<tr>
+<td valign="top">
 
-        subgraph L2["📑 Topics · ~30-45 notes"]
-            direction TB
-            T1>"AI coding<br/>essay across<br/>231 posts"]
-            T2>"Software<br/>engineering"]
-            T3>"..."]
-        end
-
-        subgraph L3["🗺️ Index"]
-            direction TB
-            IDX>"_index.md<br/>the map<br/>across all topics"]
-        end
-
-        L1 ==>|grouped under| L2
-        L2 ==>|mapped from| L3
-    end
-
-    classDef item fill:#ede9fe,stroke:#7c3aed,color:#1f2937
-    classDef topic fill:#fef3c7,stroke:#d97706,color:#1f2937
-    classDef idx fill:#dcfce7,stroke:#16a34a,color:#1f2937
-    class I1,I2,I3,I4 item
-    class T1,T2,T3 topic
-    class IDX idx
+```text
+┌──────────────────┐
+│ Code Is Cheap... │
+│                  │
+│ @codestirring    │
+│ tags: ai-coding  │
+│                  │
+│ ▸ Summary        │
+│ ▸ Tweet text     │
+│ ▸ Linked article │
+│   (fetched in    │
+│    full)         │
+│                  │
+│ Temas:           │
+│  [[ai-coding]]   │
+│  [[software-..]] │
+└──────────────────┘
 ```
 
-Three layers, increasingly distilled:
+</td>
+<td valign="top">
 
-- **Items** — one note per saved X post: original text, fetched article, an LLM summary, and the topics it belongs to.
-- **Topics** — one note per theme: a synthesised essay across every post in that theme, plus links back to all of them.
-- **Index** — the map: every topic with its counts and links to everything.
+```text
+┌──────────────────┐
+│ ai-coding (299)  │
+│                  │
+│ ▸ Overview       │
+│   "The arc from  │
+│    vibe coding   │
+│    to agent      │
+│    orchestration │
+│    over 16 mo."  │
+│                  │
+│ ▸ Primary (103)  │
+│   - [[post 1]]   │
+│   - [[post 2]]   │
+│                  │
+│ ▸ Also relevant  │
+│   (196)          │
+└──────────────────┘
+```
+
+</td>
+<td valign="top">
+
+```text
+┌──────────────────┐
+│ XBrain           │
+│                  │
+│ ▸ Resumen        │
+│   1884 items     │
+│   1123 bookmarks │
+│   761 own tweets │
+│                  │
+│ ▸ Temas          │
+│   [[ai-coding]]  │
+│         (299)    │
+│   [[ai-industry]]│
+│         (225)    │
+│   ...            │
+└──────────────────┘
+```
+
+</td>
+</tr>
+<tr>
+<td valign="top"><sub>The original post, the linked article fetched and stored inline, an LLM summary, and the topics it belongs to.</sub></td>
+<td valign="top"><sub>A synthesised essay across every post in this theme — where your thinking started, how it moved — plus links back to every post.</sub></td>
+<td valign="top"><sub>Every topic ranked by size, links to everything. Open this first.</sub></td>
+</tr>
+</table>
 
 ### Layer 1 — Items
 
@@ -353,17 +400,13 @@ flowchart TB
     E3 --> E4["④ enrich"]
     E4 --> E5["⑤ topics"]
     E5 --> E6["⑥ generate"]
-    E6 --> W[["🧠 Obsidian<br/>knowledge base"]]
+    E6 --> KB[["🧠 Obsidian<br/>knowledge base"]]
 
     E1 -.->|writes| Items[("data/items.json")]
     E2 -.->|mutates| Items
     E3 -.->|writes| Vy[("data/vocab.yaml")]
     E4 -.->|mutates| Items
     E5 -.->|writes| Tj[("data/topics.json")]
-
-    Vy -.->|reads| E4
-    Vy -.->|reads| E5
-    Tj -.->|reads| E6
 
     classDef stage fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#1f2937
     classDef artifact fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#1f2937
@@ -372,25 +415,19 @@ flowchart TB
     class E1,E2,E3,E4,E5,E6 stage
     class Items,Vy,Tj artifact
     class X ext
-    class W wiki
+    class KB wiki
 ```
 
 Six stages, top to bottom. The chain on the left is the order of execution;
-the artifacts on the right are the `data/` files each stage produces and
-consumes.
+the cylinders on the right are the `data/` files each stage writes. The hub
+of all of them is `data/items.json` — three stages mutate it, every later
+stage reads it. `vocab.yaml` (the closed taxonomy) is read by `enrich`,
+`topics` and `generate`. `topics.json` (the synthesised overviews) is read
+by `generate`.
 
-- **`data/items.json`** — the source of truth: every saved post with its
-  fetched article, summary, topics. Three stages mutate it (`extract`,
-  `fetch`, `enrich`); every later stage reads it.
-- **`data/vocab.yaml`** — the closed topic taxonomy. Written by `③ vocab`;
-  read by `④ enrich` (to assign topics from it), `⑤ topics` (to know
-  which topic pages to synthesise) and `⑥ generate` (for the tags).
-- **`data/topics.json`** — the synthesised topic-page overviews. Written
-  by `⑤ topics`; read by `⑥ generate`.
-
-The Obsidian knowledge base is the final render — `⑥ generate` turns
-`items.json` into `items/*.md` notes, `topics.json` into `topics/*.md`
-pages, and writes the index. Delete the whole vault and `xbrain generate`
+The Obsidian knowledge base is the final render: `⑥ generate` turns
+`items.json` into `items/*.md` notes and `topics.json` into `topics/*.md`
+pages inside your vault. Delete the whole vault and `xbrain generate`
 rebuilds it bit-for-bit from `data/`.
 
 | # | Stage | Mechanical / LLM | Writes to | What it does |
