@@ -517,11 +517,44 @@ subscription token — instead the LLM work is **pluggable**, with three modes,
 selected by `--executor` or `config.toml`'s `[enrich].executor`:
 
 ```mermaid
-flowchart TB
-    S["LLM stages<br/>vocab · enrich · topics"]
-    S --> CC["<b>claude-code</b> (default)<br/>exports a worksheet → a Claude Code<br/>session fills it → <code>--apply</code><br/>no API key · no cost"]
-    S --> API["<b>api</b><br/>calls the Anthropic API directly,<br/>unattended<br/>needs ANTHROPIC_API_KEY · pay per token"]
-    S --> MAN["<b>manual</b><br/>exports the same worksheet,<br/>filled in by hand<br/>no API key · no cost"]
+%%{init: {
+  'theme': 'base',
+  'themeVariables': {
+    'fontFamily': 'ui-sans-serif, system-ui, -apple-system, sans-serif',
+    'fontSize': '13px',
+    'background': 'transparent'
+  }
+}}%%
+sequenceDiagram
+    actor U as You
+    participant CLI as xbrain CLI
+    participant LLM as LLM
+    participant Data as data/
+
+    U->>CLI: xbrain enrich --executor <mode>
+
+    alt executor = claude-code (default)
+        CLI->>Data: write enrich-worksheet.json
+        Note over U,LLM: You open a Claude Code session;<br/>the enriching-x-knowledge skill fills<br/>the worksheet's judgments[]
+        U->>CLI: xbrain enrich --apply worksheet.json
+        CLI->>CLI: validate (rubrics + guardrails)
+        CLI->>Data: write items.json (enriched)
+
+    else executor = api (unattended)
+        loop for each pending item
+            CLI->>LLM: prompt(rubric + item + vocab)
+            LLM-->>CLI: { summary, primary_topic, topics[] }
+            CLI->>CLI: validate (rubrics + guardrails)
+        end
+        CLI->>Data: write items.json (enriched)
+
+    else executor = manual
+        CLI->>Data: write enrich-worksheet.json
+        Note over U: You fill the worksheet by hand
+        U->>CLI: xbrain enrich --apply worksheet.json
+        CLI->>CLI: validate (rubrics + guardrails)
+        CLI->>Data: write items.json (enriched)
+    end
 ```
 
 | Mode | How | Cost | When |
