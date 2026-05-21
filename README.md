@@ -432,7 +432,7 @@ flowchart TB
     E6 ==> TopicsMd
     E6 ==> IndexMd
 
-    classDef stage fill:#7c3aed,stroke:#5b21b6,stroke-width:1.5px,color:#fff,font-weight:500
+    classDef stage fill:#1e293b,stroke:#475569,stroke-width:1.5px,color:#fff,font-weight:500
     classDef artifact fill:#fef3c7,stroke:#b45309,stroke-width:1.5px,color:#451a03
     classDef ext fill:#0ea5e9,stroke:#0369a1,stroke-width:1.5px,color:#fff,font-weight:500
     classDef wiki fill:#d1fae5,stroke:#047857,stroke-width:1.5px,color:#064e3b
@@ -548,8 +548,8 @@ Claude Code is open, you want to enrich a batch.
     'fontFamily':'ui-sans-serif, system-ui, sans-serif',
     'fontSize':'13px',
     'background':'transparent',
-    'actorBkg':'#7c3aed',
-    'actorBorder':'#5b21b6',
+    'actorBkg':'#1e293b',
+    'actorBorder':'#475569',
     'actorTextColor':'#fff',
     'actorLineColor':'#cbd5e1',
     'noteBkgColor':'#fef3c7',
@@ -601,8 +601,8 @@ you pay per token.
     'fontFamily':'ui-sans-serif, system-ui, sans-serif',
     'fontSize':'13px',
     'background':'transparent',
-    'actorBkg':'#7c3aed',
-    'actorBorder':'#5b21b6',
+    'actorBkg':'#1e293b',
+    'actorBorder':'#475569',
     'actorTextColor':'#fff',
     'actorLineColor':'#cbd5e1',
     'noteBkgColor':'#fef3c7',
@@ -613,7 +613,7 @@ you pay per token.
     'labelBoxBkgColor':'#0ea5e9',
     'labelBoxBorderColor':'#0369a1',
     'labelTextColor':'#fff',
-    'loopTextColor':'#5b21b6',
+    'loopTextColor':'#475569',
     'sequenceNumberColor':'#fff'
   }
 }}%%
@@ -654,8 +654,8 @@ that need editorial judgment beyond what the rubric captures.
     'fontFamily':'ui-sans-serif, system-ui, sans-serif',
     'fontSize':'13px',
     'background':'transparent',
-    'actorBkg':'#7c3aed',
-    'actorBorder':'#5b21b6',
+    'actorBkg':'#1e293b',
+    'actorBorder':'#475569',
     'actorTextColor':'#fff',
     'actorLineColor':'#cbd5e1',
     'noteBkgColor':'#fef3c7',
