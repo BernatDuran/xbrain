@@ -514,65 +514,110 @@ Run `uv run xbrain <command> --help` for the full option list.
 
 `vocab`, `enrich` and `topics` need an LLM. XBrain never embeds a Claude
 subscription token — instead the LLM work is **pluggable**, with three modes,
-selected by `--executor` or `config.toml`'s `[enrich].executor`:
+selected by `--executor` or `config.toml`'s `[enrich].executor`.
+
+| Mode | Cost | When you reach for it |
+|------|------|----------------------|
+| **`claude-code`** *(default)* | None | You have Claude Code open. Day-to-day enrichment. |
+| **`api`** | Pay per token (cheap on Haiku) | Unattended runs (cron, CI, future `/schedule`). No human in the loop. |
+| **`manual`** | None | Spot fixes, hand-curating a few items, fallback when the others fail. |
+
+All three modes end the same way — `xbrain` validates the judgments against the
+rubrics and `guardrails.yaml`, then writes them into `data/items.json`. They
+only differ in *how the LLM judgment gets produced*.
+
+### Mode 1 — `claude-code` *(default)*
+
+**What it does.** The CLI exports a worksheet (`data/enrich-worksheet.json`).
+You open a Claude Code session, the `enriching-x-knowledge` skill (in
+`.claude/skills/`) fills the worksheet's judgments using the rubrics. You run
+`xbrain enrich --apply` to validate and persist.
+
+**Why this mode exists.** Most XBrain users already have a Claude Code
+subscription. Spending another budget on the Anthropic API to do the same
+work is wasteful — this mode lets the existing subscription do the LLM work
+at zero extra cost.
+
+**When to use it.** Default for interactive runs. You are at your machine,
+Claude Code is open, you want to enrich a batch.
 
 ```mermaid
-%%{init: {
-  'theme': 'base',
-  'themeVariables': {
-    'fontFamily': 'ui-sans-serif, system-ui, -apple-system, sans-serif',
-    'fontSize': '13px',
-    'background': 'transparent'
-  }
-}}%%
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'13px','background':'transparent'}}}%%
 sequenceDiagram
     actor U as You
     participant CLI as xbrain CLI
-    participant LLM as LLM
+    participant CC as Claude Code session
     participant Data as data/
 
-    U->>CLI: xbrain enrich --executor MODE
+    U->>CLI: xbrain enrich --executor claude-code
+    CLI->>Data: write enrich-worksheet.json
+    Data-->>CC: open the worksheet
+    CC->>CC: fill judgments using the skill
+    CC->>Data: save filled worksheet
+    U->>CLI: xbrain enrich --apply worksheet.json
+    CLI->>CLI: validate against rubrics and guardrails
+    CLI->>Data: write items.json with enrichment
+```
 
-    alt executor = claude-code (default)
-        CLI->>Data: write enrich-worksheet.json
-        Note over U,LLM: A Claude Code session fills the worksheet judgments
-        U->>CLI: xbrain enrich --apply worksheet.json
+### Mode 2 — `api`
+
+**What it does.** The CLI loops over every pending item, calls the Anthropic
+API once per item with the rubric, item content and vocab. Each judgment is
+validated, then a single store write at the end persists everything.
+
+**Why this mode exists.** The `claude-code` mode needs a human present. A
+scheduled job, a cron, or a CI run cannot pop open a Claude Code session.
+The `api` mode runs end-to-end with zero interaction — the trade is that
+you pay per token.
+
+**When to use it.** Unattended runs. The future `/schedule` integration
+([#7](https://github.com/VGonPa/xbrain/issues/7)) builds on this mode.
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'13px','background':'transparent'}}}%%
+sequenceDiagram
+    actor U as You
+    participant CLI as xbrain CLI
+    participant API as Anthropic API
+    participant Data as data/
+
+    U->>CLI: xbrain enrich --executor api
+    loop for each pending item
+        CLI->>API: prompt with rubric, item and vocab
+        API-->>CLI: summary, primary topic, topics
         CLI->>CLI: validate against rubrics and guardrails
-        CLI->>Data: write items.json with enrichment
-
-    else executor = api (unattended)
-        loop for each pending item
-            CLI->>LLM: prompt with rubric, item and vocab
-            LLM-->>CLI: summary, primary topic, topics
-            CLI->>CLI: validate against rubrics and guardrails
-        end
-        CLI->>Data: write items.json with enrichment
-
-    else executor = manual
-        CLI->>Data: write enrich-worksheet.json
-        Note over U: You fill the worksheet by hand
-        U->>CLI: xbrain enrich --apply worksheet.json
-        CLI->>CLI: validate against rubrics and guardrails
-        CLI->>Data: write items.json with enrichment
     end
+    CLI->>Data: write items.json with enrichment
 ```
 
-| Mode | How | Cost | When |
-|------|-----|------|------|
-| `claude-code` | `xbrain enrich` writes a JSON worksheet; a Claude Code session reads it, fills the `judgments` array, then `xbrain enrich --apply <file>` validates and applies it. | None | Default. You have Claude Code open. |
-| `api` | `xbrain enrich --executor api` calls the Anthropic API and applies the result in one shot. | Pay per token (cheap on Haiku). | Unattended runs, CI, no session. |
-| `manual` | Same worksheet as `claude-code`, filled by a person. | None | Fallback / spot fixes. |
+### Mode 3 — `manual`
 
-The worksheet flow, end-to-end:
+**What it does.** Identical worksheet plumbing as `claude-code`, but you fill
+the judgments by hand instead of letting an LLM do it.
 
-```bash
-uv run xbrain enrich --executor claude-code   # writes data/enrich-worksheet.json
-# → a Claude Code session fills the `judgments` array
-uv run xbrain enrich --apply data/enrich-worksheet.json
+**Why this mode exists.** Two reasons. First, escape hatch: if the LLM keeps
+producing wrong judgments for a corner of the corpus, you can fix those items
+yourself without rewriting the rubric. Second, the same worksheet format means
+the manual path is the lowest common denominator the system always supports —
+no API, no Claude Code, just JSON in / JSON out.
+
+**When to use it.** Spot fixes, corrections, hand-curating a handful of items
+that need editorial judgment beyond what the rubric captures.
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'13px','background':'transparent'}}}%%
+sequenceDiagram
+    actor U as You
+    participant CLI as xbrain CLI
+    participant Data as data/
+
+    U->>CLI: xbrain enrich --executor manual
+    CLI->>Data: write enrich-worksheet.json
+    Note over U: You fill the worksheet by hand
+    U->>CLI: xbrain enrich --apply worksheet.json
+    CLI->>CLI: validate against rubrics and guardrails
+    CLI->>Data: write items.json with enrichment
 ```
-
-The `enriching-x-knowledge` Claude Code skill (in `.claude/skills/`) drives this
-flow for all three stages.
 
 ---
 
