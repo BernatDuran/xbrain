@@ -201,12 +201,17 @@ def test_content_source_failure_requires_failure_reason():
 def test_content_source_legacy_failure_without_reason_buckets_as_transient():
     """A pre-#20 record with `ok=False, failure_reason=None` (e.g. HTTP 429 that
     the old code did not categorise) migrates losslessly: the `error` text is
-    preserved, and `failure_reason` is bucketed under `timeout` so:
+    preserved, and `failure_reason` is bucketed under `unknown_error` (a
+    transient retry-worthy reason added in the #20 review pass) so:
 
     1. The wiki still renders a broken-link line.
     2. The next `fetch_pending` run auto-retries the record (issue #19
-       retries `timeout`/`dns_error`), giving it one chance to land on a
-       proper category rather than staying invisibly stuck.
+       retries `timeout`/`dns_error`/`unknown_error`), giving it one chance
+       to land on a proper category rather than staying invisibly stuck.
+
+    `unknown_error` is preferred over `timeout` for honesty — "timeout"
+    would mislabel 429s / SSL handshake failures / other distinct error
+    modes that the legacy code dumped without a reason.
     """
     from xbrain.models import ContentSourceAdapter, ContentSourceFailure
 
@@ -224,7 +229,7 @@ def test_content_source_legacy_failure_without_reason_buckets_as_transient():
         }
     )
     assert isinstance(src, ContentSourceFailure)
-    assert src.failure_reason == "timeout"
+    assert src.failure_reason == "unknown_error"
     assert src.error == "HTTP 429: Too Many Requests"
     assert src.http_status == 429
 

@@ -540,8 +540,8 @@ def test_fetch_pending_skips_transient_failures_outside_date_range():
 
 def test_should_refetch_legacy_uncategorized_failure_migrates_to_transient():
     """A pre-#20 record with `ok=False, failure_reason=None` (anomalous —
-    uncategorised) is normalised on read to `failure_reason="timeout"` by
-    the legacy-shape validator, so the next `fetch_pending` run retries it
+    uncategorised) is normalised on read to `failure_reason="unknown_error"`
+    by the legacy-shape validator, so the next `fetch_pending` run retries it
     automatically. This preserves the #19 behaviour (uncategorised failures
     get one auto-retry) under the new tagged-union shape, even though after
     the refactor a new failure record can no longer have a `None` reason.
@@ -558,7 +558,9 @@ def test_should_refetch_legacy_uncategorized_failure_migrates_to_transient():
         }
     )
     assert isinstance(src, ContentSourceFailure)
-    assert src.failure_reason == "timeout"  # migrator picked the transient bucket
+    # migrator picked the transient `unknown_error` bucket (not `timeout`,
+    # which would mislabel the actual cause).
+    assert src.failure_reason == "unknown_error"
     c = Content(fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc), sources=[src])
     assert _should_refetch(c, force=False) is True
 
@@ -602,3 +604,46 @@ def test_fetch_pending_replaces_sources_does_not_append():
     src = store["1"].content.sources[0]
     assert isinstance(src, ContentSourceSuccess)
     assert src.text
+
+
+def test_extractor_exception_persists_as_transient_failure():
+    """An uncaught extractor exception must persist as a TRANSIENT failure
+    (`unknown_error`), so `_should_refetch` retries it on the next run.
+
+    Regression guard: pre-#20 the bare-except in fetch_item wrote
+    `failure_reason=None`, and `_should_refetch` (post-#19) treated `None`
+    as transient. After #20 introduced the discriminated union, the field
+    became required — the temporary fix bucketed to `empty_content`, which
+    is TERMINAL and silently broke #19's invariant. This test pins the
+    correct behaviour: uncaught exceptions stay self-healing.
+    """
+
+    def _raising(url):
+        raise RuntimeError("network blip simulated")
+
+    content = fetch_item(_item("1", ["https://example.com/p"]), _raising)
+    assert len(content.sources) == 1
+    failure = content.sources[0]
+    assert isinstance(failure, ContentSourceFailure)
+    assert failure.failure_reason == "unknown_error"
+    assert "network blip" in failure.error
+    # And `_should_refetch` correctly retries on the next run
+    assert _should_refetch(content, force=False) is True
+
+
+def test_content_source_from_uncategorised_failure_is_transient():
+    """`_content_source_from` is the public helper that maps an in-memory
+    `FetchFailure` to a persisted `ContentSourceFailure`. A `FetchFailure`
+    with `failure_reason=None` must fall back to `unknown_error` (transient),
+    NOT `empty_content` (terminal).
+    """
+    from xbrain.fetch import FetchFailure, _content_source_from
+
+    failure_result = FetchFailure(
+        failure_reason=None,
+        error="something went wrong",
+        attempts=1,
+    )
+    src = _content_source_from("https://example.com/p", failure_result)
+    assert isinstance(src, ContentSourceFailure)
+    assert src.failure_reason == "unknown_error"

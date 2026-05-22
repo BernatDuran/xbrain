@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
+
+logger = logging.getLogger(__name__)
 
 # The set of enrichment executor names — one source of truth shared by the
 # data model, the config loader and the enrichment phase.
@@ -25,6 +28,10 @@ FailureReason = Literal[
     "dns_error",
     "js_required",
     "empty_content",
+    "unknown_error",  # catch-all for uncategorised failures (e.g. an extractor
+    # exception we did not classify). Transient by default — `_should_refetch`
+    # in fetch.py treats it as retry-worthy on the next run, mirroring the
+    # pre-#20 behaviour where `failure_reason=None` meant transient.
 ]
 
 # The set of content-source kinds — one source of truth shared by the data
@@ -127,14 +134,18 @@ def _normalise_legacy_content_source(value: Any) -> Any:
     if "outcome" in value:
         return value
     if "ok" not in value:
+        # Include enough context to find the offending record in a big file.
+        url = value.get("url", "<unknown URL>")
         raise ValueError(
-            "ContentSource record missing both 'outcome' and 'ok' discriminator; "
-            "the record cannot be safely categorised as success or failure."
+            f"ContentSource record missing both 'outcome' and 'ok' "
+            f"discriminator (url={url!r}); the record cannot be safely "
+            "categorised as success or failure."
         )
     payload = {k: v for k, v in value.items() if k != "ok"}
     payload["outcome"] = "success" if value["ok"] else "failure"
     if payload["outcome"] == "success":
-        # success has no failure_reason / error
+        # success has no failure_reason / error — drop if present so the
+        # re-dumped record is clean (pydantic ignores extras anyway).
         payload.pop("failure_reason", None)
         payload.pop("error", None)
     else:
@@ -144,18 +155,19 @@ def _normalise_legacy_content_source(value: Any) -> Any:
         # Legacy records sometimes recorded a failure (`ok=False`) with no
         # categorised `failure_reason` (e.g. an HTTP 429 that the old code
         # did not map). The new variant requires the field — bucket those
-        # under `timeout` so:
-        #   1. The migration is lossless: the original explanation is
-        #      preserved in `error`, and the wiki still renders a
-        #      broken-link line.
-        #   2. The next run of `fetch_pending` retries the record (issue
-        #      #19 auto-retries `timeout` and `dns_error`), giving it one
-        #      chance to land on a categorised reason rather than staying
-        #      invisibly stuck. Uncategorised failures are almost always
-        #      transient-ish (rate-limits, fleeting upstream errors); a
-        #      single retry without `--force` is the right default.
+        # under `unknown_error` (a transient retry-worthy reason added in
+        # the #20 review pass, see `xbrain.fetch._TRANSIENT_FAILURES`).
+        # `unknown_error` is preferable to `timeout` here because the
+        # actual cause is unknown — "timeout" would be a lie that hides
+        # 429s, SSL handshake failures, and other distinct error modes.
         if payload.get("failure_reason") in (None, ""):
-            payload["failure_reason"] = "timeout"
+            payload["failure_reason"] = "unknown_error"
+            logger.warning(
+                "Legacy ContentSource without failure_reason bucketed as "
+                "'unknown_error' (url=%s). The next `fetch_pending` run will "
+                "retry it; use `--force` to suppress the retry.",
+                value.get("url", "<unknown URL>"),
+            )
     return payload
 
 

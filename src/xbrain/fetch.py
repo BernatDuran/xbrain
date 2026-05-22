@@ -60,8 +60,9 @@ class FetchFailure(BaseModel):
 
     `failure_reason` may be `None` when the failure has not yet been
     categorised (e.g. an uncaught network error). Callers that persist the
-    result will fall back to ``"empty_content"`` to satisfy the required
-    field on `ContentSourceFailure`.
+    result fall back to ``"unknown_error"`` — a transient bucket — to satisfy
+    the required field on `ContentSourceFailure` while preserving the
+    "uncategorised = retry-worthy" invariant from #19.
     """
 
     failure_reason: FailureReason | None = None
@@ -251,7 +252,11 @@ def _content_source_from(url: str, result: FetchResult) -> ContentSource:
         url=url,
         error=result.error,
         http_status=result.http_status,
-        failure_reason=result.failure_reason or "empty_content",
+        # `unknown_error` (a transient bucket) — NOT `empty_content` (terminal).
+        # An uncategorised failure must stay self-healing on the next
+        # `fetch_pending` run, mirroring the #19 invariant that a missing
+        # `failure_reason` was retry-worthy by default.
+        failure_reason=result.failure_reason or "unknown_error",
         attempts=result.attempts,
     )
 
@@ -274,7 +279,11 @@ def fetch_item(item: Item, extractor: ArticleExtractor = extract_article) -> Con
                 ContentSourceFailure(
                     kind="external_article",
                     url=url,
-                    failure_reason="empty_content",
+                    # Transient bucket: an uncaught extractor exception is
+                    # almost always something that may succeed on the next
+                    # run (network blip, intermittent SSL, …). #19 relied on
+                    # this being retry-worthy; preserve that.
+                    failure_reason="unknown_error",
                     error=f"Error al descargar el artículo: {exc}",
                     attempts=1,
                 )
@@ -288,7 +297,13 @@ def fetch_item(item: Item, extractor: ArticleExtractor = extract_article) -> Con
 # Failure reasons that justify an automatic retry on the next run. Everything
 # else (`not_found`, `forbidden`, `paywall`, `js_required`, `empty_content`)
 # is treated as terminal — only `--force` re-fetches those.
-_TRANSIENT_FAILURES: frozenset[FailureReason] = frozenset({"timeout", "dns_error"})
+#
+# `unknown_error` is the uncategorised-failure bucket — an extractor exception
+# or any failure path that did not pin a specific reason. We retry by default:
+# the alternative is silently classifying every uncaught failure as terminal,
+# which would break the #19 invariant ("a failure without a categorised reason
+# is anomalous; re-fetching gives it a chance to land on a known result").
+_TRANSIENT_FAILURES: frozenset[FailureReason] = frozenset({"timeout", "dns_error", "unknown_error"})
 
 
 def _should_refetch(content: Content | None, force: bool) -> bool:

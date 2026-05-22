@@ -27,6 +27,7 @@ _FAILURE_ES: dict[FailureReason, str] = {
     "dns_error": "dominio no resuelto",
     "js_required": "requiere JavaScript",
     "empty_content": "sin contenido extraíble",
+    "unknown_error": "error desconocido",
 }
 
 
