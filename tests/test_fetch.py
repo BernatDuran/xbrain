@@ -4,7 +4,9 @@ import urllib.error
 from datetime import datetime, timezone
 
 from xbrain.fetch import (
+    FetchFailure,
     FetchResult,
+    FetchSuccess,
     _categorize_url_error,
     _probe_status,
     _reason_for_status,
@@ -13,7 +15,14 @@ from xbrain.fetch import (
     fetch_pending,
     trafilatura_extract,
 )
-from xbrain.models import Author, Content, ContentSource, Item, Link
+from xbrain.models import (
+    Author,
+    Content,
+    ContentSourceFailure,
+    ContentSourceSuccess,
+    Item,
+    Link,
+)
 
 
 def _item(item_id: str, urls: list[str]) -> Item:
@@ -30,7 +39,7 @@ def _item(item_id: str, urls: list[str]) -> Item:
 
 
 def _fake_extractor(url: str) -> FetchResult:
-    return FetchResult(title="Título", text=f"cuerpo de {url}", http_status=200)
+    return FetchSuccess(title="Título", text=f"cuerpo de {url}", http_status=200)
 
 
 def test_reason_for_status_maps_http_codes():
@@ -64,9 +73,9 @@ def test_trafilatura_extract_success():
         extract=lambda html: "el cuerpo",
         prober=lambda url: (None, None, ""),
     )
+    assert isinstance(result, FetchSuccess)
     assert result.text == "el cuerpo"
     assert result.http_status == 200
-    assert result.failure_reason is None
 
 
 def test_trafilatura_extract_empty_content_when_no_article():
@@ -76,7 +85,7 @@ def test_trafilatura_extract_empty_content_when_no_article():
         extract=lambda html: None,
         prober=lambda url: (None, None, ""),
     )
-    assert result.text is None
+    assert isinstance(result, FetchFailure)
     assert result.failure_reason == "empty_content"
 
 
@@ -87,15 +96,17 @@ def test_trafilatura_extract_probes_when_download_fails():
         extract=lambda html: None,
         prober=lambda url: (404, "not_found", "HTTP 404"),
     )
+    assert isinstance(result, FetchFailure)
     assert result.http_status == 404
     assert result.failure_reason == "not_found"
 
 
 def test_fetch_item_extracts_external_articles():
     content = fetch_item(_item("1", ["https://example.com/p"]), _fake_extractor)
-    assert content.sources[0].kind == "external_article"
-    assert content.sources[0].ok is True
-    assert content.sources[0].text == "cuerpo de https://example.com/p"
+    source = content.sources[0]
+    assert isinstance(source, ContentSourceSuccess)
+    assert source.kind == "external_article"
+    assert source.text == "cuerpo de https://example.com/p"
 
 
 def test_fetch_item_skips_x_urls():
@@ -107,11 +118,12 @@ def test_fetch_item_skips_x_urls():
 def test_fetch_item_records_failure_evidence():
     content = fetch_item(
         _item("1", ["https://example.com/p"]),
-        lambda url: FetchResult(http_status=404, failure_reason="not_found", error="HTTP 404"),
+        lambda url: FetchFailure(http_status=404, failure_reason="not_found", error="HTTP 404"),
     )
-    assert content.sources[0].ok is False
-    assert content.sources[0].http_status == 404
-    assert content.sources[0].failure_reason == "not_found"
+    source = content.sources[0]
+    assert isinstance(source, ContentSourceFailure)
+    assert source.http_status == 404
+    assert source.failure_reason == "not_found"
 
 
 def test_fetch_item_isolates_extractor_exception():
@@ -120,15 +132,16 @@ def test_fetch_item_isolates_extractor_exception():
 
     content = fetch_item(_item("1", ["https://example.com/p"]), _raising)
     assert len(content.sources) == 1
-    assert content.sources[0].ok is False
-    assert "boom" in content.sources[0].error
+    source = content.sources[0]
+    assert isinstance(source, ContentSourceFailure)
+    assert "boom" in (source.error or "")
 
 
 def test_fetch_item_preserves_non_external_sources_on_refetch():
     item = _item("1", ["https://example.com/p"])
     item.content = Content(
         fetched_at=datetime.now(timezone.utc),
-        sources=[ContentSource(kind="thread", url="u", text="hilo", ok=True)],
+        sources=[ContentSourceSuccess(kind="thread", url="u", text="hilo")],
     )
     content = fetch_item(item, _fake_extractor)
     kinds = {s.kind for s in content.sources}
@@ -206,54 +219,56 @@ def test_firecrawl_extract_parses_markdown(monkeypatch):
         return _Resp(json.dumps(payload).encode())
 
     result = _firecrawl_extract("https://e.com/a", opener=opener)
-    assert result is not None
+    assert isinstance(result, FetchSuccess)
     assert result.text == "el cuerpo"
     assert result.title == "T"
 
 
 def test_extract_article_falls_back_to_firecrawl_on_js_required():
-    from xbrain.fetch import FetchResult, extract_article
+    from xbrain.fetch import extract_article
 
     def primary(url):
-        return FetchResult(failure_reason="js_required", error="js", attempts=1)
+        return FetchFailure(failure_reason="js_required", error="js", attempts=1)
 
     def firecrawl(url):
-        return FetchResult(text="rescatado por firecrawl", attempts=1)
+        return FetchSuccess(text="rescatado por firecrawl", attempts=1)
 
     result = extract_article("https://e.com/a", primary=primary, firecrawl=firecrawl)
+    assert isinstance(result, FetchSuccess)
     assert result.text == "rescatado por firecrawl"
     assert result.attempts == 2
 
 
 def test_extract_article_keeps_evidence_when_firecrawl_unavailable():
-    from xbrain.fetch import FetchResult, extract_article
+    from xbrain.fetch import extract_article
 
     def primary(url):
-        return FetchResult(failure_reason="js_required", error="js", attempts=1)
+        return FetchFailure(failure_reason="js_required", error="js", attempts=1)
 
     def firecrawl(url):
         return None
 
     result = extract_article("https://e.com/a", primary=primary, firecrawl=firecrawl)
-    assert result.text is None
+    assert isinstance(result, FetchFailure)
     assert result.failure_reason == "js_required"
     assert result.attempts == 1
 
 
 def test_extract_article_does_not_retry_hard_failures():
-    from xbrain.fetch import FetchResult, extract_article
+    from xbrain.fetch import extract_article
 
     # A 404 is definitive — Firecrawl must not even be called.
     calls = []
 
     def primary(url):
-        return FetchResult(http_status=404, failure_reason="not_found", attempts=1)
+        return FetchFailure(http_status=404, failure_reason="not_found", attempts=1)
 
     def firecrawl(url):
         calls.append(url)
-        return FetchResult(text="x")
+        return FetchSuccess(text="x")
 
     result = extract_article("https://e.com/a", primary=primary, firecrawl=firecrawl)
+    assert isinstance(result, FetchFailure)
     assert result.failure_reason == "not_found"
     assert calls == []
 
@@ -313,8 +328,7 @@ def test_firecrawl_extract_returns_error_result_when_opener_raises(monkeypatch):
         raise urllib.error.URLError("network down")
 
     result = _firecrawl_extract("https://e.com/a", opener=opener)
-    assert result is not None
-    assert result.text is None
+    assert isinstance(result, FetchFailure)
     assert "Firecrawl falló" in (result.error or "")
 
 
@@ -330,23 +344,22 @@ def test_firecrawl_extract_detects_error_envelope(monkeypatch):
         return _CtxResp(json.dumps(payload).encode())
 
     result = _firecrawl_extract("https://e.com/a", opener=opener)
-    assert result is not None
-    assert result.text is None
+    assert isinstance(result, FetchFailure)
     assert "rate limited" in (result.error or "")
 
 
 def test_extract_article_merges_firecrawl_error_when_both_fail():
-    from xbrain.fetch import FetchResult, extract_article
+    from xbrain.fetch import extract_article
 
     def primary(url):
-        return FetchResult(failure_reason="js_required", error="js", attempts=1)
+        return FetchFailure(failure_reason="js_required", error="js", attempts=1)
 
     def firecrawl(url):
         # Firecrawl reachable but returned no text — carries its own evidence.
-        return FetchResult(error="Firecrawl no devolvió contenido.", attempts=1)
+        return FetchFailure(error="Firecrawl no devolvió contenido.", attempts=1)
 
     result = extract_article("https://e.com/a", primary=primary, firecrawl=firecrawl)
-    assert result.text is None
+    assert isinstance(result, FetchFailure)
     assert result.attempts == 2
     assert "Firecrawl: Firecrawl no devolvió contenido." in (result.error or "")
 
@@ -354,19 +367,26 @@ def test_extract_article_merges_firecrawl_error_when_both_fail():
 # --------------------------------------------------------------------- #19: transient retry
 
 
-def _content_with_source(*, ok: bool, failure_reason=None, kind="external_article", text=None):
-    """Helper: build a Content with a single ContentSource of the requested shape."""
+def _content_with_source(
+    *, ok: bool, failure_reason="timeout", kind="external_article", text=None
+):
+    """Helper: build a Content with a single ContentSource of the requested shape.
+
+    `ok=True` builds a `ContentSourceSuccess` (text required); `ok=False`
+    builds a `ContentSourceFailure` (failure_reason required, default
+    ``"timeout"`` — the transient bucket).
+    """
+    if ok:
+        source = ContentSourceSuccess(
+            kind=kind, url="https://example.com/p", text=text or "body"
+        )
+    else:
+        source = ContentSourceFailure(
+            kind=kind, url="https://example.com/p", failure_reason=failure_reason
+        )
     return Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
-        sources=[
-            ContentSource(
-                kind=kind,
-                url="https://example.com/p",
-                ok=ok,
-                failure_reason=failure_reason,
-                text=text,
-            )
-        ],
+        sources=[source],
     )
 
 
@@ -433,8 +453,12 @@ def test_should_skip_mixed_transient_and_terminal():
     c = Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
         sources=[
-            ContentSource(kind="external_article", url="a", ok=False, failure_reason="timeout"),
-            ContentSource(kind="external_article", url="b", ok=False, failure_reason="not_found"),
+            ContentSourceFailure(
+                kind="external_article", url="a", failure_reason="timeout"
+            ),
+            ContentSourceFailure(
+                kind="external_article", url="b", failure_reason="not_found"
+            ),
         ],
     )
     assert _should_refetch(c, force=False) is False
@@ -445,8 +469,10 @@ def test_should_skip_mixed_transient_and_success():
     c = Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
         sources=[
-            ContentSource(kind="external_article", url="a", ok=False, failure_reason="timeout"),
-            ContentSource(kind="external_article", url="b", ok=True, text="got it"),
+            ContentSourceFailure(
+                kind="external_article", url="a", failure_reason="timeout"
+            ),
+            ContentSourceSuccess(kind="external_article", url="b", text="got it"),
         ],
     )
     assert _should_refetch(c, force=False) is False
@@ -457,10 +483,9 @@ def test_should_skip_only_x_sources():
     c = Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
         sources=[
-            ContentSource(
+            ContentSourceFailure(
                 kind="x_article",
                 url="https://x.com/i/article/1",
-                ok=False,
                 failure_reason="timeout",
             ),
         ],
@@ -484,7 +509,8 @@ def test_fetch_pending_retries_timeout_without_force():
     assert count == 1
     # The retry overwrote the failure with a fresh, successful source
     src = store["1"].content.sources[0]
-    assert src.ok and src.text is not None
+    assert isinstance(src, ContentSourceSuccess)
+    assert src.text
 
 
 def test_fetch_pending_skips_not_found_without_force():
@@ -493,7 +519,8 @@ def test_fetch_pending_skips_not_found_without_force():
     assert count == 0
     # The recorded failure is preserved untouched
     src = store["1"].content.sources[0]
-    assert (not src.ok) and src.failure_reason == "not_found"
+    assert isinstance(src, ContentSourceFailure)
+    assert src.failure_reason == "not_found"
 
 
 def test_fetch_pending_force_refetches_not_found():
@@ -513,19 +540,38 @@ def test_fetch_pending_skips_transient_failures_outside_date_range():
     )
     assert count == 0
     # And the recorded failure is preserved
-    assert store["1"].content.sources[0].failure_reason == "timeout"
+    src = store["1"].content.sources[0]
+    assert isinstance(src, ContentSourceFailure)
+    assert src.failure_reason == "timeout"
 
 
 # --- Additional fixes from PR #26 review pipeline ---
 
 
-def test_should_refetch_uncategorized_failure_treated_as_transient():
-    """A failure with `failure_reason=None` (default field, pre-Fase-2 records,
-    uncaught extractor exceptions) is treated as transient — re-fetching gives
-    those anomalous records a chance to land on a categorised result rather
-    than staying invisibly stuck under a default-skip policy.
+def test_should_refetch_legacy_uncategorized_failure_migrates_to_transient():
+    """A pre-#20 record with `ok=False, failure_reason=None` (anomalous —
+    uncategorised) is normalised on read to `failure_reason="timeout"` by
+    the legacy-shape validator, so the next `fetch_pending` run retries it
+    automatically. This preserves the #19 behaviour (uncategorised failures
+    get one auto-retry) under the new tagged-union shape, even though after
+    the refactor a new failure record can no longer have a `None` reason.
     """
-    c = _content_with_source(ok=False, failure_reason=None)
+    from xbrain.models import ContentSourceAdapter
+
+    src = ContentSourceAdapter.validate_python(
+        {
+            "kind": "external_article",
+            "url": "https://e.com/p",
+            "ok": False,
+            "failure_reason": None,
+            "error": "anomalous failure",
+        }
+    )
+    assert isinstance(src, ContentSourceFailure)
+    assert src.failure_reason == "timeout"  # migrator picked the transient bucket
+    c = Content(
+        fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc), sources=[src]
+    )
     assert _should_refetch(c, force=False) is True
 
 
@@ -538,16 +584,14 @@ def test_should_refetch_external_transient_alongside_xcom_source():
     c = Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
         sources=[
-            ContentSource(
+            ContentSourceFailure(
                 kind="external_article",
                 url="https://ext.com/a",
-                ok=False,
                 failure_reason="timeout",
             ),
-            ContentSource(
+            ContentSourceFailure(
                 kind="x_article",
                 url="https://x.com/i/article/9",
-                ok=False,
                 failure_reason="not_found",
             ),
         ],
@@ -568,4 +612,5 @@ def test_fetch_pending_replaces_sources_does_not_append():
     assert len(store["1"].content.sources) == 1
     # And the lone source is now the fresh successful fetch
     src = store["1"].content.sources[0]
-    assert src.ok and src.text is not None
+    assert isinstance(src, ContentSourceSuccess)
+    assert src.text
