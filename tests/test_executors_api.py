@@ -194,3 +194,65 @@ def test_api_executor_emits_no_summary_when_all_succeed(capsys):
     ex = ApiExecutor(model="m", output_language="English", client=client)
     ex.enrich_items([_item("1")], VOCAB)
     assert "SUMMARY:" not in capsys.readouterr().err
+
+
+def _described_photo(*, description: str, decorative: bool = False):
+    """Build a `MediaPhotoDescribed` for prompt-integration tests."""
+    from datetime import datetime, timezone
+
+    from xbrain.models import MediaPhotoDescribed
+
+    return MediaPhotoDescribed(
+        url="https://pbs.twimg.com/media/X.jpg",
+        local_path="1/0.jpg",
+        width=4,
+        height=3,
+        bytes_size=512,
+        downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        is_decorative=decorative,
+        description=description,
+        description_lang="English",
+        description_version="v1",
+        described_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc),
+    )
+
+
+def test_user_prompt_includes_content_bearing_image_descriptions():
+    """Non-decorative described photos must surface as `Images in this post:` lines."""
+    item = _item("1", media=[_described_photo(description="A chart of MMLU scores.")])
+    prompt = _user_prompt(item, VOCAB)
+    assert "Images in this post:" in prompt
+    assert "A chart of MMLU scores." in prompt
+
+
+def test_user_prompt_excludes_decorative_image_descriptions():
+    """Decorative photos must NOT appear in the prompt — pure noise."""
+    item = _item("1", media=[_described_photo(description="ignored", decorative=True)])
+    prompt = _user_prompt(item, VOCAB)
+    assert "Images in this post:" not in prompt
+
+
+def test_user_prompt_omits_images_section_when_no_described_photos():
+    """Items without any described photos must NOT have the images section.
+
+    Otherwise the LLM sees a hint of missing context and may hallucinate
+    visual evidence that does not exist. Regression guard.
+    """
+    item = _item("1")  # no media
+    prompt = _user_prompt(item, VOCAB)
+    assert "Images in this post:" not in prompt
+
+
+def test_user_prompt_image_descriptions_precede_links_and_article():
+    """Image section sits between the post body and the links/article."""
+    from xbrain.models import Link
+
+    item = _item(
+        "1",
+        media=[_described_photo(description="A diagram of GraphQL caching.")],
+        links=[Link(url="https://example.com/x", domain="example.com")],
+    )
+    prompt = _user_prompt(item, VOCAB)
+    image_idx = prompt.index("Images in this post:")
+    links_idx = prompt.index("Links in the post")
+    assert image_idx < links_idx

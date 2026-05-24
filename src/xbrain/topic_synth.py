@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,11 +37,21 @@ class OverviewJudgment(BaseModel):
 
 @dataclass
 class TopicInput:
-    """Everything an executor needs to synthesize one topic's overview."""
+    """Everything an executor needs to synthesize one topic's overview.
+
+    `summaries` is the per-post text already enrichment produced.
+    `image_descriptions` is the vision-LLM-produced prose for every
+    non-decorative photo in the topic's posts — fed to the
+    topic-synthesis LLM alongside the summaries so the topic page
+    reflects visual evidence that the per-post enrichment may have
+    only partially captured. Decorative photos are excluded at the
+    seam (mirrors `xbrain.executors.api._content_image_descriptions`).
+    """
 
     slug: str
     description: str
     summaries: list[str]
+    image_descriptions: list[str] = field(default_factory=list)
 
 
 def _system_prompt(language: str) -> str:
@@ -64,6 +74,16 @@ def _user_prompt(topic: TopicInput) -> str:
         f"Summaries of the {len(topic.summaries)} posts in this topic:",
     ]
     lines += [f"- {summary}" for summary in topic.summaries]
+    if topic.image_descriptions:
+        # Visual evidence supplements the per-post summaries: a chart
+        # or screenshot in a topic carries signal the summary may have
+        # only hinted at. Decorative photos are filtered out by the
+        # caller (`build_topic_inputs`) so they introduce no noise.
+        lines += [
+            "",
+            f"Images across the {len(topic.image_descriptions)} content-bearing photos in this topic:",
+        ]
+        lines += [f"- {description}" for description in topic.image_descriptions]
     return "\n".join(lines)
 
 
