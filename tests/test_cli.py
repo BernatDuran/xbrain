@@ -234,7 +234,7 @@ def test_media_command_resume_after_interrupt_completes_remaining(tmp_path: Path
 
 
 def test_media_command_propagates_total_failure_as_exit_1(tmp_path: Path, monkeypatch):
-    """A run where every download fails surfaces as exit-1 (mirrors #24)."""
+    """A run where every download fails surfaces as exit-1 at the CLI boundary."""
     from xbrain.models import MediaPhotoPending
 
     _setup_repo(tmp_path, monkeypatch)

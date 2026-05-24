@@ -564,7 +564,7 @@ def test_download_all_propagates_keyboard_interrupt(tmp_path: Path):
 
 
 def test_download_all_raises_on_total_failure(tmp_path: Path):
-    """All-failed batches surface as RuntimeError (mirror of #24)."""
+    """Total-failure batches surface as RuntimeError so callers see exit-1."""
     item = _item_with_media([MediaPhotoPending(url="https://pbs.twimg.com/media/O.png")])
     session = FakeSession(
         responses={
