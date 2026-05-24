@@ -581,6 +581,72 @@ def test_diff_media_counts_video_pending_separately(tmp_path: Path) -> None:
     assert report.media.delta_video_pending == 1
 
 
+def test_diff_media_reports_delta_described(tmp_path: Path) -> None:
+    """`xbrain describe` advances downloaded → described; the diff surfaces +N described.
+
+    Setup: snapshot A has 1 downloaded photo. Snapshot B has the same
+    URL transitioned to described (same on-disk bytes, plus the new
+    description payload). The transition shows up as
+    `delta_downloaded=-1, delta_described=+1`.
+    """
+    from xbrain.models import MediaPhotoDescribed, MediaPhotoDownloaded
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    item_a = _item_with_media(
+        "1",
+        [
+            MediaPhotoDownloaded(
+                url="https://pbs.twimg.com/media/A.png",
+                local_path="1/0.png",
+                width=10,
+                height=8,
+                bytes_size=100,
+                downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    item_b = _item_with_media(
+        "1",
+        [
+            MediaPhotoDescribed(
+                url="https://pbs.twimg.com/media/A.png",
+                local_path="1/0.png",
+                width=10,
+                height=8,
+                bytes_size=100,
+                downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+                is_decorative=False,
+                description="A chart of accuracy by model.",
+                description_lang="English",
+                description_version="v1",
+                described_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    _seed(a, items={"1": item_a}, vocab_slugs=[])
+    _seed(b, items={"1": item_b}, vocab_slugs=[])
+
+    report = diff_snapshots(a, b)
+    assert report.media.a.downloaded == 1
+    assert report.media.a.described == 0
+    assert report.media.b.downloaded == 0
+    assert report.media.b.described == 1
+    assert report.media.delta_downloaded == -1
+    assert report.media.delta_described == 1
+    assert report.summary.media_delta_described == 1
+
+
+def test_diff_media_text_format_includes_described_row(tmp_path: Path) -> None:
+    """The text renderer emits a `described:` row alongside the others."""
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _seed(a, items={"1": _item_with_media("1", [])}, vocab_slugs=[])
+    _seed(b, items={"1": _item_with_media("1", [])}, vocab_slugs=[])
+    text = format_text(diff_snapshots(a, b))
+    assert "described:" in text
+
+
 def test_diff_media_text_format_includes_block(tmp_path: Path) -> None:
     """The text renderer includes a `MEDIA` block with the four counters."""
     from xbrain.models import MediaPhotoDownloaded
