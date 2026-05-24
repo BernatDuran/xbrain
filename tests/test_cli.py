@@ -834,3 +834,349 @@ def test_vocab_rejects_unknown_executor(tmp_path, monkeypatch):
     result = runner.invoke(app, ["vocab", "--executor", "bogus"])
     assert result.exit_code == 1
     assert "bogus" in result.output
+
+
+# ----------------------------------------------------------------------- describe
+
+
+def _setup_describe_repo(tmp_path: Path, monkeypatch) -> Path:
+    """Like `_setup_repo` but with a pre-populated photo on disk + Downloaded variant."""
+    import io as _io
+    from datetime import datetime, timezone
+
+    from PIL import Image
+
+    from xbrain.models import Author, Item, MediaPhotoDownloaded
+
+    _setup_repo(tmp_path, monkeypatch)
+    media_root = tmp_path / "data" / "media"
+    (media_root / "42").mkdir(parents=True, exist_ok=True)
+    buffer = _io.BytesIO()
+    Image.new("RGB", (8, 6), color=(10, 20, 30)).save(buffer, format="JPEG")
+    (media_root / "42" / "0.jpg").write_bytes(buffer.getvalue())
+
+    item = Item(
+        id="42",
+        source="bookmark",
+        url="https://x.com/a/status/42",
+        author=Author(handle="a", name="A"),
+        text="text",
+        created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        media=[
+            MediaPhotoDownloaded(
+                url="https://pbs.twimg.com/media/42-0.jpg",
+                local_path="42/0.jpg",
+                width=8,
+                height=6,
+                bytes_size=200,
+                downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    save_store({"42": item}, tmp_path / "data" / "items.json")
+    return tmp_path
+
+
+def test_describe_command_transitions_downloaded_to_described(tmp_path: Path, monkeypatch):
+    """End-to-end: a Downloaded photo becomes Described via the CLI command."""
+    import json as _json
+
+    from xbrain.models import MediaPhotoDescribed
+    from xbrain.store import load_store
+
+    _setup_describe_repo(tmp_path, monkeypatch)
+
+    class _FakeBlock:
+        type = "text"
+
+        def __init__(self, text: str):
+            self.text = text
+
+    class _FakeResp:
+        def __init__(self, text: str):
+            self.content = [_FakeBlock(text)]
+
+    class _FakeMessages:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            payload = _json.dumps([{"index": 0, "is_decorative": False, "description": "A chart."}])
+            return _FakeResp(payload)
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    import xbrain.cli as cli
+
+    fake_client = _FakeClient()
+
+    def _patched_run(store, media_root, **kwargs):
+        kwargs["client"] = fake_client
+        return _orig(store, media_root, **kwargs)
+
+    _orig = cli.run_describe_all
+    monkeypatch.setattr(cli, "run_describe_all", _patched_run)
+
+    result = runner.invoke(app, ["describe"])
+    assert result.exit_code == 0, result.output
+    reloaded = load_store(tmp_path / "data" / "items.json")
+    entry = reloaded["42"].media[0]
+    assert isinstance(entry, MediaPhotoDescribed)
+    assert entry.description == "A chart."
+    assert entry.description_lang == "English"
+    assert entry.description_version == "v1"
+
+
+def test_describe_command_runs_on_empty_store(tmp_path: Path, monkeypatch):
+    """No items → describe is a no-op exit-0, with a snapshot still taken."""
+    _setup_repo(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["describe"])
+    assert result.exit_code == 0
+    # A snapshot was created — recovery boundary mirrors media.
+    snapshots = list((tmp_path / "data" / "snapshots").glob("*-describe"))
+    assert snapshots, "describe must auto-snapshot data/ before running"
+
+
+def test_describe_command_warns_when_items_filter_matches_nothing(tmp_path, monkeypatch):
+    """`--items` with no matches surfaces an AVISO line — same pattern as media."""
+    _setup_describe_repo(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["describe", "--items", "no-such-id"])
+    assert result.exit_code == 0
+    assert "AVISO" in result.output or "AVISO" in (result.stderr or "")
+
+
+def test_describe_command_propagates_total_failure_as_exit_1(tmp_path, monkeypatch):
+    """A total-failure RuntimeError surfaces as exit code 1 via `_handle_cli_errors`."""
+    from anthropic import APIError
+
+    _setup_describe_repo(tmp_path, monkeypatch)
+
+    class _AlwaysFailingMessages:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            raise APIError("401 unauthorized", request=None, body=None)
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _AlwaysFailingMessages()
+
+    import xbrain.cli as cli
+
+    def _patched(store, media_root, **kwargs):
+        kwargs["client"] = _FakeClient()
+        return _orig(store, media_root, **kwargs)
+
+    _orig = cli.run_describe_all
+    monkeypatch.setattr(cli, "run_describe_all", _patched)
+
+    result = runner.invoke(app, ["describe"])
+    assert result.exit_code == 1
+    assert "Error" in result.output
+
+
+def test_describe_command_emits_exactly_one_summary_on_partial_failure(tmp_path, monkeypatch):
+    """The CLI is the single source of truth for the SUMMARY line.
+
+    A partial-failure run must emit EXACTLY one `SUMMARY:` on stderr —
+    if the orchestrator regrows a second emitter the count goes to 2
+    and this pins it. Mirrors the dedup test on the orchestrator
+    side (`test_describe_all_does_not_emit_summary_on_partial_failure`).
+    """
+    import io as _io
+    import json as _json
+    from datetime import datetime, timezone
+
+    from anthropic import APIError
+    from PIL import Image
+
+    from xbrain.models import Author, Item, MediaPhotoDownloaded
+    from xbrain.store import save_store as _save_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    media_root = tmp_path / "data" / "media"
+    (media_root / "1").mkdir(parents=True, exist_ok=True)
+    (media_root / "2").mkdir(parents=True, exist_ok=True)
+    buf = _io.BytesIO()
+    Image.new("RGB", (8, 6), color=(10, 20, 30)).save(buf, format="JPEG")
+    (media_root / "1" / "0.jpg").write_bytes(buf.getvalue())
+    (media_root / "2" / "0.jpg").write_bytes(buf.getvalue())
+
+    def _build_item(item_id: str) -> Item:
+        return Item(
+            id=item_id,
+            source="bookmark",
+            url=f"https://x.com/a/status/{item_id}",
+            author=Author(handle="a", name="A"),
+            text="text",
+            created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
+            captured_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            media=[
+                MediaPhotoDownloaded(
+                    url=f"https://pbs.twimg.com/media/{item_id}-0.jpg",
+                    local_path=f"{item_id}/0.jpg",
+                    width=8,
+                    height=6,
+                    bytes_size=200,
+                    downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+                )
+            ],
+        )
+
+    _save_store(
+        {"1": _build_item("1"), "2": _build_item("2")},
+        tmp_path / "data" / "items.json",
+    )
+
+    class _PartialFailMessages:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self._counter = 0
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            self._counter += 1
+            if self._counter == 1:
+                # First batch fails.
+                raise APIError("503", request=None, body=None)
+
+            # Second batch returns one judgment.
+            class _Block:
+                type = "text"
+
+                def __init__(self, text: str):
+                    self.text = text
+
+            class _Resp:
+                def __init__(self, text: str):
+                    self.content = [_Block(text)]
+                    self.stop_reason = "end_turn"
+
+            return _Resp(_json.dumps([{"index": 0, "is_decorative": False, "description": "ok"}]))
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _PartialFailMessages()
+
+    import xbrain.cli as cli
+
+    fake = _FakeClient()
+
+    def _patched(store, media_root, **kwargs):
+        kwargs["client"] = fake
+        kwargs["batch_size"] = 1
+        return _orig(store, media_root, **kwargs)
+
+    _orig = cli.run_describe_all
+    monkeypatch.setattr(cli, "run_describe_all", _patched)
+
+    result = runner.invoke(app, ["describe"])
+    assert result.exit_code == 0
+    # Exactly one SUMMARY emission — the CLI's `emit_summary_line` is
+    # the single source of truth; the orchestrator stays silent.
+    assert result.output.count("SUMMARY:") == 1
+
+
+def test_describe_command_verbose_lists_failed_photos(tmp_path, monkeypatch):
+    """`--verbose` prints `Failed photos:` plus per-failure rows on partial failure.
+
+    Pins the diagnostic branch in `_run_describe` so a future refactor
+    that drops the verbose output is caught.
+    """
+    import io as _io
+    import json as _json
+    from datetime import datetime, timezone
+
+    from anthropic import APIError
+    from PIL import Image
+
+    from xbrain.models import Author, Item, MediaPhotoDownloaded
+    from xbrain.store import save_store as _save_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    media_root = tmp_path / "data" / "media"
+    (media_root / "1").mkdir(parents=True, exist_ok=True)
+    (media_root / "2").mkdir(parents=True, exist_ok=True)
+    buf = _io.BytesIO()
+    Image.new("RGB", (8, 6), color=(10, 20, 30)).save(buf, format="JPEG")
+    (media_root / "1" / "0.jpg").write_bytes(buf.getvalue())
+    (media_root / "2" / "0.jpg").write_bytes(buf.getvalue())
+
+    def _build_item(item_id: str) -> Item:
+        return Item(
+            id=item_id,
+            source="bookmark",
+            url=f"https://x.com/a/status/{item_id}",
+            author=Author(handle="a", name="A"),
+            text="text",
+            created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
+            captured_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            media=[
+                MediaPhotoDownloaded(
+                    url=f"https://pbs.twimg.com/media/{item_id}-0.jpg",
+                    local_path=f"{item_id}/0.jpg",
+                    width=8,
+                    height=6,
+                    bytes_size=200,
+                    downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+                )
+            ],
+        )
+
+    _save_store(
+        {"1": _build_item("1"), "2": _build_item("2")},
+        tmp_path / "data" / "items.json",
+    )
+
+    class _PartialFailMessages:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self._counter = 0
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            self._counter += 1
+            if self._counter == 1:
+                raise APIError("503", request=None, body=None)
+
+            class _Block:
+                type = "text"
+
+                def __init__(self, text: str):
+                    self.text = text
+
+            class _Resp:
+                def __init__(self, text: str):
+                    self.content = [_Block(text)]
+                    self.stop_reason = "end_turn"
+
+            return _Resp(_json.dumps([{"index": 0, "is_decorative": False, "description": "ok"}]))
+
+    class _FakeClient:
+        def __init__(self):
+            self.messages = _PartialFailMessages()
+
+    import xbrain.cli as cli
+
+    fake = _FakeClient()
+
+    def _patched(store, media_root, **kwargs):
+        kwargs["client"] = fake
+        kwargs["batch_size"] = 1
+        return _orig(store, media_root, **kwargs)
+
+    _orig = cli.run_describe_all
+    monkeypatch.setattr(cli, "run_describe_all", _patched)
+
+    result = runner.invoke(app, ["describe", "--verbose"])
+    assert result.exit_code == 0
+    assert "Failed photos:" in result.output
+    # The failed item id (1 or 2 — order is filesystem-dependent) and the URL
+    # both appear on the verbose row.
+    assert "pbs.twimg.com" in result.output

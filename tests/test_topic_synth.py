@@ -229,3 +229,28 @@ def test_synthesize_overviews_api_emits_no_summary_when_all_succeed(capsys):
         client=client,
     )
     assert "SUMMARY:" not in capsys.readouterr().err
+
+
+def test_user_prompt_includes_image_descriptions_when_provided():
+    """When `image_descriptions` is non-empty, the prompt carries an `Images` section."""
+    from xbrain.topic_synth import _user_prompt
+
+    topic_input = TopicInput(
+        slug="ai-coding",
+        description="LLMs writing software",
+        summaries=["s1"],
+        image_descriptions=["A flowchart of a feedback loop.", "Code in a terminal."],
+    )
+    prompt = _user_prompt(topic_input)
+    assert "Images across the 2 content-bearing photos" in prompt
+    assert "A flowchart of a feedback loop." in prompt
+    assert "Code in a terminal." in prompt
+
+
+def test_user_prompt_omits_image_section_when_empty():
+    """Default empty `image_descriptions` produces no image section — regression guard."""
+    from xbrain.topic_synth import _user_prompt
+
+    topic_input = TopicInput(slug="x", description="d", summaries=["s"])
+    prompt = _user_prompt(topic_input)
+    assert "Images across" not in prompt

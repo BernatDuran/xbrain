@@ -197,6 +197,66 @@ def test_build_topic_inputs_rejects_an_unknown_slug():
         build_topic_inputs(["not-a-real-topic"], _VOCAB, {})
 
 
+def _described_photo_in_topic(*, description: str, decorative: bool = False):
+    """Build a `MediaPhotoDescribed` for the topic-inputs filtering test.
+
+    `MediaPhotoDescribed` enforces `is_decorative => description == ""`
+    at the model layer; this helper honours that contract by forcing an
+    empty description when `decorative=True`, so the caller's `description`
+    argument is silently dropped in the decorative branch.
+    """
+    from datetime import datetime, timezone
+
+    from xbrain.models import MediaPhotoDescribed
+
+    return MediaPhotoDescribed(
+        url="https://pbs.twimg.com/media/X.jpg",
+        local_path="1/0.jpg",
+        width=4,
+        height=3,
+        bytes_size=512,
+        downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        is_decorative=decorative,
+        description="" if decorative else description,
+        description_lang="English",
+        description_version="v1",
+        described_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc),
+    )
+
+
+def test_build_topic_inputs_collects_content_image_descriptions():
+    """Content-bearing photos contribute their descriptions; decoratives are filtered."""
+    from xbrain.topics import build_topic_inputs
+
+    primary_item = _enriched("1", "ai-coding", ["ai-coding"])
+    primary_item.media = [
+        _described_photo_in_topic(description="A chart of model accuracy."),
+        _described_photo_in_topic(description="ignored", decorative=True),
+    ]
+    also_item = _enriched("2", "career", ["career", "ai-coding"])
+    also_item.media = [
+        _described_photo_in_topic(description="A screenshot of a CI dashboard."),
+    ]
+    posts = {"ai-coding": TopicPosts()}
+    posts["ai-coding"].primary.append(primary_item)
+    posts["ai-coding"].also.append(also_item)
+    inputs = build_topic_inputs(["ai-coding"], _VOCAB, posts)
+    assert sorted(inputs[0].image_descriptions) == [
+        "A chart of model accuracy.",
+        "A screenshot of a CI dashboard.",
+    ]
+
+
+def test_build_topic_inputs_empty_when_no_described_photos():
+    """An item without any described media contributes an empty image list."""
+    from xbrain.topics import build_topic_inputs
+
+    posts = {"ai-coding": TopicPosts()}
+    posts["ai-coding"].primary.append(_enriched("1", "ai-coding", ["ai-coding"]))
+    inputs = build_topic_inputs(["ai-coding"], _VOCAB, posts)
+    assert inputs[0].image_descriptions == []
+
+
 def test_compute_topic_posts_dedups_duplicate_slugs_in_topics():
     # A store record with a duplicate slug in `enriched.topics` (pre-validation
     # data) must place the item once, not twice, in the also-relevant list.

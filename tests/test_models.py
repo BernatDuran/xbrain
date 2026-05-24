@@ -292,6 +292,209 @@ def test_media_new_tagged_shape_passes_through():
     assert entry.width == 1200
 
 
+def test_media_photo_described_round_trips_through_json():
+    """A `MediaPhotoDescribed` payload reads back as the same variant.
+
+    Exercises the discriminator path: the new `photo_described` kind
+    must match exactly one variant. A round-trip dump must NOT collapse
+    back to `MediaPhotoDownloaded` (which carries the same on-disk
+    fields minus the description payload).
+    """
+    from datetime import datetime, timezone
+
+    from xbrain.models import MediaEntryAdapter, MediaPhotoDescribed
+
+    payload = {
+        "kind": "photo_described",
+        "type": "photo",
+        "url": "https://pbs.twimg.com/media/X.jpg",
+        "local_path": "123/0.jpg",
+        "width": 1200,
+        "height": 800,
+        "bytes_size": 99000,
+        "downloaded_at": datetime(2026, 5, 24, tzinfo=timezone.utc).isoformat(),
+        "is_decorative": False,
+        "description": "A chart showing model accuracy by parameter count.",
+        "description_lang": "English",
+        "description_version": "v1",
+        "described_at": datetime(2026, 5, 24, 12, tzinfo=timezone.utc).isoformat(),
+    }
+    entry = MediaEntryAdapter.validate_python(payload)
+    assert isinstance(entry, MediaPhotoDescribed)
+    assert entry.is_decorative is False
+    assert entry.description.startswith("A chart")
+    assert entry.description_lang == "English"
+    assert entry.description_version == "v1"
+    # Re-dump and re-parse: variant must survive verbatim.
+    restored = MediaEntryAdapter.validate_python(entry.model_dump(mode="json"))
+    assert isinstance(restored, MediaPhotoDescribed)
+    assert restored == entry
+
+
+def test_media_photo_described_decorative_carries_empty_description():
+    """Decorative entries store an empty description by contract.
+
+    The vision rubric returns empty for decorative; refusals (faces, NSFW)
+    are bucketed as decorative + empty. The model accepts this explicitly
+    — there is no `gt=0` length constraint on `description`.
+    """
+    from datetime import datetime, timezone
+
+    from xbrain.models import MediaPhotoDescribed
+
+    entry = MediaPhotoDescribed(
+        url="https://pbs.twimg.com/media/X.jpg",
+        local_path="123/0.jpg",
+        width=400,
+        height=400,
+        bytes_size=12000,
+        downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        is_decorative=True,
+        description="",
+        description_lang="English",
+        description_version="v1",
+        described_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc),
+    )
+    assert entry.is_decorative is True
+    assert entry.description == ""
+
+
+def test_media_photo_described_rejects_absolute_local_path():
+    """Path-traversal defence carries over from the downloaded variant —
+    the bytes referenced by `local_path` are inherited from the prior
+    state, so the same hardening applies.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from xbrain.models import MediaPhotoDescribed
+
+    with pytest.raises(ValidationError):
+        MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/X.jpg",
+            local_path="/etc/passwd",
+            width=1,
+            height=1,
+            bytes_size=1,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            is_decorative=False,
+            description="x",
+            description_lang="English",
+            description_version="v1",
+            described_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+
+
+def test_media_photo_described_rejects_parent_traversal_local_path():
+    """Same defence as the downloaded variant — `..` in `local_path` is rejected."""
+    import pytest
+    from pydantic import ValidationError
+
+    from xbrain.models import MediaPhotoDescribed
+
+    with pytest.raises(ValidationError):
+        MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/X.jpg",
+            local_path="../escape/x.jpg",
+            width=1,
+            height=1,
+            bytes_size=1,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            is_decorative=False,
+            description="x",
+            description_lang="English",
+            description_version="v1",
+            described_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+
+
+def test_media_photo_described_rejects_naive_described_at():
+    """`described_at` must be timezone-aware (UTC); a naive datetime is rejected.
+
+    The UTC-aware invariant is enforced by a field validator so a
+    hand-edited `items.json` entry cannot smuggle a local-time datetime
+    past the type boundary. Naive timestamps cause downstream UTC math
+    (eligibility checks, sort orders) to drift silently.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from xbrain.models import MediaPhotoDescribed
+
+    with pytest.raises(ValidationError):
+        MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/X.jpg",
+            local_path="123/0.jpg",
+            width=10,
+            height=10,
+            bytes_size=100,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            is_decorative=False,
+            description="hello",
+            description_lang="English",
+            description_version="v1",
+            described_at=datetime(2026, 5, 24),  # naive — must fail
+        )
+
+
+def test_media_photo_described_rejects_unsupported_description_lang():
+    """`description_lang` must be in `SUPPORTED_LANGUAGES`; others are rejected.
+
+    The type alias is derived from `i18n.SUPPORTED_LANGUAGES` so the
+    `Literal[...]` validator rejects unknown languages at construction.
+    Prevents an out-of-band language tag from polluting the vault.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from xbrain.models import MediaPhotoDescribed
+
+    with pytest.raises(ValidationError):
+        MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/X.jpg",
+            local_path="123/0.jpg",
+            width=10,
+            height=10,
+            bytes_size=100,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            is_decorative=False,
+            description="hello",
+            description_lang="Klingon",  # not in SUPPORTED_LANGUAGES
+            description_version="v1",
+            described_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+
+
+def test_media_photo_described_rejects_decorative_with_nonempty_description():
+    """`is_decorative=True` implies `description == ""` — model-validator enforces.
+
+    Defence-in-depth for hand-edited records: the producer
+    (`describe._apply_judgment`) already blanks the description on
+    decorative judgments, but a hand-written entry that violates the
+    invariant must still be rejected at the type boundary so downstream
+    callers can rely on `is_decorative => not description` unconditionally.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from xbrain.models import MediaPhotoDescribed
+
+    with pytest.raises(ValidationError):
+        MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/X.jpg",
+            local_path="123/0.jpg",
+            width=10,
+            height=10,
+            bytes_size=100,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            is_decorative=True,
+            description="should be empty when decorative",  # violates invariant
+            description_lang="English",
+            description_version="v1",
+            described_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+
+
 def test_media_discriminator_rejects_unknown_kind():
     """Silently inventing a variant would mask data corruption — reject loudly."""
     import pytest
