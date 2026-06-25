@@ -211,7 +211,7 @@ Renders every item note, topic page and the index into the vault.
 
 Three extra ops sit outside the main loop:
 
-- **`xbrain import-archive <zip>`** — imports your X data archive (the official ZIP export from `x.com/settings/your_archive`) to backfill historical own-tweets beyond what `extract` can reach via the live browser.
+- **`xbrain import-archive <zip>`** — imports your X data archive (the official ZIP export from `x.com/settings/your_archive`) to backfill historical own-tweets beyond what `extract` can reach via the live browser. It shares the same media parsing as `extract` (via `extract/video.py`), so archived videos capture the playable stream + poster thumbnail + bitrate/duration too.
 - **`xbrain sync`** — convenience: runs `extract → fetch → generate` back-to-back. No enrichment (which is the expensive LLM step you run on your own cadence).
 - **`xbrain status`** — read-only diagnostics: item counts, how many have links / content / enrichment, last extraction time per source.
 
@@ -226,6 +226,8 @@ The numbered stages above are summarised; the sections below cover each one in d
 **Reads.** `data/state.json` (the last-seen item id per source) — so re-running is incremental.
 
 **Writes.** `data/items.json` (new `Item` records, merged with existing ones by `id`); `data/state.json` (updated cursors).
+
+**Media capture.** Photo entries become pending URLs. Video and animated-GIF entries capture the **playable stream** — the highest-bitrate progressive `video/mp4` from `video_info.variants`, falling back to the HLS (`.m3u8`) manifest when no mp4 is offered — plus the poster image as `thumbnail_url` and the chosen `bitrate` + `duration_millis` (so a later download can estimate size without fetching bytes). The video URL is the stream, never the poster. The same media parser (`extract/video.py`) is shared by the archive importer, so `import-archive` captures video identically.
 
 **Why it is shaped like this.** The extractor anchors to **operation names** (`Bookmarks`, `UserTweets`) rather than query identifiers, because X rotates the identifiers constantly and anything that depends on them breaks within weeks. It scrolls slowly with randomized 5-12s pauses — fast scripts get rate-limited or banned.
 
@@ -248,7 +250,7 @@ The numbered stages above are summarised; the sections below cover each one in d
 
 ### media
 
-**What it does.** Downloads X-post photos referenced in `Item.media` and persists the bytes locally so the wiki can render them inline. Photos only; videos remain in `video_pending` for a future iteration. Walks every `MediaPhotoPending` entry, downloads from `pbs.twimg.com` with a cascading size fallback (`name=orig` → `name=large` → `name=medium`), validates the bytes with Pillow, and atomically writes the file under `data/media/<item-id>/<index>.<ext>`.
+**What it does.** Downloads X-post photos referenced in `Item.media` and persists the bytes locally so the wiki can render them inline. Photos only; videos remain in `video_pending` for a future iteration (their playable stream URL + poster thumbnail + bitrate/duration were already captured at extract/import time). Walks every `MediaPhotoPending` entry, downloads from `pbs.twimg.com` with a cascading size fallback (`name=orig` → `name=large` → `name=medium`), validates the bytes with Pillow, and atomically writes the file under `data/media/<item-id>/<index>.<ext>`.
 
 **Reads.** `data/items.json` (the URLs to download).
 
@@ -468,7 +470,7 @@ These are the rules the rest of the architecture rests on. Breaking any of them 
 7. **Operation names, not query ids.** The extractor anchors to X GraphQL operation names because X rotates the ids. Anything that hardcodes an id will break.
 8. **Destructive ops are reversible.** Every command that overwrites a `data/` artifact (`vocab --regenerate`, `topics --resynth`, `fetch --force`) snapshots `data/` first to `data/snapshots/<ts>-pre-<command>/`. `xbrain snapshot restore <name>` is the recovery path. A snapshot failure aborts the destructive op.
 9. **Fetch records are tagged unions.** A `ContentSource` on `items.json` is either a `Success` (with required `text`) or a `Failure` (with required `failure_reason`). Mixed shapes are not representable — pydantic rejects them at construction, and mypy rejects them statically (via the `pydantic.mypy` plugin). Legacy records with `ok: bool` (pre-#20) are normalised on read by a `BeforeValidator` on the union, so existing `data/items.json` files keep working without a manual migration. The static contract is pinned by `tests/type_probes/illegal_states.py`.
-10. **Media variants are mutually exclusive states.** A `MediaEntry` on `items.json` is one of `MediaPhotoPending` / `MediaPhotoDownloaded` / `MediaPhotoFailed` / `MediaPhotoDescribed` / `MediaVideoPending`, discriminated by `kind`. The photo states form a linear pipeline: `Pending → Downloaded → Described` (with `Failed` as the off-ramp from `Pending`). State transitions happen only via `xbrain media` (advances `Pending` and retries `Failed`) and `xbrain describe` (advances `Downloaded` to `Described`). Legacy records with the flat `{type, url}` shape are normalised on read by a `BeforeValidator` on the union — no manual migration needed. (See the `### media` and `### describe` sections above for the per-stage contracts.)
+10. **Media variants are mutually exclusive states.** A `MediaEntry` on `items.json` is one of `MediaPhotoPending` / `MediaPhotoDownloaded` / `MediaPhotoFailed` / `MediaPhotoDescribed` / `MediaVideoPending`, discriminated by `kind`. The photo states form a linear pipeline: `Pending → Downloaded → Described` (with `Failed` as the off-ramp from `Pending`). State transitions happen only via `xbrain media` (advances `Pending` and retries `Failed`) and `xbrain describe` (advances `Downloaded` to `Described`). `MediaVideoPending` carries the **playable** stream URL (highest-bitrate mp4, or the HLS manifest) plus the poster as `thumbnail_url` and the chosen `bitrate` + `duration_millis` — populated at extract/import-archive time by the shared `extract/video.py` helper, never the poster stored as the URL. Legacy records with the flat `{type, url}` shape are normalised on read by a `BeforeValidator` on the union — no manual migration needed. (See the `### media` and `### describe` sections above for the per-stage contracts.)
 
 ---
 
@@ -493,7 +495,8 @@ xbrain/
 │   │   ├── browser.py       ← Playwright session + login
 │   │   ├── extractor.py     ← GraphQL operation interception
 │   │   ├── threads.py       ← TweetDetail thread expansion
-│   │   └── graphql.py       ← response parsers
+│   │   ├── graphql.py       ← response parsers
+│   │   └── video.py         ← video-variant selection (shared w/ archive)
 │   │
 │   ├── fetch.py             ← article fetch (HTTP + Trafilatura + Firecrawl)
 │   ├── fetch_x.py           ← x.com article + status fetch

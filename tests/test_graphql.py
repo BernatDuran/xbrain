@@ -194,3 +194,199 @@ def test_parse_tweets_unwraps_visibility_envelope():
     assert len(items) == 1
     assert items[0].id == "555"
     assert items[0].text == "limited visibility tweet"
+
+
+# --- media: video variant selection (#40 part 1) ---------------------------
+
+
+# Sentinel so a test can omit `duration_millis` entirely (an animated_gif
+# entry has `video_info.variants` but no `duration_millis` key at all).
+_OMIT = object()
+
+
+def _video_legacy(
+    variants: list[dict],
+    *,
+    media_type: str = "video",
+    duration_millis: object = 30000,
+) -> dict:
+    """A `legacy` block carrying one video/animated_gif media entry whose poster
+    is a fixed pbs.twimg.com image and whose playable URLs live in
+    `video_info.variants` (the real X shape).
+
+    `media_type` switches between `"video"` and `"animated_gif"`. Pass
+    `duration_millis=_OMIT` to drop the key entirely (the animated_gif case)."""
+    video_info: dict = {"variants": variants}
+    if duration_millis is not _OMIT:
+        video_info["duration_millis"] = duration_millis
+    return {
+        "extended_entities": {
+            "media": [
+                {
+                    "type": media_type,
+                    "media_url_https": "https://pbs.twimg.com/poster.jpg",
+                    "video_info": video_info,
+                }
+            ]
+        }
+    }
+
+
+def test_extract_media_video_picks_highest_bitrate_mp4():
+    """A video entry stores the highest-bitrate mp4 from video_info.variants,
+    not the poster image (media_url_https)."""
+    from xbrain.extract.graphql import _extract_media
+    from xbrain.models import MediaVideoPending
+
+    legacy = _video_legacy(
+        [
+            {
+                "bitrate": 256000,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/low.mp4?tag=12",
+            },
+            {
+                "bitrate": 2176000,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/high.mp4?tag=12",
+            },
+            {
+                "bitrate": 832000,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/mid.mp4?tag=12",
+            },
+            {
+                "content_type": "application/x-mpegURL",
+                "url": "https://video.twimg.com/playlist.m3u8?tag=12",
+            },
+        ]
+    )
+
+    media = _extract_media(legacy)
+
+    assert len(media) == 1
+    entry = media[0]
+    assert isinstance(entry, MediaVideoPending)
+    assert entry.url == "https://video.twimg.com/high.mp4?tag=12"
+
+
+def test_extract_media_video_hls_only_falls_back_to_manifest():
+    """With no progressive mp4 (HLS-only), store the m3u8 manifest URL rather
+    than the poster, so the real stream is captured for a later ffmpeg pass."""
+    from xbrain.extract.graphql import _extract_media
+    from xbrain.models import MediaVideoPending
+
+    legacy = _video_legacy(
+        [
+            {
+                "content_type": "application/x-mpegURL",
+                "url": "https://video.twimg.com/playlist.m3u8?tag=12",
+            },
+        ]
+    )
+
+    media = _extract_media(legacy)
+
+    assert isinstance(media[0], MediaVideoPending)
+    assert media[0].url == "https://video.twimg.com/playlist.m3u8?tag=12"
+
+
+def test_extract_media_video_captures_poster_and_size_metadata():
+    """The poster is kept as thumbnail_url, and the chosen variant's bitrate
+    plus the clip duration are stored so size can be estimated without a
+    download."""
+    from xbrain.extract.graphql import _extract_media
+
+    legacy = _video_legacy(
+        [
+            {
+                "bitrate": 2176000,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/high.mp4?tag=12",
+            },
+        ],
+        duration_millis=30000,
+    )
+
+    entry = _extract_media(legacy)[0]
+
+    assert entry.thumbnail_url == "https://pbs.twimg.com/poster.jpg"
+    assert entry.bitrate == 2176000
+    assert entry.duration_millis == 30000
+
+
+def test_extract_media_video_no_variants_falls_back_to_poster():
+    """A video entry with no usable variants (empty list, no playable stream)
+    falls back to the poster url so the item is not silently dropped; the poster
+    is still kept as thumbnail_url and bitrate is None (nothing was chosen)."""
+    from xbrain.extract.graphql import _extract_media
+    from xbrain.models import MediaVideoPending
+
+    legacy = _video_legacy([])
+
+    entry = _extract_media(legacy)[0]
+
+    assert isinstance(entry, MediaVideoPending)
+    assert entry.url == "https://pbs.twimg.com/poster.jpg"
+    assert entry.thumbnail_url == "https://pbs.twimg.com/poster.jpg"
+    assert entry.bitrate is None
+
+
+def test_extract_media_animated_gif_captures_mp4_without_duration():
+    """An `animated_gif` entry is a single soundless mp4 with `bitrate: 0` and
+    no `duration_millis`. The mp4 is captured, bitrate stays 0 (a real value,
+    not "missing"), and duration_millis is None."""
+    from xbrain.extract.graphql import _extract_media
+    from xbrain.models import MediaVideoPending
+
+    legacy = _video_legacy(
+        [
+            {
+                "bitrate": 0,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/gif.mp4?tag=12",
+            },
+        ],
+        media_type="animated_gif",
+        duration_millis=_OMIT,
+    )
+
+    entry = _extract_media(legacy)[0]
+
+    assert isinstance(entry, MediaVideoPending)
+    assert entry.url == "https://video.twimg.com/gif.mp4?tag=12"
+    assert entry.bitrate == 0
+    assert entry.duration_millis is None
+
+
+def test_extract_media_video_handles_null_and_missing_bitrate():
+    """Variant selection must not crash when a variant has an explicit
+    `"bitrate": null` (None) alongside variants with a missing bitrate key.
+    `max(..., key=lambda v: v.get("bitrate", 0))` raises TypeError (None < int);
+    a hardened key treats both null and missing as 0, and the variant carrying a
+    real bitrate wins."""
+    from xbrain.extract.graphql import _extract_media
+
+    legacy = _video_legacy(
+        [
+            {
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/missing.mp4?tag=12",
+            },
+            {
+                "bitrate": None,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/null.mp4?tag=12",
+            },
+            {
+                "bitrate": 832000,
+                "content_type": "video/mp4",
+                "url": "https://video.twimg.com/real.mp4?tag=12",
+            },
+        ]
+    )
+
+    entry = _extract_media(legacy)[0]
+
+    assert entry.url == "https://video.twimg.com/real.mp4?tag=12"
+    assert entry.bitrate == 832000

@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
-from xbrain.models import Author, Item, Link, Media, MediaEntry, SourceName, ThreadInfo
+from xbrain.extract.video import build_video_media
+from xbrain.models import (
+    Author,
+    Item,
+    Link,
+    Media,
+    MediaEntry,
+    SourceName,
+    ThreadInfo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +133,14 @@ def _extract_media(legacy: dict[str, Any]) -> list[MediaEntry]:
     )
     media: list[MediaEntry] = []
     for entry in entries:
-        kind: Literal["photo", "video"] = (
-            "video" if entry.get("type") in ("video", "animated_gif") else "photo"
-        )
+        if entry.get("type") in ("video", "animated_gif"):
+            video = build_video_media(entry)
+            if video is not None:
+                media.append(video)
+            continue
         url = entry.get("media_url_https") or entry.get("expanded_url")
         if url:
-            media.append(Media(type=kind, url=url))
+            media.append(Media(type="photo", url=url))
     return media
 
 

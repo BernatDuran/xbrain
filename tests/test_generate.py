@@ -134,22 +134,19 @@ def test_generate_skips_pending_photo_silently(tmp_path: Path):
     assert "🎥" not in body
 
 
-def test_generate_renders_video_pending_as_placeholder(tmp_path: Path):
-    """A `MediaVideoPending` becomes a 🎥 placeholder carrying the URL.
-
-    Video bytes are not downloaded yet. The URL is the only evidence we
-    have — surface it so the reader can click through to X.
-    """
+def test_generate_renders_video_pending_as_clickable_play_link(tmp_path: Path):
+    """The video URL is now the playable mp4 (not the poster), so render it as a
+    labelled clickable link, flagged as pending local download."""
     from xbrain.models import MediaVideoPending
 
     item = _item("1", with_link=True)
-    item.media = [MediaVideoPending(url="https://video.twimg.com/x.mp4")]
+    item.media = [MediaVideoPending(url="https://video.twimg.com/high.mp4?tag=12")]
 
     generate({"1": item}, tmp_path)
     note = next((tmp_path / "items").glob("*.md"))
     body = note.read_text(encoding="utf-8")
-    assert "🎥" in body
-    assert "https://video.twimg.com/x.mp4" in body
+    assert "[Ver vídeo](https://video.twimg.com/high.mp4?tag=12)" in body
+    assert "pendiente de descarga" in body
 
 
 def test_generate_media_only_item_gets_a_note(tmp_path: Path):
