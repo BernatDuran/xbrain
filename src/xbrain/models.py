@@ -310,7 +310,10 @@ class MediaVideoPending(BaseModel):
     `bitrate` (of the chosen mp4) and `duration_millis` let a download
     pre-flight estimate total size (bitrate × duration) without fetching a
     byte. All three are optional: legacy records carry only `url`, and an
-    HLS-only variant has no bitrate. Videos stay in this state until a
+    HLS-only variant has no bitrate. Note that a real X mp4 can report
+    `bitrate: 0` (animated GIFs always do), so a downstream size estimator
+    must treat `bitrate in (None, 0)` as "unknown" — fall back to a HEAD
+    request's `Content-Length` — NOT as "0 bytes". Videos stay in this state until a
     future iteration adds the download (direct mp4 via httpx; HLS via
     ffmpeg). The variant is in the union from day one so the wire shape does
     not change when video download lands.

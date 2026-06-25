@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from xbrain.extract.graphql import _parse_x_date
+from xbrain.extract.video import build_video_media
 from xbrain.models import Author, Item, Link, Media, MediaEntry
 
 logger = logging.getLogger(__name__)
@@ -69,21 +70,27 @@ def _extract_archive_links(tweet: dict[str, Any]) -> list[Link]:
 def _extract_archive_media(tweet: dict[str, Any]) -> list[MediaEntry]:
     """Parse media from `extended_entities.media`, falling back to `entities.media`.
 
-    Normalises `type` to `"video"` (videos and animated GIFs) or `"photo"`, and
-    picks the canonical URL (`media_url_https`, falling back to `expanded_url`).
-    Entries missing both URLs are dropped.
+    Videos and animated GIFs go through `build_video_media` (shared with the
+    GraphQL path) so the archive captures the playable mp4/HLS stream from
+    `video_info.variants` — plus the poster as `thumbnail_url`, the chosen
+    bitrate, and the duration — rather than storing the poster image as the
+    video URL. Photos keep the canonical URL (`media_url_https`, falling back
+    to `expanded_url`). Entries with no usable URL are dropped.
     """
     media_entries = tweet.get("extended_entities", {}).get("media") or tweet.get(
         "entities", {}
     ).get("media", [])
-    return [
-        Media(
-            type="video" if media_entity.get("type") in ("video", "animated_gif") else "photo",
-            url=media_entity.get("media_url_https") or media_entity["expanded_url"],
-        )
-        for media_entity in media_entries
-        if media_entity.get("media_url_https") or media_entity.get("expanded_url")
-    ]
+    media: list[MediaEntry] = []
+    for media_entity in media_entries:
+        if media_entity.get("type") in ("video", "animated_gif"):
+            video = build_video_media(media_entity)
+            if video is not None:
+                media.append(video)
+            continue
+        url = media_entity.get("media_url_https") or media_entity.get("expanded_url")
+        if url:
+            media.append(Media(type="photo", url=url))
+    return media
 
 
 def _archive_tweet_to_item(entry: dict[str, Any], author: Author) -> Item | None:
