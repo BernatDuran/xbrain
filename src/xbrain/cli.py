@@ -30,12 +30,6 @@ from xbrain.media import download_all as run_media_download
 from xbrain.media import emit_summary_line as media_emit_summary_line
 from xbrain.models import ArchiveImport, Author, Item, SourceName
 from xbrain.refresh import estimate_download_size, refresh_video_media
-from xbrain.video_media import download_videos as run_download_videos
-from xbrain.video_media import (
-    emit_video_summary_line,
-    format_size_gate,
-    plan_video_downloads,
-)
 from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import (
     load_state,
@@ -58,6 +52,15 @@ from xbrain.topics import (
     merge_overviews,
     topics_needing_synth,
     write_topic_pages,
+)
+from xbrain.video_media import download_videos as run_download_videos
+from xbrain.video_media import (
+    VideoDownloadPlan,
+    VideoReport,
+    emit_video_summary_line,
+    format_size_gate,
+    parse_size_to_bytes,
+    plan_video_downloads,
 )
 from xbrain.vocab import (
     apply_vocab_worksheet,
@@ -109,6 +112,10 @@ _OPERATOR_ERRORS = (
     # The snapshot module hits these on permission or disk issues — they should
     # surface as a clean exit-1, not a raw traceback.
     OSError,
+    # `download-videos` buffers each mp4 fully in memory (streaming is the
+    # large-file follow-up); a too-large body should exit cleanly, not dump a
+    # raw traceback. Prior transitions are already persisted, so no data is lost.
+    MemoryError,
 )
 
 
@@ -630,6 +637,21 @@ def _warn_items_filter_no_match(cfg: Config, items_filter: list[str]) -> None:
         )
 
 
+def _skip_only_report(plan: VideoDownloadPlan) -> VideoReport:
+    """A `VideoReport` carrying only `plan`'s skip counts (no attempts).
+
+    Lets the skip-only path emit the same `SUMMARY:` line as a real run, so a
+    monitor grepping stderr sees `download-videos` and `media` consistently.
+    """
+    return VideoReport(
+        videos_skipped_hls=plan.n_hls_skipped,
+        videos_skipped_poster_era=plan.n_poster_skipped,
+        videos_skipped_already_downloaded=plan.n_already_downloaded,
+        videos_skipped_too_large=plan.n_too_large,
+        videos_skipped_size_unknown=plan.n_size_unknown_skipped,
+    )
+
+
 def _run_download_videos(
     cfg: Config,
     source: str,
@@ -638,6 +660,7 @@ def _run_download_videos(
     limit: int | None,
     items_filter: list[str] | None,
     yes: bool,
+    max_size_bytes: int | None,
 ) -> None:
     """Download the mp4 bytes for `MediaVideoPending` entries; persist + summarise.
 
@@ -646,13 +669,15 @@ def _run_download_videos(
     same recovery boundary as `xbrain media`, but taken AFTER the confirm so a
     declined gate never leaves a stray snapshot; a snapshot failure still
     propagates and aborts before any write (CONTRIBUTING §Safety). A run with no
-    downloadable mp4 (only HLS / poster-era / already-downloaded) writes nothing,
-    so it skips both the confirm and the snapshot and just reports.
+    downloadable mp4 (only HLS / poster-era / already-downloaded / over-cap /
+    unknown-size) writes nothing, so it skips both the confirm and the snapshot —
+    but still emits the `SUMMARY:` line for monitor parity with `media`.
 
     `--source` scopes the run to bookmark / own-tweet items; `scoped` shares the
     same `Item` objects as `store`, so the in-place transitions are persisted by
     saving the full `store`. mp4 ONLY: HLS entries are reported as deferred to
-    the ffmpeg follow-up, never downloaded here.
+    the ffmpeg follow-up, never downloaded here. `max_size_bytes` caps the
+    per-video estimated size.
     """
     if items_filter:
         _warn_items_filter_no_match(cfg, items_filter)
@@ -665,14 +690,19 @@ def _run_download_videos(
     chosen = set(source_sets[source])
     scoped = {item_id: item for item_id, item in store.items() if item.source in chosen}
 
-    plan = plan_video_downloads(scoped, force=force, limit=limit, items_filter=items_filter)
+    plan = plan_video_downloads(
+        scoped, force=force, limit=limit, items_filter=items_filter, max_size_bytes=max_size_bytes
+    )
     if plan.n_to_download == 0:
         typer.echo(
             f"No hay vídeos mp4 que descargar "
             f"({plan.n_hls_skipped} HLS pendientes de ffmpeg, "
             f"{plan.n_poster_skipped} poster-era, "
-            f"{plan.n_already_downloaded} ya descargados)."
+            f"{plan.n_already_downloaded} ya descargados, "
+            f"{plan.n_too_large} > --max-size, "
+            f"{plan.n_size_unknown_skipped} sin tamaño)."
         )
+        emit_video_summary_line(_skip_only_report(plan))
         return
     typer.echo(format_size_gate(plan))
     if not yes:
@@ -689,6 +719,7 @@ def _run_download_videos(
             force=force,
             limit=limit,
             items_filter=items_filter,
+            max_size_bytes=max_size_bytes,
             on_progress=_persist,
         )
     finally:
@@ -702,7 +733,9 @@ def _run_download_videos(
         f"fallidos {report.videos_failed_permanent + report.videos_failed_transient}, "
         f"HLS saltados {report.videos_skipped_hls}, "
         f"poster-era saltados {report.videos_skipped_poster_era}, "
-        f"ya descargados {report.videos_skipped_already_downloaded}"
+        f"ya descargados {report.videos_skipped_already_downloaded}, "
+        f"> --max-size {report.videos_skipped_too_large}, "
+        f"sin tamaño {report.videos_skipped_size_unknown}"
     )
 
 
@@ -730,6 +763,13 @@ def download_videos(
         "--yes",
         help="No pedir confirmación del tamaño de descarga (modo no interactivo).",
     ),
+    max_size: str | None = typer.Option(
+        None,
+        "--max-size",
+        help="Saltar vídeos cuyo tamaño estimado supere este cap. Acepta 500MB / 2GB "
+        "(unidades decimales); un número sin unidad se interpreta como MB. Con el cap "
+        "puesto, los vídeos de tamaño desconocido (sin bitrate/duración) también se saltan.",
+    ),
 ) -> None:
     """Descarga los bytes mp4 de los vídeos referenciados en `items.json`.
 
@@ -738,13 +778,21 @@ def download_videos(
     estimación del tamaño total (~X.X GB) y pide confirmación salvo `--yes`. Los
     manifiestos HLS (`.m3u8`) necesitan ffmpeg y se posponen a un follow-up: se
     cuentan y se saltan, no se descargan aquí. Las entradas poster-era (sin
-    backfill: usa antes `xbrain refresh-media`) también se saltan. Es destructivo
-    (reescribe `items.json`) → auto-snapshot antes de escribir.
+    backfill: usa antes `xbrain refresh-media`) también se saltan. `--max-size`
+    (p.ej. `500MB` / `2GB`) salta los vídeos demasiado grandes por estimación.
+    Es destructivo (reescribe `items.json`) → auto-snapshot antes de escribir.
     """
     cfg = _config()
     items_filter = [s.strip() for s in items.split(",") if s.strip()] if items else None
+    max_size_bytes = parse_size_to_bytes(max_size) if max_size else None
     _run_download_videos(
-        cfg, source.value, force=force, limit=limit, items_filter=items_filter, yes=yes
+        cfg,
+        source.value,
+        force=force,
+        limit=limit,
+        items_filter=items_filter,
+        yes=yes,
+        max_size_bytes=max_size_bytes,
     )
 
 

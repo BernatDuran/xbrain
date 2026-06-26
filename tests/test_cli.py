@@ -455,7 +455,8 @@ def test_download_videos_command_downloads_mp4_with_yes(tmp_path: Path, monkeypa
 
 
 def test_download_videos_command_aborts_when_declined(tmp_path: Path, monkeypatch):
-    """Without `--yes`, declining the gate aborts: no download, no snapshot."""
+    """Without `--yes`, declining the gate aborts: no download, and (item 6a) NO
+    snapshot is left on disk — the snapshot is taken only after confirmation."""
     from xbrain.models import MediaVideoPending
     from xbrain.store import load_store
 
@@ -468,6 +469,11 @@ def test_download_videos_command_aborts_when_declined(tmp_path: Path, monkeypatc
     reloaded = load_store(tmp_path / "data" / "items.json")
     assert isinstance(reloaded["42"].media[0], MediaVideoPending)
     assert not (tmp_path / "data" / "media" / "42" / "0.mp4").exists()
+    # Item 6a: a declined gate leaves no snapshot behind.
+    snapshots = tmp_path / "data" / "snapshots"
+    assert not snapshots.exists() or not any(
+        "pre-download-videos" in p.name for p in snapshots.iterdir()
+    )
 
 
 def test_download_videos_command_proceeds_when_confirmed(tmp_path: Path, monkeypatch):
@@ -486,7 +492,8 @@ def test_download_videos_command_proceeds_when_confirmed(tmp_path: Path, monkeyp
 
 
 def test_download_videos_command_skips_hls(tmp_path: Path, monkeypatch):
-    """An HLS-only store is a no-op for download but reports the deferred count."""
+    """An HLS-only store is a no-op for download but reports the deferred count —
+    and still emits the SUMMARY line (item 5: monitor parity with `media`)."""
     from xbrain.models import MediaVideoPending
     from xbrain.store import load_store
 
@@ -496,6 +503,9 @@ def test_download_videos_command_skips_hls(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["download-videos"])
     assert result.exit_code == 0, result.output
     assert "HLS" in result.output
+    # Item 5: a skip-only run emits SUMMARY, just like the photo command.
+    assert "SUMMARY:" in result.output
+    assert "skipped_hls: 1" in result.output
     reloaded = load_store(tmp_path / "data" / "items.json")
     assert isinstance(reloaded["7"].media[0], MediaVideoPending)
 
@@ -536,6 +546,81 @@ def test_download_videos_command_items_filter(tmp_path: Path, monkeypatch):
     reloaded = load_store(tmp_path / "data" / "items.json")
     assert isinstance(reloaded["a"].media[0], MediaVideoPending)
     assert isinstance(reloaded["b"].media[0], MediaVideoDownloaded)
+
+
+def test_download_videos_command_persists_failed_on_total_failure(tmp_path: Path, monkeypatch):
+    """Item 6b: a total-failure RuntimeError exits 1, but the CLI try/finally
+    still persists the MediaVideoFailed record (no in-memory work lost)."""
+    from xbrain.models import MediaVideoFailed
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    save_store({"42": _video_item("42")}, tmp_path / "data" / "items.json")
+
+    class _Fake404Session:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+        def get(self, _url, *, timeout):
+            class _Resp:
+                status_code = 404
+                content = b""
+                headers: dict[str, str] = {}
+
+            return _Resp()
+
+    monkeypatch.setattr("xbrain.video_media.requests.Session", _Fake404Session)
+    result = runner.invoke(app, ["download-videos", "--yes"])
+    assert result.exit_code == 1  # total failure surfaces as clean exit-1
+    reloaded = load_store(tmp_path / "data" / "items.json")
+    entry = reloaded["42"].media[0]
+    assert isinstance(entry, MediaVideoFailed)
+    assert entry.failure_reason == "http_4xx"
+
+
+def test_download_videos_command_memory_error_exits_cleanly(tmp_path: Path, monkeypatch):
+    """Item 2: an OOM while buffering a body exits 1 cleanly (no raw traceback)."""
+    _setup_repo(tmp_path, monkeypatch)
+    save_store({"42": _video_item("42")}, tmp_path / "data" / "items.json")
+
+    class _OOMSession:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+        def get(self, _url, *, timeout):
+            raise MemoryError("body too large to buffer")
+
+    monkeypatch.setattr("xbrain.video_media.requests.Session", _OOMSession)
+    result = runner.invoke(app, ["download-videos", "--yes"])
+    assert result.exit_code == 1
+    assert "Error:" in result.output  # clean operator message, not a traceback
+
+
+def test_download_videos_command_max_size_skips_big_video(tmp_path: Path, monkeypatch):
+    """Item 7 (CLI): `--max-size` skips an over-cap video; nothing is downloaded."""
+    from xbrain.models import MediaVideoPending
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    # _video_item estimates 2_176_000 b/s × 30 s / 8 = 8.16 MB → over a 1MB cap.
+    save_store({"42": _video_item("42")}, tmp_path / "data" / "items.json")
+    monkeypatch.setattr("xbrain.video_media.requests.Session", _FakeVideoSession)
+
+    result = runner.invoke(app, ["download-videos", "--max-size", "1MB", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "max-size" in result.output
+    reloaded = load_store(tmp_path / "data" / "items.json")
+    assert isinstance(reloaded["42"].media[0], MediaVideoPending)  # skipped, untouched
+    assert not (tmp_path / "data" / "media" / "42" / "0.mp4").exists()
+
+
+def test_download_videos_command_rejects_bad_max_size(tmp_path: Path, monkeypatch):
+    """A garbage `--max-size` value is a clean operator error (exit 1)."""
+    _setup_repo(tmp_path, monkeypatch)
+    save_store({"42": _video_item("42")}, tmp_path / "data" / "items.json")
+    result = runner.invoke(app, ["download-videos", "--max-size", "banana", "--yes"])
+    assert result.exit_code == 1
+    assert "Error:" in result.output
 
 
 def test_parse_date_returns_utc_aware():

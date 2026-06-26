@@ -86,11 +86,13 @@ class VideoReport:
 
     `videos_failed_transient` counts entries that landed in the transient
     bucket on THIS run (eligible for the next run's auto-retry);
-    `videos_failed_permanent` the terminal bucket. The three `skipped_*`
-    counters are the mp4-only scope made visible: `skipped_hls` are deferred to
-    the ffmpeg follow-up, `skipped_poster_era` are un-backfilled (run
-    `refresh-media` first), and `skipped_already_downloaded` is the idempotency
-    proof — a no-op re-run reports every previously-downloaded video here.
+    `videos_failed_permanent` the terminal bucket. The `skipped_*` counters are
+    the scope made visible: `skipped_hls` are deferred to the ffmpeg follow-up,
+    `skipped_poster_era` are un-backfilled (run `refresh-media` first),
+    `skipped_already_downloaded` is the idempotency proof, and — when
+    `--max-size` is set — `skipped_too_large` exceeded the cap by estimate while
+    `skipped_size_unknown` could not be verified under the cap (no
+    bitrate/duration), so it is skipped rather than risk a multi-GB surprise.
     """
 
     items_processed: int = 0
@@ -101,6 +103,8 @@ class VideoReport:
     videos_skipped_hls: int = 0
     videos_skipped_poster_era: int = 0
     videos_skipped_already_downloaded: int = 0
+    videos_skipped_too_large: int = 0
+    videos_skipped_size_unknown: int = 0
     bytes_downloaded: int = 0
     elapsed_seconds: float = 0.0
     # Per-item failures keyed by item id → list of (url, reason) tuples.
@@ -114,9 +118,12 @@ class VideoDownloadPlan:
     Computed WITHOUT touching the network by replaying the exact same
     eligibility walk `download_videos` will perform (same `force` / `limit` /
     `items_filter`), so the gate's promise matches what the run does.
-    `estimated_bytes` sums `bitrate × duration` over the eligible mp4 set only;
-    `n_unknown` counts eligible mp4s with no bitrate/duration (their size is
-    unknown until the bytes land — never assumed 0).
+    `estimated_bytes` sums `bitrate × duration` over the eligible mp4 set only —
+    and when `--max-size` is set, that set already excludes the over-cap and
+    unknown-size videos, so the "~X GB across N videos" promise matches exactly
+    what will be fetched. `n_unknown` counts eligible mp4s with no
+    bitrate/duration (their size is unknown until the bytes land — never assumed
+    0); with `--max-size` set those are not eligible (see `n_size_unknown_skipped`).
     """
 
     n_to_download: int = 0
@@ -126,6 +133,8 @@ class VideoDownloadPlan:
     n_hls_skipped: int = 0
     n_poster_skipped: int = 0
     n_already_downloaded: int = 0
+    n_too_large: int = 0
+    n_size_unknown_skipped: int = 0
 
 
 def _video_class(entry: _VideoEntry) -> VideoStreamKind:
@@ -185,6 +194,63 @@ def _estimated_bytes(entry: _VideoEntry) -> int | None:
     return bitrate * duration // _BITS_PER_BYTE_TIMES_MILLIS_PER_SECOND
 
 
+# Decimal size units (GB = 10⁹, matching the gate's `/1_000_000_000` GB display).
+_SIZE_UNITS: tuple[tuple[str, int], ...] = (
+    ("GB", 1_000_000_000),
+    ("MB", 1_000_000),
+    ("KB", 1_000),
+    ("B", 1),
+)
+
+
+def parse_size_to_bytes(value: str) -> int:
+    """Parse a human `--max-size` value (`500MB`, `2GB`, `1.5gb`) into bytes.
+
+    Case- and space-insensitive. A bare number (no unit) is read as **MB**.
+    Units are decimal (MB = 10⁶, GB = 10⁹) to match the GB figure the size gate
+    prints. Raises `ValueError` on garbage or a non-positive value — the CLI's
+    `_handle_cli_errors` turns that into a clean exit-1 message.
+    """
+    text = value.strip().upper().replace(" ", "")
+    if not text:
+        raise ValueError("--max-size is empty")
+    for suffix, multiplier in _SIZE_UNITS:
+        if text.endswith(suffix):
+            return _scale_size(text[: -len(suffix)], multiplier, value)
+    return _scale_size(text, 1_000_000, value)  # bare number → MB
+
+
+def _scale_size(number: str, multiplier: int, original: str) -> int:
+    """Parse `number` × `multiplier` into a positive byte count, or raise."""
+    try:
+        magnitude = float(number)
+    except ValueError:
+        raise ValueError(f"invalid --max-size {original!r}; use e.g. 500MB or 2GB") from None
+    if magnitude <= 0:
+        raise ValueError(f"--max-size must be positive, got {original!r}")
+    return int(magnitude * multiplier)
+
+
+def _within_size_cap(report: VideoReport, entry: _VideoEntry, max_size_bytes: int | None) -> bool:
+    """True when `entry` may be downloaded under the `--max-size` cap.
+
+    No cap (`max_size_bytes is None`) → always True. With a cap: an estimate
+    over the cap is `too_large`, and an UNKNOWN estimate (no bitrate/duration)
+    is `size_unknown` — we cannot prove it fits, so we skip rather than risk a
+    multi-GB surprise. Both record onto `report` and return False.
+    """
+    if max_size_bytes is None:
+        return True
+    estimate = _estimated_bytes(entry)
+    if estimate is None:
+        report.videos_skipped_size_unknown += 1
+        return False
+    if estimate > max_size_bytes:
+        report.videos_skipped_too_large += 1
+        return False
+    return True
+
+
 def _record_skip(report: VideoReport, entry: _VideoEntry) -> None:
     """Tally a non-eligible video entry into the right skip bucket.
 
@@ -218,13 +284,15 @@ def _iter_eligible_video_attempts(
     limit: int | None,
     force: bool,
     report: VideoReport,
+    max_size_bytes: int | None = None,
 ) -> Iterator[tuple[str, Item, int, _VideoEntry]]:
     """Yield each (item_id, item, index, entry) eligible for video download.
 
     Bumps `report.items_processed` once per item that carries any video entry,
     and records every non-eligible video entry into its skip bucket via
-    `_record_skip`. Photo entries are passed over silently. Stops yielding once
-    `limit` eligible entries have been emitted.
+    `_record_skip` (HLS / poster-era / already-downloaded) or `_within_size_cap`
+    (over `--max-size` / unknown-size under the cap). Photo entries are passed
+    over silently. Stops yielding once `limit` eligible entries have been emitted.
     """
     remaining = limit
     for item_id, item in items.items():
@@ -238,6 +306,8 @@ def _iter_eligible_video_attempts(
             if not _is_video_download_eligible(entry, force=force):
                 _record_skip(report, entry)
                 continue
+            if not _within_size_cap(report, entry, max_size_bytes):
+                continue
             if remaining is not None:
                 remaining -= 1
             yield item_id, item, index, entry
@@ -249,18 +319,24 @@ def plan_video_downloads(
     force: bool = False,
     limit: int | None = None,
     items_filter: list[str] | None = None,
+    max_size_bytes: int | None = None,
 ) -> VideoDownloadPlan:
     """Preview the download set + size WITHOUT any network — drives the gate.
 
-    Replays the exact eligibility walk `download_videos` performs against a
-    throwaway report, then sums `_estimated_bytes` over the eligible mp4 set so
-    the operator sees how much is about to be fetched (and how many HLS / poster
-    / already-downloaded entries are being passed over) before confirming.
+    Replays the exact eligibility walk `download_videos` performs (same `force`
+    / `limit` / `items_filter` / `max_size_bytes`) against a throwaway report,
+    then sums `_estimated_bytes` over the eligible mp4 set so the operator sees
+    how much is about to be fetched — and how many HLS / poster-era /
+    already-downloaded / over-cap / unknown-size entries are being passed over —
+    before confirming. Because the cap is applied during the walk, the estimate
+    already reflects only the under-cap to-download set.
     """
     candidate = _filter_by_ids(items, items_filter)
     probe = VideoReport()
     eligible = list(
-        _iter_eligible_video_attempts(candidate, limit=limit, force=force, report=probe)
+        _iter_eligible_video_attempts(
+            candidate, limit=limit, force=force, report=probe, max_size_bytes=max_size_bytes
+        )
     )
     estimated_bytes = 0
     n_estimable = 0
@@ -280,16 +356,19 @@ def plan_video_downloads(
         n_hls_skipped=probe.videos_skipped_hls,
         n_poster_skipped=probe.videos_skipped_poster_era,
         n_already_downloaded=probe.videos_skipped_already_downloaded,
+        n_too_large=probe.videos_skipped_too_large,
+        n_size_unknown_skipped=probe.videos_skipped_size_unknown,
     )
 
 
 def format_size_gate(plan: VideoDownloadPlan) -> str:
     """The human size-gate line shown before download (the "~X GB" warning).
 
-    Reports the estimated total GB across the to-be-downloaded videos, plus the
-    counts of HLS and already-downloaded entries being skipped. When some
-    eligible mp4s carry no bitrate/duration their bytes are unknown, surfaced as
-    a `+N of unknown size` rider rather than silently understating the total.
+    Reports the estimated total GB across the under-cap to-be-downloaded videos,
+    plus the counts of the entries being skipped (HLS, already-downloaded, and —
+    when `--max-size` is set — over-cap and unknown-size). When some eligible
+    mp4s carry no bitrate/duration their bytes are unknown, surfaced as a
+    `+N of unknown size` rider rather than silently understating the total.
     """
     if plan.n_estimable:
         gigabytes = plan.estimated_bytes / 1_000_000_000
@@ -298,10 +377,15 @@ def format_size_gate(plan: VideoDownloadPlan) -> str:
             size += f" (+{plan.n_unknown} of unknown size)"
     else:
         size = "an unknown total size"
-    return (
-        f"About to download {size} across {plan.n_to_download} videos "
-        f"({plan.n_hls_skipped} HLS skipped, {plan.n_already_downloaded} already downloaded)."
-    )
+    skips = [
+        f"{plan.n_hls_skipped} HLS skipped",
+        f"{plan.n_already_downloaded} already downloaded",
+    ]
+    if plan.n_too_large:
+        skips.append(f"{plan.n_too_large} over --max-size")
+    if plan.n_size_unknown_skipped:
+        skips.append(f"{plan.n_size_unknown_skipped} unknown-size skipped")
+    return f"About to download {size} across {plan.n_to_download} videos ({', '.join(skips)})."
 
 
 def download_videos(
@@ -311,6 +395,7 @@ def download_videos(
     force: bool = False,
     limit: int | None = None,
     items_filter: list[str] | None = None,
+    max_size_bytes: int | None = None,
     throttle_seconds: float = _DEFAULT_THROTTLE_SECONDS,
     user_agent: str = _DEFAULT_UA,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
@@ -323,8 +408,10 @@ def download_videos(
     Eligibility (without `--force`): a `MediaVideoPending` whose URL is a real
     mp4 stream, or a `MediaVideoFailed` mp4 whose reason is transient. With
     `--force`, downloaded and permanently-failed mp4s are re-attempted too. HLS
-    and poster-era entries are skipped and counted (never downloaded). Photo
-    variants are ignored.
+    and poster-era entries are skipped and counted (never downloaded). When
+    `max_size_bytes` is set, an eligible mp4 whose ESTIMATED size exceeds the cap
+    (or whose size is unknown) is skipped and counted instead. Photo variants are
+    ignored.
 
     Mutates `items` in place — the caller wraps each transition with a
     store-write (the `on_progress` callback fires after every transition, so a
@@ -350,6 +437,7 @@ def download_videos(
         limit=limit,
         force=force,
         report=report,
+        max_size_bytes=max_size_bytes,
     ):
         report.videos_attempted += 1
         result = _download_one_video(
@@ -446,11 +534,27 @@ def _download_one_video(
             attempts=attempts,
         )
 
+    # NOTE: the whole body is buffered here (`response.content`). Streaming the
+    # download is deferred to the large-file / ffmpeg follow-up; for now the
+    # `--max-size` gate caps the risk and `MemoryError` exits cleanly via the CLI.
     content = response.content
     if not content:
         # 2xx but empty body — not a real download. Transient so we retry.
         return _failed(
             entry, reason="unknown_error", error="empty response body", attempts=attempts
+        )
+    content_type = _content_type_of(response)
+    if not _is_video_response(content_type, content):
+        # 2xx with a NON-video body — a CDN/captcha/auth-wall interstitial or an
+        # edge-cache HTML/JSON error page served as 200. Writing it would
+        # persist a corrupt `.mp4` that idempotency then hides forever. Reject
+        # as `format_error` (permanent, mirroring the photo Pillow guard) WITHOUT
+        # writing the file.
+        return _failed(
+            entry,
+            reason="format_error",
+            error=f"non-video response: content-type={content_type!r}, {len(content)} bytes",
+            attempts=attempts,
         )
     local_path = _local_path(item_id, index, ".mp4")
     try:
@@ -493,19 +597,48 @@ def _failed(
     )
 
 
+# mp4 boxes open with a 4-byte size then the `ftyp` box type at offset 4 — the
+# cheapest reliable "is this actually a video container?" check. Combined with a
+# `video/*` Content-Type, it rejects 200-status HTML/JSON interstitials a CDN or
+# auth-wall may return in place of the bytes.
+_MP4_MAGIC = b"ftyp"
+
+
+def _content_type_of(response: object) -> str:
+    """Best-effort Content-Type from a response (`""` when absent)."""
+    headers = getattr(response, "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return ""
+    return headers.get("Content-Type", "") or ""
+
+
+def _is_video_response(content_type: str, content: bytes) -> bool:
+    """True when the 2xx body looks like an actual video, not an error page.
+
+    Accepts a `video/*` Content-Type OR an mp4 container signature (`ftyp` box
+    at offset 4). Anything else — `text/html` captcha, `application/json` error
+    — is rejected so it is never written as a `.mp4`.
+    """
+    if content_type.lower().startswith("video/"):
+        return True
+    return len(content) >= 12 and content[4:8] == _MP4_MAGIC
+
+
 def emit_video_summary_line(report: VideoReport, *, out: "io.IOBase | None" = None) -> None:
     """Print the SUMMARY line on stderr (mirrors `media.emit_summary_line`).
 
     Emitted only when the run did something — at least one attempt, or at least
-    one skip (HLS / poster-era / already-downloaded). A fully no-op run (e.g. an
-    `--items` filter that matched nothing) stays silent. `out` is injectable for
-    tests; defaults to `sys.stderr`.
+    one skip (HLS / poster-era / already-downloaded / too-large / unknown-size).
+    A fully no-op run (e.g. an `--items` filter that matched nothing) stays
+    silent. `out` is injectable for tests; defaults to `sys.stderr`.
     """
     did_something = (
         report.videos_attempted
         or report.videos_skipped_hls
         or report.videos_skipped_poster_era
         or report.videos_skipped_already_downloaded
+        or report.videos_skipped_too_large
+        or report.videos_skipped_size_unknown
     )
     if not did_something:
         return
@@ -517,6 +650,8 @@ def emit_video_summary_line(report: VideoReport, *, out: "io.IOBase | None" = No
         f"skipped_hls: {report.videos_skipped_hls}, "
         f"skipped_poster_era: {report.videos_skipped_poster_era}, "
         f"already_downloaded: {report.videos_skipped_already_downloaded}, "
+        f"skipped_too_large: {report.videos_skipped_too_large}, "
+        f"skipped_size_unknown: {report.videos_skipped_size_unknown}, "
         f"bytes: {report.bytes_downloaded:_}",
         file=target,
     )

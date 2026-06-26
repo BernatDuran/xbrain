@@ -521,7 +521,7 @@ uv run xbrain <command> [options]
 | `media` | Download X-post photos referenced in `Item.media` and render them inline in the wiki. `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Local media storage](#local-media-storage). |
 | `describe` | Describe downloaded photos with a vision LLM (Claude Sonnet 4.6 by default) and feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described photos unless `[describe].version` is bumped in `config.toml`. |
 | `refresh-media` | Re-capture X and backfill the **playable video URL + bitrate + duration** onto items whose video is still poster-era (incremental `extract` + non-overwriting merge never refresh existing videos). Video-only — photos and enrichment/description state are preserved, and a good video is never degraded back to its poster if X drifts. Scrolls the full history (slow); destructive → auto-snapshot; prints a download-size estimate. Does **not** download video (that is `download-videos`). Re-seeing 0 known items on a non-empty store (likely expired session / GraphQL drift) aborts without saving unless `--force`. `--source bookmarks\|tweets\|all`, `--force`. |
-| `download-videos` | Download the actual **mp4 bytes** for backfilled videos and embed them inline in the wiki — the video counterpart to `media`. mp4 only: HLS (`.m3u8`) needs ffmpeg and is a deferred follow-up (skipped + counted); poster-era entries (run `refresh-media` first) are skipped too. Prints a `~X.X GB` size estimate and asks for confirmation **unless `--yes`**. Destructive → auto-snapshot; idempotent (re-runs skip downloaded videos unless `--force`). `--source bookmarks\|tweets\|all`, `--limit N`, `--items <a,b,c>`, `--force`, `--yes`. See [Local media storage](#local-media-storage). |
+| `download-videos` | Download the actual **mp4 bytes** for backfilled videos and embed them inline in the wiki — the video counterpart to `media`. mp4 only: HLS (`.m3u8`) needs ffmpeg and is a deferred follow-up (skipped + counted); poster-era entries (run `refresh-media` first) are skipped too. Prints a `~X.X GB` size estimate and asks for confirmation **unless `--yes`**. `--max-size 500MB\|2GB` skips videos whose estimated size exceeds the cap. Validates the response is really a video (rejects HTML/JSON interstitials served as 200). Destructive → auto-snapshot; idempotent (re-runs skip downloaded videos unless `--force`). `--source bookmarks\|tweets\|all`, `--limit N`, `--items <a,b,c>`, `--max-size <size>`, `--force`, `--yes`. See [Local media storage](#local-media-storage). |
 | `vocab` | Induce the topic taxonomy. `--executor`, `--apply <file>`, `--regenerate`. |
 | `enrich` | Enrich items with a summary + topics. `--executor`, `--apply <file>`. |
 | `topics` | Synthesise topic pages. `--executor`, `--apply <file>`, `--resynth`. |
@@ -662,13 +662,26 @@ entries (not yet backfilled) are skipped too; run `refresh-media` first.
 Video files are large, so `download-videos` prints a **size gate** before
 fetching — e.g. `About to download ~1.2 GB across 8 videos (3 HLS skipped, 1
 already downloaded).` — and asks for confirmation. Pass `--yes` to skip the
-prompt (non-interactive runs). The run is idempotent (already-downloaded videos
-are skipped unless `--force`), auto-snapshots `data/` first (destructive), and a
-Ctrl-C between videos leaves `items.json` coherent.
+prompt (non-interactive runs). For a per-video cap, `--max-size` skips any video
+whose **estimated** size exceeds it (accepts `500MB` / `2GB`; a bare number is
+MB). With a cap set, videos of unknown size (no bitrate/duration) can't be
+verified under it and are skipped too — without the cap they download normally.
+The size estimate and the "N videos / ~X GB" line always reflect only the
+under-cap set you're about to fetch.
+
+Because a 200 status isn't trust — a CDN/captcha/auth-wall page can come back as
+200 with an HTML or JSON body — the downloaded bytes are validated (a `video/*`
+content-type or an mp4 `ftyp` signature) before being written; a non-video
+response is recorded as a permanent failure instead of saving a corrupt `.mp4`.
+
+The run is idempotent (already-downloaded videos are skipped unless `--force`),
+auto-snapshots `data/` first (destructive), and a Ctrl-C between videos leaves
+`items.json` coherent.
 
 ```bash
 xbrain download-videos                     # size gate + confirm, then download
 xbrain download-videos --yes               # non-interactive (CI / scripts)
+xbrain download-videos --max-size 500MB    # skip videos estimated over 500 MB
 xbrain download-videos --source bookmarks  # bookmarks only
 xbrain download-videos --limit 5 --items 123,456   # scope the run
 xbrain download-videos --force             # re-download + retry permanent failures

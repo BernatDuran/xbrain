@@ -29,10 +29,12 @@ from xbrain.video_media import (
     VideoDownloadPlan,
     VideoReport,
     _is_video_download_eligible,
+    _is_video_response,
     _video_class,
     download_videos,
     emit_video_summary_line,
     format_size_gate,
+    parse_size_to_bytes,
     plan_video_downloads,
 )
 
@@ -41,10 +43,11 @@ from xbrain.video_media import (
 
 @dataclass
 class FakeResponse:
-    """A minimal stand-in for `requests.Response` — `status_code` + `content`."""
+    """A minimal stand-in for `requests.Response` — status, content, headers."""
 
     status_code: int
     content: bytes = b""
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -462,6 +465,186 @@ def test_download_videos_empty_body_is_transient_unknown(tmp_path: Path):
     assert report.videos_failed_transient == 1
 
 
+# --------------------------------------------------------- content validation (item 1)
+
+
+def test_is_video_response_accepts_magic_or_content_type():
+    """Unit: a `video/*` Content-Type OR an mp4 `ftyp` box passes; HTML/JSON fail."""
+    assert _is_video_response("video/mp4", b"\x00" * 64) is True
+    assert _is_video_response("", _mp4_bytes()) is True  # ftyp magic, no header
+    assert _is_video_response("text/html", b"<!DOCTYPE html><html></html>") is False
+    assert _is_video_response("application/json", b'{"errors":[]}') is False
+
+
+def test_download_videos_rejects_html_interstitial_as_format_error(tmp_path: Path):
+    """A 200 with an HTML captcha/auth-wall body is rejected as format_error
+    (permanent) and NO file is written — mirrors the photo Pillow guard.
+
+    Partial-success setup (item 2 downloads) so the total-failure RuntimeError
+    does not fire and we can assert on the bucket + filesystem.
+    """
+    html = b"<!DOCTYPE html><html><body>Verify you are human</body></html>"
+    items = {
+        "1": _item_with_media([_video_pending(url="https://video.twimg.com/d/bad.mp4")], "1"),
+        "2": _item_with_media([_video_pending(url="https://video.twimg.com/d/ok.mp4")], "2"),
+    }
+    session = FakeSession(
+        responses={
+            "bad.mp4": [FakeResponse(200, html, {"Content-Type": "text/html"})],
+            "ok.mp4": [FakeResponse(200, _mp4_bytes())],
+        }
+    )
+    report = download_videos(items, media_root=tmp_path, session=session, throttle_seconds=0)
+    failed = items["1"].media[0]
+    assert isinstance(failed, MediaVideoFailed)
+    assert failed.failure_reason == "format_error"
+    assert (
+        failed.failure_reason not in _TRANSIENT_MEDIA_FAILURES
+    )  # permanent: not endlessly retried
+    assert "text/html" in (failed.error or "")
+    assert not (tmp_path / "1" / "0.mp4").exists()  # corrupt body never written
+    assert report.videos_failed_permanent == 1
+    assert isinstance(items["2"].media[0], MediaVideoDownloaded)
+
+
+def test_download_videos_rejects_json_error_page_as_format_error(tmp_path: Path):
+    """A 200 JSON error page (rate-limit/auth) is rejected, not written as .mp4."""
+    body = b'{"errors":[{"code":88,"message":"Rate limit exceeded"}]}'
+    items = {
+        "1": _item_with_media([_video_pending(url="https://video.twimg.com/d/j.mp4")], "1"),
+        "2": _item_with_media([_video_pending(url="https://video.twimg.com/d/ok.mp4")], "2"),
+    }
+    session = FakeSession(
+        responses={
+            "j.mp4": [FakeResponse(200, body, {"Content-Type": "application/json"})],
+            "ok.mp4": [FakeResponse(200, _mp4_bytes())],
+        }
+    )
+    download_videos(items, media_root=tmp_path, session=session, throttle_seconds=0)
+    failed = items["1"].media[0]
+    assert isinstance(failed, MediaVideoFailed)
+    assert failed.failure_reason == "format_error"
+    assert not (tmp_path / "1" / "0.mp4").exists()
+
+
+def test_download_videos_accepts_mp4_magic_without_content_type(tmp_path: Path):
+    """A real mp4 (ftyp magic) with no Content-Type header still succeeds."""
+    item = _item_with_media([_video_pending(url=_MP4_URL)])
+    session = FakeSession(responses={".mp4": [FakeResponse(200, _mp4_bytes())]})
+    download_videos({"123": item}, media_root=tmp_path, session=session, throttle_seconds=0)
+    assert isinstance(item.media[0], MediaVideoDownloaded)
+
+
+def test_download_videos_accepts_video_content_type_without_magic(tmp_path: Path):
+    """A `video/mp4` Content-Type without the ftyp magic (fragment/CDN quirk)
+    still succeeds — the Content-Type is sufficient evidence."""
+    body = b"\xde\xad\xbe\xef" * 16  # no ftyp box
+    item = _item_with_media([_video_pending(url=_MP4_URL)])
+    session = FakeSession(
+        responses={".mp4": [FakeResponse(200, body, {"Content-Type": "video/mp4"})]}
+    )
+    download_videos({"123": item}, media_root=tmp_path, session=session, throttle_seconds=0)
+    assert isinstance(item.media[0], MediaVideoDownloaded)
+
+
+# --------------------------------------------------------- size parsing + cap (item 7)
+
+
+def test_parse_size_to_bytes_accepts_human_units():
+    assert parse_size_to_bytes("100MB") == 100_000_000
+    assert parse_size_to_bytes("2GB") == 2_000_000_000
+    assert parse_size_to_bytes("500") == 500_000_000  # bare number → MB
+    assert parse_size_to_bytes("1.5GB") == 1_500_000_000
+    assert parse_size_to_bytes("2 gb") == 2_000_000_000  # case/space-insensitive
+    assert parse_size_to_bytes("750KB") == 750_000
+    assert parse_size_to_bytes("4096B") == 4096
+
+
+def test_parse_size_to_bytes_rejects_garbage_and_nonpositive():
+    for bad in ("banana", "-5MB", "0GB", "", "MB"):
+        with pytest.raises(ValueError):
+            parse_size_to_bytes(bad)
+
+
+def test_download_videos_skips_video_over_max_size(tmp_path: Path):
+    """A big video (estimate > cap) is skipped+counted; a small one downloads."""
+    big = _video_pending(
+        url="https://video.twimg.com/d/big.mp4", bitrate=2_176_000, duration_millis=30_000
+    )  # 8_160_000 bytes
+    small = _video_pending(
+        url="https://video.twimg.com/d/small.mp4", bitrate=500_000, duration_millis=10_000
+    )  # 625_000 bytes
+    items = {"1": _item_with_media([big], "1"), "2": _item_with_media([small], "2")}
+    session = FakeSession(
+        responses={
+            "big.mp4": [FakeResponse(200, _mp4_bytes())],
+            "small.mp4": [FakeResponse(200, _mp4_bytes())],
+        }
+    )
+    report = download_videos(
+        items, media_root=tmp_path, session=session, throttle_seconds=0, max_size_bytes=5_000_000
+    )
+    assert report.videos_skipped_too_large == 1
+    assert report.videos_downloaded == 1
+    assert isinstance(items["1"].media[0], MediaVideoPending)  # big skipped, untouched
+    assert isinstance(items["2"].media[0], MediaVideoDownloaded)
+
+
+def test_download_videos_skips_unknown_size_under_cap(tmp_path: Path):
+    """With a cap set, an unknown-size mp4 (no bitrate/duration) cannot be
+    verified under it → skipped+counted, never fetched."""
+    unknown = _video_pending(url=_MP4_URL, bitrate=None, duration_millis=None)
+    item = _item_with_media([unknown])
+    session = FakeSession(responses={".mp4": [FakeResponse(200, _mp4_bytes())]})
+    report = download_videos(
+        {"123": item},
+        media_root=tmp_path,
+        session=session,
+        throttle_seconds=0,
+        max_size_bytes=1_000_000_000,
+    )
+    assert report.videos_skipped_size_unknown == 1
+    assert report.videos_attempted == 0
+    assert isinstance(item.media[0], MediaVideoPending)
+    assert session.calls == []
+
+
+def test_download_videos_downloads_unknown_size_without_cap(tmp_path: Path):
+    """WITHOUT --max-size, an unknown-size mp4 is still downloaded normally."""
+    unknown = _video_pending(url=_MP4_URL, bitrate=None, duration_millis=None)
+    item = _item_with_media([unknown])
+    session = FakeSession(responses={".mp4": [FakeResponse(200, _mp4_bytes())]})
+    download_videos({"123": item}, media_root=tmp_path, session=session, throttle_seconds=0)
+    assert isinstance(item.media[0], MediaVideoDownloaded)
+
+
+def test_plan_estimate_reflects_capped_set():
+    """The gate estimate sums ONLY the under-cap to-download set, and counts the
+    over-cap / unknown-size skips separately."""
+    big = _video_pending(
+        url="https://video.twimg.com/d/big.mp4", bitrate=2_176_000, duration_millis=30_000
+    )  # 8_160_000
+    small = _video_pending(
+        url="https://video.twimg.com/d/small.mp4", bitrate=500_000, duration_millis=10_000
+    )  # 625_000
+    unknown = _video_pending(
+        url="https://video.twimg.com/d/u.mp4", bitrate=None, duration_millis=None
+    )
+    items = {
+        "1": _item_with_media([big], "1"),
+        "2": _item_with_media([small], "2"),
+        "3": _item_with_media([unknown], "3"),
+    }
+    plan = plan_video_downloads(items, max_size_bytes=5_000_000)
+    assert plan.n_to_download == 1
+    assert plan.estimated_bytes == 625_000  # only the small one
+    assert plan.n_too_large == 1
+    assert plan.n_size_unknown_skipped == 1
+    gate = format_size_gate(plan)
+    assert "1 over --max-size" in gate
+    assert "1 unknown-size skipped" in gate
+
+
 def test_download_videos_raises_on_total_failure(tmp_path: Path):
     item = _item_with_media([_video_pending(url="https://video.twimg.com/d/x.mp4")])
     session = FakeSession(responses={"x.mp4": [FakeResponse(404, b"")]})
@@ -724,6 +907,8 @@ def test_emit_video_summary_line_includes_all_counters(capsys):
         videos_skipped_hls=3,
         videos_skipped_poster_era=4,
         videos_skipped_already_downloaded=5,
+        videos_skipped_too_large=6,
+        videos_skipped_size_unknown=7,
         bytes_downloaded=2_048_000,
     )
     emit_video_summary_line(report)
@@ -735,6 +920,8 @@ def test_emit_video_summary_line_includes_all_counters(capsys):
     assert "skipped_hls: 3" in err
     assert "skipped_poster_era: 4" in err
     assert "already_downloaded: 5" in err
+    assert "skipped_too_large: 6" in err
+    assert "skipped_size_unknown: 7" in err
     assert "2_048_000" in err
 
 
@@ -743,3 +930,9 @@ def test_emit_video_summary_line_emits_when_only_hls_skipped(capsys):
     see that N videos are deferred to the ffmpeg follow-up."""
     emit_video_summary_line(VideoReport(videos_skipped_hls=2))
     assert "skipped_hls: 2" in capsys.readouterr().err
+
+
+def test_emit_video_summary_line_emits_when_only_too_large_skipped(capsys):
+    """A --max-size run that skipped everything as too-large still reports."""
+    emit_video_summary_line(VideoReport(videos_skipped_too_large=3))
+    assert "skipped_too_large: 3" in capsys.readouterr().err
