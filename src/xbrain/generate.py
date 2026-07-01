@@ -262,6 +262,14 @@ def _render_media_lines(item: Item) -> list[str]:
     for entry in item.media:
         if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed, MediaVideoDownloaded)):
             lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{entry.local_path}]]")
+            # A described (non-decorative) photo carries a vision caption right
+            # under the embed — plain note text, so Obsidian search finds it.
+            # One `>` per physical line: Markdown blockquotes scope to a single
+            # line, so a multi-line description must re-prefix every line or the
+            # trailing lines leak into the note body (worst case: a line that
+            # starts with `#`/`-`/`![[` injects unintended structure).
+            if isinstance(entry, MediaPhotoDescribed) and entry.description:
+                lines.extend(f"> {line}" for line in entry.description.splitlines())
         elif isinstance(entry, MediaPhotoFailed):
             reason = _FAILURE_ES_MEDIA.get(entry.failure_reason, entry.failure_reason)
             lines.append(f"> ⚠ Foto no disponible ({reason}): <{entry.url}>")
