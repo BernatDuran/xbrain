@@ -329,7 +329,10 @@ def _slide_embed_lines(frames: list[VideoFrame]) -> list[str]:
     for frame in frames:
         lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{frame.local_path}]]")
         if frame.description:
-            lines.append(f"> {frame.description}")
+            # Collapse internal newlines to a space: a multi-line vision description
+            # must stay ONE `> ...` line, else the tail spills out of the blockquote.
+            caption = " ".join(frame.description.splitlines())
+            lines.append(f"> {caption}")
         lines.append("")
     return lines
 

@@ -430,7 +430,8 @@ command = "parakeet-mlx"                  # external transcriber for `digest-vid
 
 Switching `[output].language` after the corpus is already enriched is supported
 — but does not retroactively translate existing summaries. To convert the
-whole corpus to the new language, run `xbrain enrich --regenerate` and
+whole corpus to the new language, run `xbrain vocab --regenerate` (it clears
+every enrichment; the next `xbrain enrich` re-enriches in the new language) and
 `xbrain topics --resynth` (both auto-snapshotted, see
 [Snapshots & safety](#snapshots--safety)). Otherwise new items get the new
 language while old summaries stay as they were.

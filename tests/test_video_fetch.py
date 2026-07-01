@@ -284,6 +284,19 @@ def test_timeout_is_classified(tmp_path: Path):
     assert report.failed == 1
 
 
+def test_generic_request_exception_is_classified_as_unknown_error(tmp_path: Path):
+    """A non-timeout `RequestException` (connection reset, DNS failure, TLS error…)
+    is caught as a per-video `unknown_error` failure — the batch continues, never a
+    raw traceback that aborts the whole run."""
+    store = {"42": _item("42", media=[_pending()])}
+    session = FakeSession(raise_for={".mp4": requests.ConnectionError("reset by peer")})
+    report = fetch_videos(
+        store, ["42"], tmp_path, session=session, sleep=_no_throttle, throttle_seconds=0
+    )
+    assert report.results[0].reason == "unknown_error"
+    assert report.failed == 1
+
+
 def test_downloaded_entry_is_refetched_ephemerally(tmp_path: Path):
     """A store entry already `MediaVideoDownloaded` still fetches to --to (fetch is
     independent of store state; it re-resolves the stream URL and re-downloads)."""

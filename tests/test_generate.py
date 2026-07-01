@@ -730,6 +730,38 @@ def test_generate_frames_embed_without_media_root(tmp_path: Path):
     assert "![[_media/7/frames/0.png]]" in note
 
 
+def test_slide_caption_collapses_internal_newlines(tmp_path: Path):
+    """A multi-line vision description must render as ONE valid `> ...` blockquote
+    caption: internal newlines are collapsed to spaces so the second line can't
+    spill OUT of the blockquote (an Obsidian caption is a single line)."""
+    from xbrain.generate import _slide_embed_lines
+    from xbrain.models import VideoFrame
+
+    frames = [
+        VideoFrame(
+            timestamp=1.0,
+            local_path="7/frames/0.png",
+            description="First line of the slide.\nSecond line of the slide.",
+        )
+    ]
+    lines = _slide_embed_lines(frames)
+    # Every emitted line is truly a single line — none carries an internal newline
+    # that would break the blockquote when the note is joined with "\n".
+    assert all("\n" not in line for line in lines)
+    assert "> First line of the slide. Second line of the slide." in lines
+
+
+def test_generate_silent_line_wins_over_stale_text_when_no_speech(tmp_path: Path):
+    """Defensive: a malformed third-party transcriber that reports `has_speech=False`
+    yet leaves non-empty `text` must still render the SILENT line — the tweet-signal
+    truth — not the stale/contradictory transcript text (and no digest heading)."""
+    generate({"7": _video_item(text="stale", has_speech=False, frames=[])}, tmp_path)
+    note = next((tmp_path / "items").glob("*.md")).read_text(encoding="utf-8")
+    assert "silent video" in note.lower() or "sin voz" in note.lower()
+    assert "stale" not in note
+    assert "## Video digest" not in note
+
+
 # --------------------------------------------------------------- topic_style
 
 

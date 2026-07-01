@@ -261,7 +261,10 @@ def attach_transcript(
     duplicated), so a `--force` re-digest refreshes it. Any other content source
     (article body, thread) is preserved. A no-speech transcript is attached with
     empty text + `has_speech=False` — the marker `generate` renders as a silent
-    video and `enrich` skips.
+    video. Enrich still re-runs once for it (the `fetched_at` bump below re-flags
+    the item as pending), but the empty transcript is excluded from the enrichment
+    prompt everywhere, so the result reflects the tweet signal — only a wasted call
+    on the api/manual tracks.
 
     `frames_by_item` (`--frames`, #44 PR4) carries the per-item key-frame slides
     (each item's own `<id>/frames/` paths); its default of no frames keeps the

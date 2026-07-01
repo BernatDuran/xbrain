@@ -321,6 +321,20 @@ def test_non_utf8_output_file_is_per_video_transcriber_failed(tmp_path: Path):
         transcribe_media(tmp_path / "a.mp4", runner=_raw_bytes_runner(b"\xff\xfe\x00not-utf8"))
 
 
+def test_non_utf8_stdout_is_per_video_transcriber_failed(tmp_path: Path):
+    """The STDOUT-arm mirror of the output-file guard: `subprocess.run(text=True)`
+    itself raises `UnicodeDecodeError` while decoding non-UTF-8 stdout. That must
+    surface as a per-video `TranscriberFailed` (recorded, batch continues), NOT a raw
+    traceback that aborts the whole run."""
+
+    def _run(_argv, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+    with pytest.raises(TranscriberFailed) as excinfo:
+        transcribe_media(tmp_path / "a.mp4", runner=_run)
+    assert "non-UTF-8 stdout" in str(excinfo.value)
+
+
 def test_language_falls_back_to_requested_when_payload_omits_it(tmp_path: Path):
     """The payload has no `language` → the Transcript records the requested hint."""
     result = transcribe_media(

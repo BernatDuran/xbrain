@@ -1136,7 +1136,7 @@ def digest_video(
         False,
         "--frames",
         help="Capa visual (opt-in): extrae key-frames de slides, los describe con "
-        "el modelo de visión EXTERNO ([vision].command) y los embebe en la nota. "
+        "el modelo de visión EXTERNO (`\\[vision].command`) y los embebe en la nota. "
         "Solo para vídeos slide-heavy; los talking-head se saltan (se registra).",
     ),
 ) -> None:
@@ -1156,7 +1156,7 @@ def digest_video(
 
     `--frames` (opt-in, capa visual PR4): para vídeos slide-heavy extrae
     key-frames con ffmpeg (EXTERNO), los describe con el modelo de visión EXTERNO
-    (`[vision].command`), adjunta las descripciones al source `x_video` y embebe
+    (`\\[vision].command`), adjunta las descripciones al source `x_video` y embebe
     las slides en la nota como fotos. Los vídeos talking-head se saltan y se
     registra el motivo. Sin `--frames` el flujo es idéntico al de PR2/PR3.
     """
