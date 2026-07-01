@@ -147,3 +147,41 @@ def test_items_pending_respects_date_range():
     store = {"1": old_item, "2": new_item}
     pending = items_pending_enrichment(store, since=datetime(2023, 1, 1, tzinfo=timezone.utc))
     assert {i.id for i in pending} == {"2"}
+
+
+def _enriched_at(item: Item, when: datetime) -> None:
+    apply_enrichment(
+        item,
+        Enrichment(
+            enriched_at=when, executor="api", summary="s", primary_topic="misc", topics=["misc"]
+        ),
+    )
+
+
+def test_item_reenriched_when_content_fetched_after_enrichment():
+    """A video bookmark enriched from its 2-line tweet, THEN given an `x_video`
+    transcript (content re-fetched later), must re-appear as pending — otherwise
+    it keeps topic "—" forever (the #44 re-enrichment trigger)."""
+    from xbrain.models import Content, ContentSourceSuccess
+
+    item = _item("1")
+    _enriched_at(item, datetime(2026, 5, 16, tzinfo=timezone.utc))
+    item.content = Content(
+        fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),  # AFTER enrichment
+        sources=[ContentSourceSuccess(kind="x_video", url="u", text="talk", has_speech=True)],
+    )
+    assert [i.id for i in items_pending_enrichment({"1": item})] == ["1"]
+
+
+def test_item_not_reenriched_when_content_predates_enrichment():
+    """The normal order (fetch → enrich) must NOT re-enrich: content already
+    reflected in the enrichment stays processed."""
+    from xbrain.models import Content, ContentSourceSuccess
+
+    item = _item("1")
+    item.content = Content(
+        fetched_at=datetime(2026, 5, 15, tzinfo=timezone.utc),  # BEFORE enrichment
+        sources=[ContentSourceSuccess(kind="external_article", url="u", text="body")],
+    )
+    _enriched_at(item, datetime(2026, 5, 16, tzinfo=timezone.utc))
+    assert items_pending_enrichment({"1": item}) == []
