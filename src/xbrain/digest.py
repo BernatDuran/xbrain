@@ -21,7 +21,9 @@ Two invariants carry the design:
   ~140 GB corpus never lands in the store.
 
 This module mutates the in-memory `store` in place and returns a `DigestReport`;
-persisting (with the destructive auto-snapshot) is the CLI's job.
+persisting (with the destructive auto-snapshot) is the CLI's job. The per-group
+work returns a small `_GroupOutcome` and the run sums them into the report once,
+so the tally lives in a single place.
 """
 
 from __future__ import annotations
@@ -57,12 +59,13 @@ TranscribeFn = Callable[[Path], Transcript]
 class DigestReport:
     """Structured outcome of a `digest_videos` run (drives the CLI summary).
 
-    Item-granular counters: `transcribed` (got a with-speech source),
-    `no_speech` (got a `has_speech=False` marker), `already` (skipped — already
-    carried a fresh `x_video` source), `failed` (its video's fetch/transcribe
-    failed), `skipped_no_video` (requested but no fetchable mp4). `videos_fetched`
-    is the distinct videos actually processed; `groups` is the dedup grouping so
-    the summary can report "N items ← M videos".
+    Item-granular counters: `transcribed` (got a with-speech source), `no_speech`
+    (got a `has_speech=False` marker), `already` (skipped — already carried an
+    `x_video` source), `failed` (its video's fetch/transcribe failed),
+    `skipped_no_video` (in the store but no fetchable mp4), `skipped_unknown` (id
+    absent from the store). `videos_transcribed` is the distinct videos that
+    actually produced a transcript this run; `groups` is the dedup grouping so the
+    summary can report "N items ← M videos".
     """
 
     transcribed: int = 0
@@ -70,8 +73,8 @@ class DigestReport:
     already: int = 0
     failed: int = 0
     skipped_no_video: int = 0
-    videos_fetched: int = 0
-    failed_videos: int = 0
+    skipped_unknown: int = 0
+    videos_transcribed: int = 0
     groups: dict[VideoKey, list[str]] = field(default_factory=dict)
 
     @property
@@ -89,6 +92,22 @@ class DigestReport:
         """Items that received an `x_video` source this run — drives whether the
         CLI takes a snapshot + rewrites `items.json`."""
         return self.transcribed + self.no_speech
+
+
+@dataclass
+class _GroupOutcome:
+    """The per-video-group result, summed into the `DigestReport` once.
+
+    Keeping the tally out of the per-group helpers (they only decide + return)
+    means the counters are combined in exactly one place — no counter is bumped
+    across three functions.
+    """
+
+    transcribed: int = 0
+    no_speech: int = 0
+    already: int = 0
+    failed: int = 0
+    did_transcribe: bool = False
 
 
 def _video_key(url: str) -> VideoKey:
@@ -131,12 +150,12 @@ def group_items_by_video(store: dict[str, Item], item_ids: list[str]) -> dict[Vi
 
 
 def _is_x_video_source(source: ContentSource) -> bool:
-    """True for an `x_video` content source (success or, defensively, any)."""
-    return getattr(source, "kind", None) == "x_video"
+    """True for an `x_video` content source (both union variants carry `kind`)."""
+    return source.kind == "x_video"
 
 
 def _has_x_video_source(item: Item) -> bool:
-    """True when the item already carries a fresh `x_video` transcript source."""
+    """True when the item already carries an `x_video` transcript source."""
     if item.content is None:
         return False
     return any(_is_x_video_source(source) for source in item.content.sources)
@@ -167,6 +186,7 @@ def attach_transcript(store: dict[str, Item], item_ids: list[str], transcript: T
         source = ContentSourceSuccess(
             kind="x_video",
             url=_source_url_for(item),
+            title=transcript.title,
             text=transcript.text,
             has_speech=transcript.has_speech,
             language=transcript.language,
@@ -189,21 +209,20 @@ def _fetched_path(report: FetchReport, item_id: str) -> Path | None:
 
 
 def _transcribe_and_discard(
-    path: Path, transcribe_fn: TranscribeFn, *, item_id: str, count: int, report: DigestReport
+    path: Path, transcribe_fn: TranscribeFn, *, item_id: str
 ) -> Transcript | None:
     """Transcribe `path`, then delete the bytes (even on failure).
 
     A per-video `TranscriberFailed` (malformed output for this one video) is
-    recorded and returns None so the batch continues; a missing-binary
-    `TranscriberNotFound` is NOT caught — it aborts the whole run (a global
-    config error). The temp file is unlinked in every case.
+    logged and returns None so the batch continues; a missing-binary
+    `TranscriberNotFound` is NOT caught — it aborts the whole run (a global config
+    error). The temp file is unlinked in every case, so at most one video is on
+    disk at a time.
     """
     try:
         return transcribe_fn(path)
     except TranscriberFailed as exc:
         logger.warning("digest-video: transcription failed for item %s: %s", item_id, exc)
-        report.failed += count
-        report.failed_videos += 1
         return None
     finally:
         path.unlink(missing_ok=True)
@@ -217,37 +236,56 @@ def _process_group(
     force: bool,
     fetch_fn: FetchFn,
     transcribe_fn: TranscribeFn,
-    report: DigestReport,
-) -> None:
+) -> _GroupOutcome:
     """Fetch + transcribe one video ONCE, attach it to every item that needs it.
 
-    `needing` is the subset of the group without a fresh `x_video` source (all of
-    it under `--force`); the rest count as `already`. On a fetch failure the
-    needing items count as `failed` (nothing attached). A no-speech transcript is
-    still attached (as the marker) and counted under `no_speech`.
+    `needing` is the subset of the group without an `x_video` source (all of it
+    under `--force`); the rest are `already`. The video is fetched via a NEEDING
+    item (`needing[0]`), never an already-digested member whose signed URL may be
+    stale/expired. On a fetch failure the needing items are `failed` (nothing
+    attached). A no-speech transcript is still attached (as the marker) and
+    counted under `no_speech`. Returns the counts; the caller sums them.
     """
     needing = [item_id for item_id in ids if force or not _has_x_video_source(store[item_id])]
-    report.already += len(ids) - len(needing)
+    already = len(ids) - len(needing)
     if not needing:
-        return
-    representative = ids[0]
+        return _GroupOutcome(already=already)
+    representative = needing[0]
     fetch_report = fetch_fn(store, [representative], dest_dir)
     fetched = _fetched_path(fetch_report, representative)
     if fetched is None:
-        report.failed += len(needing)
-        report.failed_videos += 1
-        return
-    transcript = _transcribe_and_discard(
-        fetched, transcribe_fn, item_id=representative, count=len(needing), report=report
-    )
+        return _GroupOutcome(already=already, failed=len(needing))
+    transcript = _transcribe_and_discard(fetched, transcribe_fn, item_id=representative)
     if transcript is None:
-        return
+        return _GroupOutcome(already=already, failed=len(needing))
     attach_transcript(store, needing, transcript)
-    report.videos_fetched += 1
     if transcript.has_speech:
-        report.transcribed += len(needing)
-    else:
-        report.no_speech += len(needing)
+        return _GroupOutcome(already=already, transcribed=len(needing), did_transcribe=True)
+    return _GroupOutcome(already=already, no_speech=len(needing), did_transcribe=True)
+
+
+def _tally(report: DigestReport, outcome: _GroupOutcome) -> None:
+    """Sum one group's outcome into the run report (the single tally site)."""
+    report.transcribed += outcome.transcribed
+    report.no_speech += outcome.no_speech
+    report.already += outcome.already
+    report.failed += outcome.failed
+    if outcome.did_transcribe:
+        report.videos_transcribed += 1
+
+
+def _count_unselectable(
+    store: dict[str, Item], unique_ids: list[str], grouped: set[str], report: DigestReport
+) -> None:
+    """Record requested ids that never made a group: unknown (absent from the
+    store) vs no-video (present but no fetchable mp4) — distinct, never lumped."""
+    for item_id in unique_ids:
+        if item_id in grouped:
+            continue
+        if item_id in store:
+            report.skipped_no_video += 1
+        else:
+            report.skipped_unknown += 1
 
 
 def _default_transcribe(path: Path) -> Transcript:
@@ -271,30 +309,30 @@ def digest_videos(
     """Digest each selected video into an `x_video` transcript source.
 
     Groups `item_ids` by video identity (dedup), then for each group fetches the
-    video ONCE into an ephemeral temp dir, transcribes it, attaches the
-    transcript to every referencing item that needs it, and discards the bytes.
-    Idempotent (already-digested items are skipped unless `force`); no video byte
-    survives the call (the temp dir is removed even if transcription raises).
-    Mutates `store` in place and returns a `DigestReport`; the caller persists.
+    video ONCE into an ephemeral temp dir, transcribes it, attaches the transcript
+    to every referencing item that needs it, and discards the bytes. Idempotent
+    (already-digested items are skipped unless `force`); no video byte survives the
+    call (the temp dir is removed even if transcription raises). Mutates `store` in
+    place and returns a `DigestReport`; the caller persists.
     """
     unique_ids = list(dict.fromkeys(item_ids))
     groups = group_items_by_video(store, unique_ids)
     grouped = {item_id for members in groups.values() for item_id in members}
     report = DigestReport(groups=groups)
-    report.skipped_no_video = sum(1 for item_id in unique_ids if item_id not in grouped)
+    _count_unselectable(store, unique_ids, grouped, report)
 
     with tempfile.TemporaryDirectory(prefix="xbrain-digest-", dir=temp_root) as tmp:
         dest_dir = Path(tmp)
         for ids in groups.values():
-            _process_group(
+            outcome = _process_group(
                 store,
                 ids,
                 dest_dir,
                 force=force,
                 fetch_fn=fetch_fn,
                 transcribe_fn=transcribe_fn,
-                report=report,
             )
+            _tally(report, outcome)
     return report
 
 
@@ -303,6 +341,7 @@ def format_digest_summary(report: DigestReport) -> str:
     return (
         f"Vídeos: transcritos {report.transcribed}, sin voz {report.no_speech}, "
         f"ya digeridos {report.already}, fallidos {report.failed}, "
-        f"sin vídeo {report.skipped_no_video} "
-        f"({report.total_items} items ← {report.video_count} vídeos)"
+        f"sin vídeo {report.skipped_no_video}, desconocidos {report.skipped_unknown}. "
+        f"Dedup: {report.total_items} items ← {report.video_count} vídeos "
+        f"({report.videos_transcribed} transcritos este run)."
     )

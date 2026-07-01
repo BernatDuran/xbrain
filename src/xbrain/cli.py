@@ -49,7 +49,6 @@ from xbrain.topic_synth import (
     import_topic_worksheet,
     synthesize_overviews_api,
 )
-from xbrain.transcribe import Transcript, transcribe_media
 from xbrain.topics import (
     build_topic_inputs,
     compute_topic_posts,
@@ -57,6 +56,7 @@ from xbrain.topics import (
     topics_needing_synth,
     write_topic_pages,
 )
+from xbrain.transcribe import Transcript, transcribe_media
 from xbrain.video_fetch import (
     FetchReport,
     fetch_result_to_json,
@@ -1093,7 +1093,8 @@ def digest_video(
     language: str | None = typer.Option(
         None,
         "--language",
-        help="Pista de idioma para el transcriptor externo (p.ej. en, es). Autodetecta si se omite.",
+        help="Idioma a registrar en el transcript si el transcriptor no lo reporta "
+        "(p.ej. en, es). El transcriptor autodetecta; no se le pasa como flag.",
     ),
 ) -> None:
     """Transcribe vídeos guardados y adjunta el transcript como source `x_video`.

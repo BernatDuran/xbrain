@@ -73,20 +73,30 @@ command = "parakeet-mlx"          # default; whisper / faster-whisper is a porta
 # model  = "parakeet-tdt-0.6b-v2" # optional; omit for the tool default
 ```
 
-xbrain invokes `<command> [--model M] [--language L] --output-format json
+xbrain invokes `<command> [--model M] --output-format json --output-dir <TMPDIR>
 <mediapath>` (the `command` is shlex-split, so a multi-token wrapper works, and
-it runs **without** a shell) and reads a single JSON document from **stdout**:
+it runs **without** a shell). The real `parakeet-mlx` writes its transcript to a
+**file** at `<TMPDIR>/<stem>.json`, so xbrain reads that produced file:
 
 ```json
 {"text": "…", "language": "en", "segments": [{"start": 0.0, "end": 3.2, "text": "…"}]}
 ```
 
-The **no-audio / no-speech** case is graceful, not an error: an empty JSON
-(`{"text": ""}`) or empty stdout on a zero exit yields `has_speech=False` + empty
-text (attached as a "silent video" marker). A **missing binary** surfaces a clear
-operator error (install it or fix `[transcribe].command`), never a crash. If your
-transcriber's native CLI differs, point `command` at a thin wrapper script that
-adapts it to this contract.
+`--language` is **not** passed — parakeet auto-detects and rejects it (the
+`--language` CLI flag only records a fallback language on the result). A
+wrapper that emits the same JSON on **stdout** instead of a file is also
+supported (stdout is the fallback source).
+
+The **no-audio / no-speech** case is graceful ONLY via a real JSON signal: a
+valid document with empty text (`{"text": ""}`), empty segments, or
+`has_speech: false` yields `has_speech=False` + empty text (attached as a "silent
+video" marker). A transcriber that exits 0 but produces **no usable output** (no
+file / empty file AND empty stdout) is a hard error (`TranscriberFailed`) — never
+inferred as no-speech, because that would silently lose the transcript. A
+**missing / non-executable binary** surfaces a clear operator error (install it
+or fix `[transcribe].command`), never a crash. If your transcriber's native CLI
+differs, point `command` at a thin wrapper script that adapts it to this
+contract.
 
 ## Pull requests written with AI agents
 

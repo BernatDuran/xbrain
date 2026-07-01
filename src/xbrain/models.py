@@ -533,8 +533,10 @@ class ContentSourceSuccess(BaseModel):
     # 0 only on pre-Fase-2 records.
     attempts: int = 0
     # Video-transcript metadata for `kind="x_video"` sources (#44). Both are
-    # optional + default to None so every EXISTING (article) record loads and
-    # dumps unchanged — `has_speech is None` marks a non-video source. For an
+    # optional + default to None so every EXISTING (article) record LOADS
+    # unchanged — `has_speech is None` marks a non-video source. (A re-dump does
+    # add `has_speech: null` / `language: null` to legacy sources — a one-time,
+    # backward-compatible additive churn, not a load-breaking change.) For an
     # `x_video` source `has_speech=False` is the no-speech marker (empty `text`,
     # never a failure), and `language` is the detected transcript language.
     has_speech: bool | None = None

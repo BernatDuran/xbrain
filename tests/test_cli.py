@@ -2123,3 +2123,52 @@ def test_digest_video_missing_transcriber_exits_nonzero(tmp_path: Path, monkeypa
     assert result.exit_code == 1
     assert "parakeet-mlx" in result.output
     assert load_store(items_path)["42"].content is None  # nothing persisted
+
+
+# A SECOND, DISTINCT video (different ext_tw_video id) for limit/selection tests.
+_DISTINCT_VIDEO_URL = "https://video.twimg.com/ext_tw_video/7700/vid/720/z.mp4?tag=3"
+
+
+def test_digest_video_limit_caps_items(tmp_path: Path, monkeypatch):
+    """`--limit 1` over a 2-distinct-video store transcribes exactly one item."""
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    items_path = tmp_path / "data" / "items.json"
+    save_store(
+        {
+            "a": _video_item("a", url=_AMPLIFY_URL_1),
+            "b": _video_item("b", url=_DISTINCT_VIDEO_URL),
+        },
+        items_path,
+    )
+    _wire_digest(monkeypatch, _speech_transcript())
+
+    result = runner.invoke(app, ["digest-video", "--ids", "a,b", "--limit", "1"])
+    assert result.exit_code == 0, result.output
+    assert "transcritos 1" in result.stdout
+    store = load_store(items_path)
+    digested = [i for i in ("a", "b") if store[i].content is not None]
+    assert len(digested) == 1  # exactly one, not both
+
+
+def test_digest_video_topic_selects_only_matching(tmp_path: Path, monkeypatch):
+    """`--topic ai` digests only the ai-topic video, honoring the catalog filter."""
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    items_path = tmp_path / "data" / "items.json"
+    save_store(
+        {
+            "1": _enriched_video_item("1", "ai", url=_AMPLIFY_URL_1),
+            "2": _enriched_video_item("2", "climate", url=_DISTINCT_VIDEO_URL),
+        },
+        items_path,
+    )
+    _wire_digest(monkeypatch, _speech_transcript())
+
+    result = runner.invoke(app, ["digest-video", "--topic", "ai"])
+    assert result.exit_code == 0, result.output
+    store = load_store(items_path)
+    assert store["1"].content is not None  # ai video digested
+    assert store["2"].content is None  # climate video untouched

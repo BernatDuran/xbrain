@@ -1,44 +1,56 @@
-"""Shell out to an external local transcriber and parse its output.
+"""Shell out to an external local transcriber and read its transcript.
 
 The thin, ML-free wrapper at the heart of the `digest-video` stage (#44). xbrain
 stays **mechanical**: the heavy ASR (Parakeet TDT via `parakeet-mlx`, or a
 whisper fallback) runs as an EXTERNAL subprocess located via config/PATH, so the
-CLI carries **no** MLX / CoreML / torch dependency. This module imports no ML
-library — a test asserts it.
+CLI carries **no** MLX / CoreML dependency. This module imports no ML library — a
+test asserts it.
 
-The transcriber contract xbrain expects:
+The transcriber contract xbrain expects (matches the real `parakeet-mlx`):
 
-- It is invoked as ``<command> [--model M] [--language L] --output-format json
-  <media-path>`` where ``<command>`` comes from ``[transcribe].command`` (default
-  ``parakeet-mlx``) and may itself be a multi-token command (a wrapper script),
-  split with ``shlex`` and run WITHOUT a shell.
-- On success it writes a single JSON document to **stdout**::
+- It is invoked as ``<command> [--model M] --output-format json --output-dir
+  <TMPDIR> <media-path>`` where ``<command>`` comes from ``[transcribe].command``
+  (default ``parakeet-mlx``) and may itself be a multi-token command (a wrapper
+  script), split with ``shlex`` and run WITHOUT a shell. Note: ``--language`` is
+  **not** passed — parakeet auto-detects and rejects it; the `language` argument
+  is only recorded on the result as a fallback when the tool omits it.
+- `parakeet-mlx` writes its transcript to a **file** ``<TMPDIR>/<stem>.json`` (it
+  does NOT emit JSON on stdout), so xbrain reads the produced JSON file from the
+  temp ``--output-dir``. A user-provided wrapper that emits JSON on **stdout** is
+  also supported — stdout is the fallback source. The JSON shape::
 
       {"text": "...", "language": "en",
        "segments": [{"start": 0.0, "end": 3.2, "text": "..."}]}
 
   ``has_speech`` may be reported explicitly; otherwise it is derived (non-empty
   text or any segment ⇒ speech).
-- The **no-audio / no-speech** case is graceful, never an error: an empty JSON
-  (``{"text": ""}``) OR empty stdout on a zero exit both yield
-  ``has_speech=False`` + empty text. Many X videos are silent/screen-only, so a
-  no-speech outcome is recorded data, not a failure.
+- **No-speech is a JSON signal, never an ABSENCE of output.** A valid JSON doc
+  with empty text (``{"text": ""}``) / empty segments / ``has_speech: false``
+  yields ``has_speech=False`` + empty text — recorded data, not a failure. But a
+  transcriber that exits 0 and produces **no usable output** (no file / empty
+  file AND empty stdout) raises `TranscriberFailed`: inferring no-speech there
+  would SILENTLY LOSE the transcript (the real parakeet writes a file, so an
+  empty stdout is not "silence").
 
 Failures surface as clear operator errors (subclasses of `RuntimeError`, which
-the CLI's `_handle_cli_errors` turns into a clean exit-1): a **missing binary**
-(`TranscriberNotFound`), a **non-zero exit** or **malformed output**
-(`TranscriberFailed`). The `runner` (a `subprocess.run` stand-in) is injectable
-so tests run offline against a fake — no real transcriber, ever.
+the CLI's `_handle_cli_errors` turns into a clean exit-1): a **missing / non-
+executable binary** (`TranscriberNotFound`), a **non-zero exit**, **no output**,
+or **malformed output** (`TranscriberFailed`). The `runner` (a `subprocess.run`
+stand-in) is injectable so tests run offline against a fake — no real
+transcriber, ever.
 """
 
 from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess  # nosec B404 - the transcriber is an external subprocess by design (#44)
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # The default external transcriber (Parakeet TDT 0.6b via MLX/Metal). Override
 # with `[transcribe].command`; whisper / faster-whisper is the portable fallback.
@@ -60,7 +72,7 @@ class TranscriberNotFound(TranscribeError):
 
 
 class TranscriberFailed(TranscribeError):
-    """The transcriber ran but failed: non-zero exit or unparseable output."""
+    """The transcriber ran but failed: non-zero exit, no output, or unparseable output."""
 
 
 @dataclass(frozen=True)
@@ -85,20 +97,24 @@ class Transcript:
     segments: list[Segment] = field(default_factory=list)
     language: str | None = None
     has_speech: bool = False
+    # An optional talk/video title the transcriber may surface (`None` when the
+    # ASR does not derive one — the PR2 default contract). Carried onto the
+    # `x_video` content source so PR3 can render the digest title.
+    title: str | None = None
 
 
-def _build_argv(command: str, model: str | None, language: str | None, path: Path) -> list[str]:
+def _build_argv(command: str, model: str | None, output_dir: Path, path: Path) -> list[str]:
     """Assemble the subprocess argv from config + the media path.
 
     `command` is `shlex`-split so a multi-token wrapper (`python -m my_asr`)
-    works, and the whole thing runs WITHOUT a shell (no injection surface).
+    works, and the whole thing runs WITHOUT a shell. The transcript is written to
+    `--output-dir` (file-based, matching the real parakeet-mlx). `--language` is
+    deliberately omitted — parakeet auto-detects and rejects it.
     """
     argv = shlex.split(command)
     if model:
         argv += ["--model", model]
-    if language:
-        argv += ["--language", language]
-    argv += ["--output-format", "json", str(path)]
+    argv += ["--output-format", "json", "--output-dir", str(output_dir), str(path)]
     return argv
 
 
@@ -125,12 +141,38 @@ def _run_transcriber(argv: list[str], runner: Runner, timeout_seconds: int) -> s
             f"transcriber {argv[0]!r} could not be executed — check "
             f"[transcribe].command in config.toml ({exc})"
         ) from exc
+    except UnicodeDecodeError as exc:  # subprocess.run(text=True) on non-UTF-8 stdout
+        raise TranscriberFailed(
+            f"transcriber {argv[0]!r} produced non-UTF-8 stdout: {exc}"
+        ) from exc
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
         raise TranscriberFailed(
             f"transcriber {argv[0]!r} exited {completed.returncode}: {stderr or '(no stderr)'}"
         )
     return completed.stdout or ""
+
+
+def _read_raw_output(output_dir: Path, stdout: str) -> str | None:
+    """The transcriber's raw JSON: the produced `*.json` file (preferred, matching
+    parakeet-mlx), else stdout (a wrapper), else None when NEITHER exists.
+
+    Returning None is the no-output signal the caller turns into a hard error — it
+    is NOT treated as no-speech, because absence of output means a lost transcript,
+    not silence. An unreadable or non-UTF-8 output file is malformed output
+    (`TranscriberFailed`), so — like every other per-video failure — it is recorded
+    and the batch continues, never a raw `UnicodeDecodeError`/`OSError` traceback.
+    """
+    try:
+        for json_file in sorted(output_dir.glob("*.json")):
+            content = json_file.read_text(encoding="utf-8")
+            if content.strip():
+                return content
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise TranscriberFailed(
+            f"transcriber output file in {output_dir} could not be read as UTF-8: {exc}"
+        ) from exc
+    return stdout if stdout.strip() else None
 
 
 def _parse_segment(raw: object) -> Segment:
@@ -147,29 +189,59 @@ def _parse_segment(raw: object) -> Segment:
         raise TranscriberFailed(f"transcriber segment has non-numeric bounds: {raw!r}") from exc
 
 
-def _parse_output(stdout: str, requested_language: str | None) -> Transcript:
-    """Parse the transcriber stdout into a `Transcript`.
+def _parse_segments(data: dict[str, Any]) -> list[Segment]:
+    """Parse the `segments` list. `null`/absent → empty; a non-list is malformed."""
+    raw_segments = data.get("segments") or []
+    if not isinstance(raw_segments, list):
+        raise TranscriberFailed(f"transcriber 'segments' is not a list: {raw_segments!r}")
+    return [_parse_segment(segment) for segment in raw_segments]
 
-    Empty/whitespace stdout is the graceful no-speech path (many silent clips
-    print nothing); otherwise the payload must be a JSON object, else it is
+
+def _resolve_text(raw_text: str, segments: list[Segment]) -> str:
+    """The transcript text: the top-level `text` when present, else backfilled from
+    the segment texts.
+
+    A segments-only transcriber (some whisper wrappers) emits an empty top-level
+    `text` with the spoken content ONLY in `segments`. Persisting `text=""` there
+    would silently drop the transcript (with `has_speech=True`), so join the
+    segment texts to keep `text` populated and consistent.
+    """
+    if raw_text.strip():
+        return raw_text
+    return " ".join(segment.text.strip() for segment in segments if segment.text.strip())
+
+
+def _derive_has_speech(data: dict[str, Any], text: str, segments: list[Segment]) -> bool:
+    """Trust an explicit `has_speech`, else infer from non-empty text or segments."""
+    reported = data.get("has_speech")
+    if reported is not None:
+        return bool(reported)
+    return bool(text.strip() or segments)
+
+
+def _parse_output(raw: str, requested_language: str | None) -> Transcript:
+    """Parse the transcriber's raw JSON into a `Transcript`.
+
+    `raw` is guaranteed non-empty by the caller (empty output is a hard error, not
+    a parse target). It MUST be a JSON object; a list/scalar or invalid JSON is
     malformed output (`TranscriberFailed`).
     """
-    stripped = stdout.strip()
-    if not stripped:
-        return Transcript(text="", segments=[], language=requested_language, has_speech=False)
     try:
-        data = json.loads(stripped)
+        data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise TranscriberFailed(f"transcriber output was not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise TranscriberFailed(f"transcriber output was not a JSON object: {type(data).__name__}")
 
-    text = str(data.get("text") or "")
-    segments = [_parse_segment(s) for s in data.get("segments", [])]
+    segments = _parse_segments(data)
+    text = _resolve_text(str(data.get("text") or ""), segments)
     language = data.get("language") or requested_language
-    reported = data.get("has_speech")
-    has_speech = bool(reported) if reported is not None else bool(text.strip() or segments)
-    return Transcript(text=text, segments=segments, language=language, has_speech=has_speech)
+    has_speech = _derive_has_speech(data, text, segments)
+    raw_title = data.get("title")
+    title = str(raw_title) if raw_title else None
+    return Transcript(
+        text=text, segments=segments, language=language, has_speech=has_speech, title=title
+    )
 
 
 def transcribe_media(
@@ -184,16 +256,32 @@ def transcribe_media(
     """Transcribe one audio/video file via the external transcriber subprocess.
 
     Shells out to `command` (default `parakeet-mlx`; a multi-token wrapper is
-    supported and run WITHOUT a shell), passing the optional `model` / `language`
-    and the media `path`, then parses the JSON stdout into a `Transcript`. The
-    no-audio / no-speech case is graceful (`has_speech=False`, empty `text`,
-    never raises). A missing binary raises `TranscriberNotFound`; a non-zero exit
-    or malformed output raises `TranscriberFailed` — both clean CLI exit-1s.
+    supported and run WITHOUT a shell), writing the transcript to a temp
+    `--output-dir` INSIDE the media's directory, then reads the produced JSON file
+    (or stdout, for a wrapper) into a `Transcript`. The no-speech case is graceful
+    ONLY via a valid JSON signal (`has_speech=False`, empty `text`); a run that
+    produces no usable output raises `TranscriberFailed` (never silently lost). A
+    missing / non-executable binary raises `TranscriberNotFound`; a non-zero exit
+    or malformed output raises `TranscriberFailed` — all clean CLI exit-1s.
 
-    `runner` (a `subprocess.run` stand-in) is injectable for tests; it defaults
-    to `subprocess.run`, resolved at call time so it stays monkeypatchable.
+    `language` is recorded on the result as a fallback when the transcriber omits
+    it; it is NOT passed to the (auto-detecting) transcriber. `runner` (a
+    `subprocess.run` stand-in) is injectable for tests; it defaults to
+    `subprocess.run`, resolved at call time so it stays monkeypatchable. The temp
+    `--output-dir` is always removed, even on failure.
     """
-    argv = _build_argv(command, model, language, Path(path))
+    audio = Path(path)
     active_runner: Runner = runner if runner is not None else subprocess.run
-    stdout = _run_transcriber(argv, active_runner, timeout_seconds)
-    return _parse_output(stdout, language)
+    output_dir = Path(tempfile.mkdtemp(prefix="xbrain-asr-", dir=audio.parent))
+    try:
+        argv = _build_argv(command, model, output_dir, audio)
+        stdout = _run_transcriber(argv, active_runner, timeout_seconds)
+        raw = _read_raw_output(output_dir, stdout)
+        if raw is None:
+            raise TranscriberFailed(
+                f"transcriber {argv[0]!r} exited 0 but produced no output "
+                f"(no JSON file in --output-dir, empty stdout) — a transcript would be lost"
+            )
+        return _parse_output(raw, language)
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)

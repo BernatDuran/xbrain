@@ -263,6 +263,42 @@ def test_digest_video_no_change_creates_no_snapshot(tmp_path: Path, monkeypatch)
     assert snapshot_list(tmp_path / "data") == []
 
 
+def test_digest_video_all_failure_no_snapshot(tmp_path: Path, monkeypatch):
+    """A run where every video's fetch fails attaches nothing (changed==0) → no
+    snapshot and items.json byte-identical (parity with the no-change path)."""
+    _setup_repo(tmp_path, monkeypatch)
+    items_path = tmp_path / "data" / "items.json"
+    save_store({"42": _video_item_for_digest("42")}, items_path)
+    before = items_path.read_bytes()
+
+    class _FailSession:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+        def get(self, _url, *, timeout):
+            class _Resp:
+                status_code = 500
+                content = b"err"
+
+            return _Resp()
+
+    from xbrain.transcribe import Transcript
+
+    monkeypatch.setattr("xbrain.video_fetch.requests.Session", _FailSession)
+    monkeypatch.setattr("xbrain.video_fetch.time.sleep", lambda *_a, **_k: None)
+    # Transcriber would succeed, but the fetch fails first so it is never reached.
+    monkeypatch.setattr(
+        "xbrain.cli.transcribe_media", lambda _p, **_k: Transcript(text="t", has_speech=True)
+    )
+
+    result = runner.invoke(app, ["digest-video", "--ids", "42"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "fallidos 1" in result.stdout
+    assert items_path.read_bytes() == before  # nothing written
+    assert snapshot_list(tmp_path / "data") == []
+
+
 def test_digest_video_snapshot_failure_aborts_before_write(tmp_path: Path, monkeypatch):
     """A failed snapshot aborts digest-video BEFORE the store is rewritten: exit
     non-zero and items.json unchanged (the transcript is never persisted)."""

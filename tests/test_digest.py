@@ -8,7 +8,7 @@ subprocess, no real downloads):
 
 - **Dedup by video identity** — N bookmarks of the same video fetch + transcribe
   ONCE; every referencing item gets the same transcript source.
-- **Idempotency** — an item already carrying a fresh `x_video` source is skipped
+- **Idempotency** — an item already carrying an `x_video` source is skipped
   unless `--force`.
 - **No-speech** — a `has_speech=False` transcript is attached (empty text +
   marker), never a hard failure.
@@ -173,6 +173,17 @@ def test_attach_transcript_adds_x_video_source_to_each_item():
         assert src.language == "en"
 
 
+def test_attach_transcript_passes_title(tmp_path: Path):
+    """A transcript `title` (item 14) is carried onto the `x_video` source's
+    `title` field for PR3's digest rendering; None when the transcript has none."""
+    store = {"a1": _item("a1", _VIDEO_A_URL_1), "a2": _item("a2", _VIDEO_A_URL_2)}
+    titled = Transcript(text="body", segments=[], language="en", has_speech=True, title="Ep 12")
+    attach_transcript(store, ["a1"], titled)
+    attach_transcript(store, ["a2"], _speech())  # no title
+    assert store["a1"].content.sources[0].title == "Ep 12"
+    assert store["a2"].content.sources[0].title is None
+
+
 def test_attach_transcript_no_speech_carries_empty_text_and_marker():
     store = {"a1": _item("a1", _VIDEO_A_URL_1)}
     attach_transcript(store, ["a1"], _silence())
@@ -228,7 +239,7 @@ def test_dedup_fetches_and_transcribes_once_attaches_to_all(tmp_path: Path):
     assert len(fetch.fetched_ids) == 1  # fetched once
     assert len(transcribe_calls) == 1  # transcribed once
     assert report.transcribed == 2  # both items carry it
-    assert report.videos_fetched == 1
+    assert report.videos_transcribed == 1
     assert store["a1"].content.sources[0].text == "one talk"
     assert store["a2"].content.sources[0].text == "one talk"
 
@@ -312,6 +323,63 @@ def test_partial_group_transcribes_once_for_the_missing_item(tmp_path: Path):
     assert store["a2"].content.sources[0].text == "t"
 
 
+def test_representative_fetch_uses_a_needing_item_not_a_stale_already_digested_one(tmp_path: Path):
+    """A group's video is fetched via a NEEDING item (`needing[0]`), never an
+    already-digested member first in the group. Fetching via an already-digested
+    item risks its stale/expired signed URL 403-ing the whole group even when a
+    needing item carries a fresh one — so `representative` must be a needing id."""
+    # a1 is already digested (its signed URL is the "stale" one); a2 needs it.
+    store = {"a1": _item("a1", _VIDEO_A_URL_1), "a2": _item("a2", _VIDEO_A_URL_2)}
+    digest_videos(
+        store, ["a1"], fetch_fn=_FakeFetch(), transcribe_fn=lambda _p: _speech(), temp_root=tmp_path
+    )
+    fetch = _FakeFetch()
+    # Group order puts the already-digested a1 first; the fetch must still target a2.
+    digest_videos(
+        store, ["a1", "a2"], fetch_fn=fetch, transcribe_fn=lambda _p: _speech(), temp_root=tmp_path
+    )
+    assert fetch.fetched_ids == ["a2"]  # needing[0], not the stale a1
+
+
+def test_at_most_one_video_on_disk_across_groups(tmp_path: Path):
+    """Ephemeral, one-at-a-time (test 4a): while transcribing the 2nd video, the
+    1st group's mp4 is already gone — at most one *.mp4 exists at any moment.
+    Deleting the per-file unlink in `_transcribe_and_discard` must fail this."""
+    store = {"a1": _item("a1", _VIDEO_A_URL_1), "b1": _item("b1", _VIDEO_B_URL)}
+    fetch = _FakeFetch()
+    max_seen = 0
+
+    def _transcribe(path: Path) -> Transcript:
+        nonlocal max_seen
+        # Count the mp4s present in the shared dest dir at transcribe time.
+        present = len(list(Path(path).parent.glob("*.mp4")))
+        max_seen = max(max_seen, present)
+        return _speech()
+
+    digest_videos(
+        store, ["a1", "b1"], fetch_fn=fetch, transcribe_fn=_transcribe, temp_root=tmp_path
+    )
+    assert max_seen == 1  # never two videos on disk simultaneously
+    assert list(tmp_path.rglob("*.mp4")) == []
+
+
+def test_unknown_id_and_no_video_are_distinguished(tmp_path: Path):
+    """An id absent from the store (`skipped_unknown`) is reported separately from
+    a stored item with no fetchable mp4 (`skipped_no_video`) — not lumped."""
+    poster = _item("p", _POSTER)
+    poster.media = [MediaVideoPending(url=_POSTER, thumbnail_url=_POSTER)]
+    store = {"p": poster}
+    report = digest_videos(
+        store,
+        ["p", "ghost"],
+        fetch_fn=_FakeFetch(),
+        transcribe_fn=lambda _p: _speech(),
+        temp_root=tmp_path,
+    )
+    assert report.skipped_no_video == 1  # p: in store, no mp4
+    assert report.skipped_unknown == 1  # ghost: absent from store
+
+
 def test_fetch_failure_is_recorded_not_fatal(tmp_path: Path):
     store = {"a1": _item("a1", _VIDEO_A_URL_1), "b1": _item("b1", _VIDEO_B_URL)}
     fetch = _FakeFetch(fail_ids={"a1"})
@@ -390,6 +458,7 @@ def test_report_grouping_counts(tmp_path: Path):
     assert isinstance(report, DigestReport)
     assert report.total_items == 3
     assert report.video_count == 2  # M videos ← N items
+    assert report.videos_transcribed == 2  # both distinct videos processed this run
 
 
 def test_no_video_items_reported(tmp_path: Path):
