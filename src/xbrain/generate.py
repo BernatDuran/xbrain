@@ -262,6 +262,10 @@ def _render_media_lines(item: Item) -> list[str]:
     for entry in item.media:
         if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed, MediaVideoDownloaded)):
             lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{entry.local_path}]]")
+            # A described (non-decorative) photo carries a vision caption right
+            # under the embed — plain note text, so Obsidian search finds it.
+            if isinstance(entry, MediaPhotoDescribed) and entry.description:
+                lines.append(f"> {entry.description}")
         elif isinstance(entry, MediaPhotoFailed):
             reason = _FAILURE_ES_MEDIA.get(entry.failure_reason, entry.failure_reason)
             lines.append(f"> ⚠ Foto no disponible ({reason}): <{entry.url}>")

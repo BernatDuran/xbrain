@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from xbrain.models import (
     Item,
@@ -837,3 +837,94 @@ def emit_summary_line(report: DescribeReport, *, out: "io.IOBase | None" = None)
         f"skipped: {report.photos_skipped_already_described}",
         file=target,
     )
+
+
+def export_describe_worksheet(
+    items: dict[str, Item],
+    media_root: Path,
+    path: Path,
+    *,
+    version: str,
+    output_language: str,
+    force: bool = False,
+    limit: int | None = None,
+    items_filter: list[str] | None = None,
+) -> int:
+    """Export eligible photos to a worksheet for the claude-code / manual track.
+
+    Mirrors `xbrain.worksheet.export_worksheet`: XBrain does NOT run the vision
+    model here — it writes each eligible photo's on-disk `image_path` plus the
+    rubric. A Claude Code session (one agent per post) reads each image and
+    fills `judgments`; `apply_describe_worksheet` reads them back. No API key.
+    Returns the number of photos written to the worksheet.
+    """
+    report = DescribeReport()
+    photos = [
+        {
+            "item_id": candidate.item_id,
+            "index": candidate.index,
+            "local_path": candidate.entry.local_path,
+            "image_path": str((media_root / candidate.entry.local_path).resolve()),
+            "text": candidate.item.text,
+        }
+        for candidate in _iter_eligible_candidates(
+            items,
+            force=force,
+            limit=limit,
+            items_filter=set(items_filter) if items_filter else None,
+            current_version=version,
+            current_language=output_language,
+            report=report,
+        )
+    ]
+    payload = {
+        "generated_at": _utcnow().isoformat(),
+        "executor": "claude-code",
+        "version": version,
+        "language": output_language,
+        "instructions": (
+            "For each entry in `photos`, READ the image at its `image_path` and append "
+            "one object to `judgments` with keys {item_id, index, is_decorative, "
+            "description}. Follow `rubric`. Mark avatars, reaction memes and abstract "
+            "backgrounds as is_decorative=true with an empty description. Then run: "
+            "xbrain describe --apply <this file>."
+        ),
+        "rubric": load_rubric("describe-image", language=output_language),
+        "photos": photos,
+        "judgments": [],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return len(photos)
+
+
+def apply_describe_worksheet(store: dict[str, Item], path: Path) -> int:
+    """Apply a filled describe worksheet, transitioning photos to Described.
+
+    Reads `judgments` keyed by ``(item_id, index)`` and swaps each addressed
+    `MediaPhotoDownloaded` / `MediaPhotoDescribed` entry for the described
+    variant via `_apply_judgment`, using the worksheet's own version/language.
+    Unknown ids/indices and non-photo entries are skipped. Returns the count
+    of photos transitioned. No API key.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Worksheet not found: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    version = str(data.get("version", "v1"))
+    language = cast(SupportedLanguage, data.get("language", "English"))
+    by_key = {(str(j["item_id"]), int(j["index"])): j for j in data.get("judgments", [])}
+    now = _utcnow()
+    applied = 0
+    for item in store.values():
+        for index, entry in enumerate(item.media):
+            judgment = by_key.get((item.id, index))
+            if judgment is None or not isinstance(
+                entry, (MediaPhotoDownloaded, MediaPhotoDescribed)
+            ):
+                continue
+            candidate = _Candidate(item_id=item.id, item=item, index=index, entry=entry)
+            item.media[index] = _apply_judgment(
+                candidate, judgment, language=language, version=version, described_at=now
+            )
+            applied += 1
+    return applied
