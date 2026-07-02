@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,9 +159,17 @@ def _parse_date(value: str | None, *, end_of_day: bool = False) -> datetime | No
     return parsed
 
 
+# A bare ISO date (``YYYY-MM-DD``) optionally carrying a tz offset (``+00:00``,
+# ``-0500``, ``Z``) but NO time-of-day. A time-of-day is always introduced by a
+# ``T``/space separator, so ``2025-12-31T09:00:00`` and ``2025-12-31 120000``
+# never match — only whole-day bounds do.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[Zz]|[+-]\d{2}:?\d{2})?")
+
+
 def _is_date_only(value: str) -> bool:
-    """True when an ISO string has no time component (e.g. ``2025-12-31``)."""
-    return "T" not in value and ":" not in value
+    """True when an ISO string is a bare date (no time-of-day), so an ``until``
+    bound should cover the whole day. See ``_DATE_ONLY_RE``."""
+    return _DATE_ONLY_RE.fullmatch(value) is not None
 
 
 _OPERATOR_ERRORS = (
