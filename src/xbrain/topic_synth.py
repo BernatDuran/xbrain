@@ -200,7 +200,18 @@ def export_topic_worksheet(inputs: list[TopicInput], path: Path, output_language
         ),
         "rubric": load_rubric("topic-page", language=output_language),
         "topics": [
-            {"slug": t.slug, "description": t.description, "summaries": t.summaries} for t in inputs
+            {
+                "slug": t.slug,
+                "description": t.description,
+                "summaries": t.summaries,
+                # Content-bearing photo descriptions (#34): mirrors the `api` track's
+                # topic block ("Images across the N content-bearing photos in this
+                # topic"). Already collected + decorative-filtered by `build_topic_inputs`
+                # into `TopicInput.image_descriptions`; empty list when the topic has
+                # none. No truncation — the api path doesn't bound these either.
+                "image_descriptions": t.image_descriptions,
+            }
+            for t in inputs
         ],
         "judgments": [],
     }
