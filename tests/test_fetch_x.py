@@ -338,6 +338,24 @@ def test_fetch_rendered_falls_back_to_trafilatura_when_no_graphql(monkeypatch):
     assert source.title is None
 
 
+def test_fetch_rendered_rejects_x_js_disabled_interstitial(monkeypatch):
+    interstitial = (
+        "We've detected that JavaScript is disabled in this browser. "
+        "Please enable JavaScript or switch to a supported browser to continue using x.com. "
+        "You can see a list of supported browsers in our Help Center. "
+        "Help Center Terms of Service Privacy Policy Cookie Policy Imprint Ads info © 2026 X Corp."
+    )
+    monkeypatch.setattr(fx.trafilatura, "extract", lambda html: interstitial)
+    page = _FakePage(url=_ARTICLE_URL, html="<html>body</html>", responses=[])
+    source = _fetch_rendered(_FakeContext(page), _ARTICLE_URL)
+
+    assert isinstance(source, ContentSourceFailure)
+    assert source.kind == "x_article"
+    assert source.failure_reason == "js_required"
+    assert source.http_status == 200
+    assert "JavaScript" in source.error
+
+
 def test_fetch_rendered_falls_back_when_captured_payload_is_malformed(monkeypatch):
     monkeypatch.setattr(fx.trafilatura, "extract", lambda html: "fallback body")
     page = _FakePage(

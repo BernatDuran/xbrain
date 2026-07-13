@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # LINK / TWEET / MENTION entity is explicitly NOT one, so an inline-link
 # paragraph keeps its text rather than being mistaken for an image.
 _IMAGE_ENTITY_TYPES = frozenset({"IMAGE", "MEDIA"})
+# Newer X Article payloads can wrap markdown body fragments in an atomic Draft.js
+# entity instead of using the block's own `text`. Those are text, not media.
+_MARKDOWN_ENTITY_TYPES = frozenset({"MARKDOWN"})
 # Ordered key names that may carry an image's CDN URL directly on the entity /
 # media-item `data` (the defensive/constructed shape; the live shape resolves
 # via `media_entities` instead). Anchoring on the key name keeps it drift-tolerant.
@@ -260,6 +263,12 @@ def _build_blocks(
             else:
                 _log_dropped_block(raw, entity_by_key)
             continue
+        markdown = _markdown_entity_text(entity)
+        if markdown:
+            separator = ARTICLE_PARAGRAPH_SEP if have_text else ""
+            blocks.append(ArticleTextBlock(text=separator + markdown))
+            have_text = True
+            continue
         text = raw.get("text")
         if isinstance(text, str) and text.strip():
             separator = ARTICLE_PARAGRAPH_SEP if have_text else ""
@@ -276,6 +285,22 @@ def _is_image_entity(entity: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]
     A `TypeGuard` so callers narrow `entity` to a non-optional dict afterwards.
     """
     return isinstance(entity, dict) and str(entity.get("type", "")).upper() in _IMAGE_ENTITY_TYPES
+
+
+def _markdown_entity_text(entity: dict[str, Any] | None) -> str | None:
+    """Markdown body text carried by an atomic `MARKDOWN` entity, or None."""
+    if not (
+        isinstance(entity, dict)
+        and str(entity.get("type", "")).upper() in _MARKDOWN_ENTITY_TYPES
+    ):
+        return None
+    data = entity.get("data")
+    if not isinstance(data, dict):
+        return None
+    markdown = data.get("markdown")
+    if isinstance(markdown, str) and markdown.strip():
+        return markdown.strip()
+    return None
 
 
 def _resolve_image_blocks(

@@ -157,6 +157,31 @@ def test_non_image_atomic_entity_is_skipped_and_inline_link_text_kept():
     assert blocks == [ArticleTextBlock(text="see this link")]
 
 
+def test_markdown_atomic_entity_becomes_text_block():
+    content_state = {
+        "blocks": [
+            {
+                "key": "md",
+                "text": " ",
+                "type": "atomic",
+                "entityRanges": [{"offset": 0, "length": 1, "key": 0}],
+            },
+            {"key": "after", "text": "plain after", "type": "unstyled", "entityRanges": []},
+        ],
+        "entityMap": {
+            "0": {
+                "type": "MARKDOWN",
+                "data": {"markdown": "## Captured heading\n\nCaptured body."},
+            }
+        },
+    }
+    _title, blocks = parse_article_content_state(_payload(content_state))
+    assert blocks == [
+        ArticleTextBlock(text="## Captured heading\n\nCaptured body."),
+        ArticleTextBlock(text="\n\nplain after"),
+    ]
+
+
 def test_image_only_article_yields_blocks_with_empty_flattened_text():
     content_state = {
         "blocks": [

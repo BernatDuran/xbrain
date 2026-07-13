@@ -62,6 +62,24 @@ _MAX_ERROR_LEN = 500
 LinkFetcher = Callable[[str], ContentSource]
 
 
+def _is_x_js_disabled_interstitial(text: str) -> bool:
+    """True when trafilatura extracted X's no-JavaScript interstitial.
+
+    That page is reachable HTML, so a generic extractor can return its boilerplate
+    as if it were article text. Treating it as a success pollutes the vault with a
+    fake article body; it is really a JS-rendering/auth/session failure.
+    """
+    normalized = " ".join(text.replace("’", "'").lower().split())
+    return (
+        "javascript is disabled" in normalized
+        and (
+            "please enable javascript" in normalized
+            or "switch to a supported browser" in normalized
+        )
+        and ("x.com" in normalized or "help center" in normalized or "x corp" in normalized)
+    )
+
+
 def _x_status_id(url: str) -> str | None:
     """The tweet id of an x.com `/status/<id>` URL, or None."""
     match = _STATUS_RE.search(urlparse(url).path)
@@ -336,6 +354,20 @@ def _fetch_rendered(context: BrowserContext, url: str) -> ContentSource:
 
     text = trafilatura.extract(html)
     if text:
+        if _is_x_js_disabled_interstitial(text):
+            logger.warning(
+                "article: X returned the JavaScript-disabled interstitial for %s; "
+                "recording js_required instead of a fake article body",
+                url,
+            )
+            return ContentSourceFailure(
+                kind="x_article",
+                url=url,
+                failure_reason="js_required",
+                error="X devolvió la pantalla de JavaScript desactivado en vez del cuerpo del artículo.",
+                http_status=200,
+                attempts=1,
+            )
         return ContentSourceSuccess(
             kind="x_article", url=url, text=text, http_status=200, attempts=1
         )
