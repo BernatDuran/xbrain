@@ -21,6 +21,7 @@ from typing import Any, Callable
 from PIL import Image
 
 from xbrain.models import (
+    ContentSourceFailure,
     ContentSourceSuccess,
     Item,
     MediaPhotoDescribed,
@@ -219,6 +220,33 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
+    """Recent failed article fetches with enough context to retry/debug."""
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not item.content:
+            continue
+        for source in item.content.sources:
+            if not (
+                isinstance(source, ContentSourceFailure)
+                and source.kind in ("external_article", "x_article")
+            ):
+                continue
+            rows.append(
+                {
+                    "handle": item.author.handle,
+                    "date": _date(item),
+                    "kind": source.kind,
+                    "reason": source.failure_reason,
+                    "url": source.url,
+                    "post": item.url,
+                    "note": id2note.get(item.id),
+                    "summary": _summary(item),
+                }
+            )
+    return _recent(rows, 20)
+
+
 def _media_counts(items: list[Item]) -> dict[str, int]:
     """Downloaded/pending photo counts and captured-video count across the store."""
     downloaded = pending = videos = 0
@@ -231,6 +259,33 @@ def _media_counts(items: list[Item]) -> dict[str, int]:
             elif isinstance(entry, _VIDEO_TYPES):
                 videos += 1
     return {"photos_downloaded": downloaded, "photos_pending": pending, "videos": videos}
+
+
+def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, Any]:
+    """Mobile-first operational status for the ingestion workflow."""
+    downloaded_undescribed = sum(
+        1
+        for item in items
+        for entry in item.media
+        if isinstance(entry, MediaPhotoDownloaded)
+    )
+    pending_fetch = sum(1 for item in items if item.links and item.content is None)
+    pending_enrich = sum(1 for item in items if item.enriched is None)
+    failures = _article_failures(items, id2note)
+    recent_bookmarks = _recent(rows([item for item in items if item.source == "bookmark"]), 8)
+    return {
+        "command": "uv run xbrain refresh-all --headless",
+        "serve_command": "uv run xbrain serve-dashboard --host 127.0.0.1 --port 8765",
+        "pending": {
+            "fetch": pending_fetch,
+            "media": sum(1 for item in items for entry in item.media if isinstance(entry, MediaPhotoPending)),
+            "describe": downloaded_undescribed,
+            "enrich": pending_enrich,
+            "article_failures": len(failures),
+        },
+        "recent_bookmarks": recent_bookmarks,
+        "article_failures": failures,
+    }
 
 
 def _videos(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
@@ -423,6 +478,7 @@ def compute_dashboard_data(
             "bookmark": {"count": len(bookmark_items), "samples": _recent(rows(bookmark_items), 6)},
             "own_tweet": {"count": len(own_items), "samples": _recent(rows(own_items), 6)},
         },
+        "ops": _ops(items, id2note, rows),
     }
 
 

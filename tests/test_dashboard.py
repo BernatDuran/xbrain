@@ -173,6 +173,60 @@ def test_long_form_and_media_counts():
     assert (md["photos_downloaded"], md["photos_pending"], md["videos"]) == (1, 1, 1)
 
 
+def test_ops_section_counts_pending_work_and_article_failures():
+    pending = _item("1", links=[Link(url="https://example.com/a", domain="example.com")])
+    pending.enriched = None
+    failed = _item(
+        "2",
+        content=Content(
+            fetched_at=DT,
+            sources=[
+                ContentSourceFailure(
+                    kind="x_article",
+                    url="https://x.com/i/article/1",
+                    failure_reason="js_required",
+                )
+            ],
+        ),
+    )
+    media_item = _item(
+        "3",
+        media=[
+            MediaPhotoPending(url="https://p/pending.jpg"),
+            MediaPhotoDownloaded(
+                url="https://p/done.jpg",
+                local_path="3/0.jpg",
+                width=10,
+                height=10,
+                bytes_size=100,
+                downloaded_at=DT,
+            ),
+        ],
+    )
+
+    data = compute_dashboard_data([pending, failed, media_item], {}, {"2": "/v/2.md"}, [], "x")
+
+    ops = data["ops"]
+    assert ops["command"] == "uv run xbrain refresh-all --headless"
+    assert ops["pending"] == {
+        "fetch": 1,
+        "media": 1,
+        "describe": 1,
+        "enrich": 1,
+        "article_failures": 1,
+    }
+    assert ops["article_failures"][0]["reason"] == "js_required"
+    assert ops["article_failures"][0]["note"] == "/v/2.md"
+    assert len(ops["recent_bookmarks"]) == 3
+
+
+def test_render_dashboard_includes_ops_controls():
+    html = render_dashboard_html({"meta": {"total": 1}, "ops": {"command": "cmd"}})
+    assert 'id="ops-run"' in html
+    assert "/api/refresh-all" in html
+    assert "Daily refresh" in html
+
+
 def test_render_injects_data_and_library_and_leaves_no_placeholder():
     html = render_dashboard_html(
         {"meta": {"total": 7}}, template="A /*__DATA__*/ B /*__ECHARTS__*/ C", echarts="LIB"

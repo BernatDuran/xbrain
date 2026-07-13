@@ -8,8 +8,12 @@ import json
 import logging
 import os
 import re
+import threading
+import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import typer
@@ -99,6 +103,23 @@ _HEADLESS_HELP = (
     "Navegador oculto. Por defecto headful (visible) — más difícil de "
     "fingerprintear como bot. Usa --headless en runs desatendidos sin display."
 )
+
+
+@dataclass(frozen=True)
+class ExtractReport:
+    source: SourceName
+    seen: int
+    added: int
+    already_known: int
+    duplicates: int
+
+
+@dataclass
+class DashboardRunState:
+    running: bool = False
+    last_started: str | None = None
+    last_finished: str | None = None
+    last_error: str | None = None
 
 
 @app.callback()
@@ -211,6 +232,13 @@ def _report_invalid(invalid: list[tuple[str, list[str]]]) -> None:
             typer.echo(f"  {item_id}: {'; '.join(errors)}", err=True)
 
 
+def _format_extract_report(report: ExtractReport) -> str:
+    return (
+        f"{report.source}: {report.added} nuevos, {report.already_known} ya existentes, "
+        f"{report.duplicates} duplicados en lote ({report.seen} vistos)"
+    )
+
+
 def _run_extract(
     cfg: Config,
     source: str,
@@ -218,7 +246,7 @@ def _run_extract(
     until: datetime | None,
     *,
     headless: bool = False,
-) -> None:
+) -> list[ExtractReport]:
     store = load_store(cfg.items_path)
     state = load_state(cfg.state_path)
     targets = {
@@ -232,6 +260,7 @@ def _run_extract(
     }
     chosen = source_sets[source]
     known_ids = set(store)
+    reports: list[ExtractReport] = []
     truncated: list[str] = []
     with x_context(cfg.storage_state_path, headless=headless) as context:
         for src in chosen:
@@ -253,11 +282,21 @@ def _run_extract(
                     "revisa la sesión de X o el parser GraphQL (spec §6).",
                     err=True,
                 )
+            before_ids = set(store)
+            unique_ids = {item.id for item in items}
             added = merge_items(store, items)
+            report = ExtractReport(
+                source=src,
+                seen=len(items),
+                added=added,
+                already_known=len(unique_ids & before_ids),
+                duplicates=len(items) - len(unique_ids),
+            )
+            reports.append(report)
             if items:
                 cursor.last_seen_id = max(items, key=lambda i: int(i.id)).id
             cursor.last_run = datetime.now(timezone.utc)
-            typer.echo(f"{src}: {added} nuevos items")
+            typer.echo(_format_extract_report(report))
     save_store(store, cfg.items_path)
     save_state(state, cfg.state_path)
     if truncated:
@@ -265,6 +304,7 @@ def _run_extract(
             f"Extracción truncada por rate-limit/bloqueo de X en: {', '.join(truncated)}. "
             "Las fuentes completadas se guardaron; reanuda más tarde para el resto."
         )
+    return reports
 
 
 def _auto_snapshot(cfg: Config, command: str) -> None:
@@ -420,6 +460,179 @@ def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -
         topic_pages=topic_pages,
     )
     typer.echo(f"Markdown generado en {cfg.output_dir}")
+
+
+def _run_enrich_api(cfg: Config, since: datetime | None, until: datetime | None) -> None:
+    """Run API enrichment with the configured provider and persist the store."""
+    store = load_store(cfg.items_path)
+    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab_topics:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    enriched, invalid = enrich_with_executor(
+        store,
+        ApiExecutor(
+            model=cfg.enrich_model,
+            output_language=cfg.output_language,
+            provider=cfg.llm_provider,
+            base_url=cfg.llm_base_url,
+        ),
+        vocab_topics,
+        since,
+        until,
+    )
+    save_store(store, cfg.items_path)
+    typer.echo(f"Enriquecidos: {enriched} items")
+    _report_invalid(invalid)
+
+
+def _run_topics_executor(cfg: Config, executor: str | None, *, resynth: bool = False) -> None:
+    """Run topic-page update/synthesis through the existing topic pipeline."""
+    store = load_store(cfg.items_path)
+    vocab = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    _topics_run(cfg, store, vocab, resynth, executor)
+
+
+def _run_refresh_all(
+    cfg: Config,
+    *,
+    source: str = "bookmarks",
+    since: datetime | None = None,
+    until: datetime | None = None,
+    headless: bool = True,
+    executor: str = "api",
+    media_limit: int | None = None,
+    describe_limit: int | None = None,
+    describe_batch_size: int = 5,
+    skip_media: bool = False,
+    skip_describe: bool = False,
+) -> None:
+    """One-command daily ingestion pipeline for unattended/mobile runs."""
+    if executor != "api":
+        raise ValueError("refresh-all solo soporta --executor api por ahora.")
+    typer.echo("refresh-all: 1/7 extract")
+    _run_extract(cfg, source, since, until, headless=headless)
+    typer.echo("refresh-all: 2/7 fetch")
+    _run_fetch(cfg, since, until, False, headless=headless)
+    if skip_media:
+        typer.echo("refresh-all: 3/7 media saltado")
+    else:
+        typer.echo("refresh-all: 3/7 media")
+        _run_media(cfg, force=False, limit=media_limit, items_filter=None)
+    if skip_describe:
+        typer.echo("refresh-all: 4/7 describe saltado")
+    else:
+        typer.echo("refresh-all: 4/7 describe")
+        _run_describe(
+            cfg,
+            force=False,
+            limit=describe_limit,
+            items_filter=None,
+            model=cfg.llm_vision_model,
+            batch_size=describe_batch_size,
+            verbose=False,
+        )
+    typer.echo("refresh-all: 5/7 enrich")
+    _run_enrich_api(cfg, since, until)
+    typer.echo("refresh-all: 6/7 topics")
+    _run_topics_executor(cfg, executor, resynth=False)
+    typer.echo("refresh-all: 7/7 generate")
+    _run_generate(cfg, since, until)
+    typer.echo("refresh-all: completado")
+
+
+def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
+    """Serve the generated dashboard and a localhost-only refresh endpoint."""
+    run_state = DashboardRunState()
+    lock = threading.Lock()
+
+    def state_payload() -> dict[str, object]:
+        with lock:
+            return {
+                "running": run_state.running,
+                "last_started": run_state.last_started,
+                "last_finished": run_state.last_finished,
+                "last_error": run_state.last_error,
+            }
+
+    def start_refresh() -> bool:
+        with lock:
+            if run_state.running:
+                return False
+            run_state.running = True
+            run_state.last_started = datetime.now(timezone.utc).isoformat()
+            run_state.last_finished = None
+            run_state.last_error = None
+
+        def job() -> None:
+            error: str | None = None
+            try:
+                _run_refresh_all(cfg, source="bookmarks", headless=True, executor="api")
+            except Exception as exc:  # noqa: BLE001 - background job reports through status API
+                error = f"{exc}\n{traceback.format_exc(limit=4)}"
+                logging.getLogger(__name__).warning("dashboard refresh-all failed", exc_info=True)
+            finally:
+                with lock:
+                    run_state.running = False
+                    run_state.last_finished = datetime.now(timezone.utc).isoformat()
+                    run_state.last_error = error
+
+        threading.Thread(target=job, daemon=True, name="xbrain-refresh-all").start()
+        return True
+
+    def dashboard_bytes() -> bytes:
+        dashboard = cfg.output_dir / "dashboard.html"
+        if not dashboard.exists():
+            _run_generate(cfg, None, None)
+        return dashboard.read_bytes()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib API name
+            logging.getLogger(__name__).info("dashboard: " + fmt, *args)
+
+        def _send(self, status: int, body: bytes, content_type: str) -> None:
+            self.send_response(status)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_json(self, status: int, payload: dict[str, object]) -> None:
+            self._send(status, json.dumps(payload).encode(), "application/json")
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib API name
+            path = self.path.split("?", 1)[0]
+            if path == "/api/status":
+                self._send_json(200, state_payload())
+                return
+            if path in ("/", "/dashboard.html"):
+                try:
+                    self._send(200, dashboard_bytes(), "text/html; charset=utf-8")
+                except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    self._send_json(500, {"error": str(exc)})
+                return
+            self._send_json(404, {"error": "not found"})
+
+        def do_POST(self) -> None:  # noqa: N802 - stdlib API name
+            path = self.path.split("?", 1)[0]
+            if path != "/api/refresh-all":
+                self._send_json(404, {"error": "not found"})
+                return
+            if not start_refresh():
+                self._send_json(409, {**state_payload(), "error": "refresh already running"})
+                return
+            self._send_json(202, state_payload())
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    typer.echo(f"Dashboard local: http://{host}:{server.server_port}/")
+    typer.echo("POST /api/refresh-all ejecuta `xbrain refresh-all` solo en este servidor local.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("Dashboard detenido.")
+    finally:
+        server.server_close()
 
 
 @app.command()
@@ -1338,21 +1551,7 @@ def enrich(
     if chosen != "api":
         raise ValueError(f"Ejecutor desconocido: {chosen!r}")
 
-    enriched, invalid = enrich_with_executor(
-        store,
-        ApiExecutor(
-            model=cfg.enrich_model,
-            output_language=cfg.output_language,
-            provider=cfg.llm_provider,
-            base_url=cfg.llm_base_url,
-        ),
-        vocab_topics,
-        _parse_date(since),
-        _parse_date(until, end_of_day=True),
-    )
-    save_store(store, cfg.items_path)
-    typer.echo(f"Enriquecidos: {enriched} items")
-    _report_invalid(invalid)
+    _run_enrich_api(cfg, _parse_date(since), _parse_date(until, end_of_day=True))
 
 
 def _mark_for_regenerate(store: dict, cfg: Config, regenerate: bool) -> None:
@@ -1517,6 +1716,36 @@ def generate(
     _run_generate(_config(), _parse_date(since), _parse_date(until, end_of_day=True))
 
 
+@app.command(name="refresh-all")
+@_handle_cli_errors
+def refresh_all(
+    source: Source = typer.Option(Source.bookmarks, help="bookmarks | tweets | all"),
+    since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
+    until: str = typer.Option(None, help="ISO date; whole day inclusive, e.g. 2025-12-31"),
+    headless: bool = typer.Option(True, "--headless/--no-headless", help=_HEADLESS_HELP),
+    executor: str = typer.Option("api", help="Actualmente solo api; usa la sección llm para NanoGPT."),
+    media_limit: int | None = typer.Option(None, "--media-limit"),
+    describe_limit: int | None = typer.Option(None, "--describe-limit"),
+    describe_batch_size: int = typer.Option(5, "--describe-batch-size", min=1),
+    skip_media: bool = typer.Option(False, "--skip-media"),
+    skip_describe: bool = typer.Option(False, "--skip-describe"),
+) -> None:
+    """Ejecuta el flujo diario completo para alimentar el vault."""
+    _run_refresh_all(
+        _config(),
+        source=source.value,
+        since=_parse_date(since),
+        until=_parse_date(until, end_of_day=True),
+        headless=headless,
+        executor=executor,
+        media_limit=media_limit,
+        describe_limit=describe_limit,
+        describe_batch_size=describe_batch_size,
+        skip_media=skip_media,
+        skip_describe=skip_describe,
+    )
+
+
 @app.command()
 @_handle_cli_errors
 def sync(
@@ -1527,6 +1756,16 @@ def sync(
     _run_extract(cfg, "all", None, None, headless=headless)
     _run_fetch(cfg, None, None, False, headless=headless)
     _run_generate(cfg, None, None)
+
+
+@app.command(name="serve-dashboard")
+@_handle_cli_errors
+def serve_dashboard(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host local donde escuchar."),
+    port: int = typer.Option(8765, "--port", help="Puerto local del dashboard."),
+) -> None:
+    """Sirve el dashboard HTML y permite lanzar refresh-all desde localhost."""
+    _serve_dashboard(_config(), host, port)
 
 
 @app.command()

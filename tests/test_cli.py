@@ -1966,6 +1966,20 @@ def test_extract_advances_cursor_to_integer_max_id(tmp_path: Path, monkeypatch):
     assert load_state(tmp_path / "data" / "state.json").bookmarks.last_seen_id == "100"
 
 
+def test_extract_reports_seen_existing_and_batch_duplicates(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
+    _mock_browser(
+        monkeypatch,
+        lambda *a, **k: [_linked_item("1"), _linked_item("2"), _linked_item("2")],
+    )
+
+    result = runner.invoke(app, ["extract", "--source", "bookmarks"])
+
+    assert result.exit_code == 0, result.output
+    assert "bookmark: 1 nuevos, 1 ya existentes, 1 duplicados en lote (3 vistos)" in result.output
+
+
 def test_extract_truncation_persists_nothing_and_exits_nonzero(tmp_path: Path, monkeypatch):
     """A RateLimitTruncated source must not merge items nor advance the cursor."""
     from xbrain.extract.extractor import RateLimitTruncated
@@ -1983,6 +1997,69 @@ def test_extract_truncation_persists_nothing_and_exits_nonzero(tmp_path: Path, m
     assert result.exit_code == 1
     assert load_store(tmp_path / "data" / "items.json") == {}
     assert load_state(tmp_path / "data" / "state.json").bookmarks.last_seen_id is None
+
+
+def test_refresh_all_runs_daily_pipeline_in_order(tmp_path: Path, monkeypatch):
+    import xbrain.cli as cli
+
+    _setup_repo(tmp_path, monkeypatch)
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_run_extract",
+        lambda cfg, source, since, until, *, headless: calls.append(
+            ("extract", source, headless)
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_fetch",
+        lambda cfg, since, until, force, *, headless: calls.append(("fetch", force, headless)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_media",
+        lambda cfg, *, force, limit, items_filter, verbose=False: calls.append(
+            ("media", force, limit, items_filter)
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_describe",
+        lambda cfg, **kwargs: calls.append(
+            ("describe", kwargs["model"], kwargs["batch_size"], kwargs["limit"])
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_enrich_api",
+        lambda cfg, since, until: calls.append(("enrich", since, until)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_topics_executor",
+        lambda cfg, executor, *, resynth=False: calls.append(("topics", executor, resynth)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_generate",
+        lambda cfg, since, until: calls.append(("generate", since, until)),
+    )
+
+    result = runner.invoke(app, ["refresh-all", "--describe-limit", "3"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        ("extract", "bookmarks", True),
+        ("fetch", False, True),
+        ("media", False, None, None),
+        ("describe", "xiaomi/mimo-v2.5", 5, 3),
+        ("enrich", None, None),
+        ("topics", "api", False),
+        ("generate", None, None),
+    ]
+    assert "refresh-all: completado" in result.output
 
 
 # ------------------------------------------------------ list-videos / fetch-video
