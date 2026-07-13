@@ -1,8 +1,8 @@
-"""Describe downloaded photos with a vision LLM; feed descriptions into enrich.
+"""Describe downloaded photos with the configured vision-capable LLM API.
 
 The `describe_all` orchestrator walks every photo entry the downloader
 has produced, batches the bytes into vision-API calls (default: 5 images
-per call to Claude Sonnet), parses the per-image JSON judgments, and
+per call), parses the per-image JSON judgments, and
 transitions matched entries to `MediaPhotoDescribed`. Decorative photos
 (avatars, reaction memes) are filtered at the downstream consumption
 seam so they introduce no topic noise.
@@ -36,6 +36,7 @@ from xbrain.models import (
     MediaPhotoDownloaded,
     SupportedLanguage,
 )
+from xbrain.llm_client import LlmProvider, build_llm_client, recoverable_llm_errors
 from xbrain.rubrics import load_rubric
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ _DEFAULT_BATCH_SIZE = 5
 # survive an over-eager model that emits long descriptions.
 _MAX_TOKENS = 1200
 
-# Map file extensions to the Anthropic vision media-type strings. The
+# Map file extensions to the vision API media-type strings. The
 # downloader writes one of these four (`.jpg` is mapped twice — once for
 # `.jpg`, once for `.jpeg` — so the cardinality of distinct media types
 # is three: image/jpeg, image/png, image/webp). See
@@ -65,26 +66,24 @@ _MEDIA_TYPES: dict[str, str] = {
 
 
 class MessagesClient(Protocol):
-    """Minimal structural type for the Anthropic SDK `client.messages` seam.
+    """Minimal structural type for the configured `client.messages` seam.
 
     Defined locally so the orchestrator does not need to type-ignore an
-    untyped `client.messages.create(...)` call. The real
-    `anthropic.Anthropic().messages` satisfies this Protocol; the test
-    fakes (`tests.conftest.FakeAnthropic`, `_FakeVisionClient`) do too.
+    untyped `client.messages.create(...)` call. The real clients and
+    test fakes (`tests.conftest.FakeLLMClient`, `_FakeVisionClient`) satisfy it.
     """
 
     def create(self, **kwargs: object) -> object:
-        """Send one Anthropic `messages.create` call; return the raw response."""
+        """Send one provider API call; return the raw response."""
         ...
 
 
 class VisionClient(Protocol):
-    """Minimal structural type for the Anthropic SDK client itself.
+    """Minimal structural type for the configured vision-capable LLM client.
 
-    Drops the `# type: ignore[attr-defined]` that would otherwise be
-    needed on `client.messages.create(...)`. The protocol is local to
-    this module because describe is the only consumer; `executors.api`
-    still uses a duck-typed client for now (out of scope for this PR).
+    Drops the `# type: ignore[attr-defined]` that would otherwise be needed on
+    `client.messages.create(...)`. The protocol is local to this module because
+    describe is the only vision batch consumer.
     """
 
     messages: MessagesClient
@@ -147,25 +146,12 @@ class _Candidate:
 def _recoverable_errors() -> tuple[type[Exception], ...]:
     """Exception classes a per-batch failure should swallow + log + continue on.
 
-    Mirrors `xbrain.executors.api._recoverable_errors`. `anthropic.APIError`
-    covers auth, rate-limit, server-side and network errors the SDK
-    normalises. `ValueError` covers validator rejections (and
-    `pydantic.ValidationError`, a `ValueError` subclass in pydantic v2).
-    `json.JSONDecodeError` covers malformed LLM responses. `KeyError`
-    covers responses missing expected fields. `OSError` covers
-    file-read failures when streaming photo bytes off disk (a missing
-    file under `data/media/` is per-photo recoverable, not a total
-    abort).
-
-    Lazy-imported because `anthropic` is optional in the test
-    environment (the client is faked via `tests.conftest.FakeAnthropic`).
+    Provider-specific API errors cover auth, rate-limit, server-side and
+    network failures. `ValueError`, `JSONDecodeError` and `KeyError` cover
+    malformed LLM responses. `OSError` covers file-read failures when streaming
+    photo bytes off disk.
     """
-    try:
-        from anthropic import APIError
-
-        return (APIError, ValueError, json.JSONDecodeError, KeyError, OSError)
-    except ImportError:
-        return (ValueError, json.JSONDecodeError, KeyError, OSError)
+    return (*recoverable_llm_errors(), OSError)
 
 
 def _is_stale(
@@ -316,22 +302,21 @@ def _iter_eligible_candidates(
 
 
 def _media_type(local_path: str) -> str:
-    """Map an on-disk path's extension to its Anthropic media-type string.
+    """Map an on-disk path's extension to its image media-type string.
 
     The downloader writes one of `.jpg` / `.jpeg` / `.png` / `.webp`
     (see `xbrain.media._FORMAT_EXTENSIONS`). Anything else came from a
     hand edit of `items.json` or a future format we have not registered
-    — we emit a `logger.warning` (so the operator can see the wrong
-    MIME type was sent) and fall back to `image/jpeg`. Anthropic will
-    reject the request if the bytes do not match; that surfaces as a
-    per-batch failure rather than a silent total-failure raise.
+    — we emit a `logger.warning` (so the operator can see the wrong MIME type
+    was sent) and fall back to `image/jpeg`. The provider will reject the request
+    if the bytes do not match; that surfaces as a per-batch failure.
     """
     suffix = Path(local_path).suffix.lower()
     media_type = _MEDIA_TYPES.get(suffix)
     if media_type is None:
         logger.warning(
             "describe: unknown extension %r for local_path %s; "
-            "sending as image/jpeg (Anthropic may reject)",
+            "sending as image/jpeg (the provider may reject)",
             suffix,
             local_path,
         )
@@ -351,11 +336,10 @@ def _load_bytes(media_root: Path, local_path: str) -> bytes:
 
 
 def _build_image_block(data: bytes, media_type: str) -> dict:
-    """Build one Anthropic vision content block from raw photo bytes.
+    """Build one provider-neutral vision content block from raw photo bytes.
 
-    The wire shape is `{type: image, source: {type: base64, media_type, data}}`.
-    Tests bypass this by using a `FakeAnthropic` that does not inspect
-    `messages`; production uses the real SDK which validates the shape.
+    The Anthropic-style shape is also the internal provider-neutral shape.
+    `NanoGPTClient` converts it to OpenAI-compatible `image_url` blocks.
     """
     return {
         "type": "image",
@@ -375,8 +359,8 @@ def _system_prompt(language: str) -> str:
 def _extract_response_text(response: object) -> str:
     """Pull the JSON-bearing text out of a vision response, stripping fences.
 
-    The Anthropic SDK packs the model's reply in `.content` as a list
-    of typed blocks; only `text` blocks carry JSON. Some models wrap
+    Providers pack the model's reply in `.content` as a list of typed
+    blocks; only `text` blocks carry JSON. Some models wrap
     the JSON in a ```json ... ``` Markdown fence despite the rubric
     explicitly forbidding it — strip a single leading/trailing fence
     pair (with or without a language tag) so the downstream
@@ -561,6 +545,8 @@ def describe_all(
     items_filter: list[str] | None = None,
     batch_size: int = _DEFAULT_BATCH_SIZE,
     client: VisionClient | None = None,
+    provider: LlmProvider = "nanogpt",
+    base_url: str | None = None,
     on_progress: Callable[[], None] | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> DescribeReport:
@@ -596,12 +582,7 @@ def describe_all(
             operator message + exit code 1.
     """
     if client is None:
-        from anthropic import Anthropic  # lazy: tests inject FakeAnthropic
-
-        # reads ANTHROPIC_API_KEY from the environment; the real `Anthropic`
-        # class is structurally compatible with `VisionClient` so the cast
-        # is a documentation tool, not a runtime conversion.
-        active_client: VisionClient = Anthropic()  # type: ignore[assignment]
+        active_client = cast(VisionClient, build_llm_client(provider, base_url=base_url))
     else:
         active_client = client
     clock: Callable[[], datetime] = now if now is not None else _utcnow

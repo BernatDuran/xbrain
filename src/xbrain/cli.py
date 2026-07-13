@@ -31,6 +31,7 @@ from xbrain.extract.threads import expand_threads
 from xbrain.fetch import fetch_pending
 from xbrain.fetch_x import fetch_x_articles
 from xbrain.generate import generate as run_generate
+from xbrain.llm_client import validate_llm_model
 from xbrain.media import download_all as run_media_download
 from xbrain.media import emit_summary_line as media_emit_summary_line
 from xbrain.models import ArchiveImport, Author, Item, SourceName
@@ -664,6 +665,8 @@ def _run_describe(
             limit=limit,
             items_filter=items_filter,
             batch_size=batch_size,
+            provider=cfg.llm_provider,
+            base_url=cfg.llm_base_url,
             on_progress=_persist,
         )
     finally:
@@ -705,7 +708,7 @@ def describe(
     model: str | None = typer.Option(
         None,
         "--model",
-        help="Modelo de visión a usar. Si no se pasa, se usa el del config (`describe.model`).",
+        help="Modelo API LLM de visión para este run. Si no se pasa, se usa [llm].vision_model.",
     ),
     batch_size: int = typer.Option(
         5,
@@ -770,7 +773,8 @@ def describe(
             f"  xbrain describe --apply {worksheet_path}"
         )
         return
-    chosen_model = model or cfg.describe_model
+    chosen_model = model or cfg.llm_vision_model
+    validate_llm_model(cfg.llm_provider, chosen_model, setting="describe --model")
     _run_describe(
         cfg,
         force=force,
@@ -1130,15 +1134,32 @@ def _build_visual_config(cfg: Config, vision_model: str | None = None) -> Visual
     operator error BEFORE any work — there is no bundled default vision model.
 
     `vision_model` overrides `[vision].model` for this run (the `--vision-model`
-    flag): the model name is passed to `[vision].command` as `--model`, so a
-    multi-backend wrapper can route it (e.g. `opus` → cloud, `qwen-7b` → local).
+    flag). The global LLM provider/model is also passed in the subprocess
+    environment so a multi-backend wrapper cannot silently choose a different
+    API provider than the main app.
     """
     if not cfg.vision_command.strip():
         raise ValueError(
             "digest-video --frames requires an external vision model: set "
             "[vision].command in config.toml (there is no bundled default)."
         )
-    model = vision_model or cfg.vision_model
+    model = vision_model or cfg.vision_model or cfg.llm_vision_model
+    env = {
+        **os.environ,
+        "XBRAIN_LLM_PROVIDER": cfg.llm_provider,
+        "XBRAIN_LLM_MODEL": cfg.llm_model,
+        "XBRAIN_LLM_VISION_MODEL": model,
+    }
+    if cfg.llm_base_url:
+        env["XBRAIN_LLM_BASE_URL"] = cfg.llm_base_url
+    if cfg.llm_provider == "nanogpt":
+        env["NANOGPT_MODEL"] = cfg.llm_model
+        env["NANOGPT_VISION_MODEL"] = model
+        if cfg.llm_base_url:
+            env["NANOGPT_BASE_URL"] = cfg.llm_base_url
+    if cfg.llm_provider == "anthropic":
+        env["ANTHROPIC_MODEL"] = cfg.llm_model
+        env["ANTHROPIC_VISION_MODEL"] = model
 
     def _extract(path: Path) -> list[KeyFrame]:
         return extract_key_frames(
@@ -1146,7 +1167,7 @@ def _build_visual_config(cfg: Config, vision_model: str | None = None) -> Visual
         )
 
     def _describe(path: Path) -> str:
-        return describe_image(path, command=cfg.vision_command, model=model)
+        return describe_image(path, command=cfg.vision_command, model=model, env=env)
 
     return VisualConfig(media_root=cfg.media_dir, extract_fn=_extract, describe_fn=_describe)
 
@@ -1228,9 +1249,8 @@ def digest_video(
     vision_model: str | None = typer.Option(
         None,
         "--vision-model",
-        help="Sobrescribe `[vision].model` para este run: el nombre se pasa como "
-        "--model al comando de visión. Con un wrapper multi-backend permite elegir "
-        "modelo por run (p.ej. opus → nube, qwen-7b → local). Requiere --frames.",
+        help="Sobrescribe `[vision].model` para este run y se propaga como "
+        "XBRAIN_LLM_VISION_MODEL al comando de visión. Requiere --frames.",
     ),
 ) -> None:
     """Transcribe vídeos guardados y adjunta el transcript como source `x_video`.
@@ -1320,7 +1340,12 @@ def enrich(
 
     enriched, invalid = enrich_with_executor(
         store,
-        ApiExecutor(model=cfg.enrich_model, output_language=cfg.output_language),
+        ApiExecutor(
+            model=cfg.enrich_model,
+            output_language=cfg.output_language,
+            provider=cfg.llm_provider,
+            base_url=cfg.llm_base_url,
+        ),
         vocab_topics,
         _parse_date(since),
         _parse_date(until, end_of_day=True),
@@ -1371,7 +1396,14 @@ def _vocab_run(cfg: Config, store: dict, executor: str | None, regenerate: bool)
         raise ValueError(f"Ejecutor desconocido: {chosen!r}")
     if regenerate:
         _auto_snapshot(cfg, "vocab-regenerate")
-    topics = induce_vocab(store, cfg.vocab_target_count, cfg.enrich_model, cfg.output_language)
+    topics = induce_vocab(
+        store,
+        cfg.vocab_target_count,
+        cfg.enrich_model,
+        cfg.output_language,
+        provider=cfg.llm_provider,
+        base_url=cfg.llm_base_url,
+    )
     save_vocab(topics, cfg.data_dir / "vocab.yaml")
     _mark_for_regenerate(store, cfg, regenerate)
     typer.echo(f"Vocabulario inducido: {len(topics)} topics → {cfg.data_dir / 'vocab.yaml'}")
@@ -1439,7 +1471,13 @@ def _topics_run(cfg: Config, store: dict, vocab: list, resynth: bool, executor: 
     if chosen != "api":
         raise ValueError(f"Ejecutor desconocido: {chosen!r}")
 
-    judgments = synthesize_overviews_api(inputs, cfg.enrich_model, cfg.output_language)
+    judgments = synthesize_overviews_api(
+        inputs,
+        cfg.enrich_model,
+        cfg.output_language,
+        provider=cfg.llm_provider,
+        base_url=cfg.llm_base_url,
+    )
     merge_overviews(pages, judgments, posts)
     save_topic_pages(pages, cfg.topics_path)
     written = write_topic_pages(cfg.output_dir, vocab, posts, pages, cfg.output_language)

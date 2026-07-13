@@ -10,14 +10,25 @@ data_dir = "data"
 # Your X handle, without the @.
 handle = "your_handle"
 
+[llm]
+# Text LLM provider for the "api" executor:
+#   "nanogpt"   - calls NanoGPT's OpenAI-compatible chat completions API [default]
+#   "anthropic" - Anthropic provider for all API-backed LLM calls (needs ANTHROPIC_API_KEY)
+provider = "nanogpt"
+# NanoGPT-only API base URL; ignored when provider = "anthropic".
+base_url = "https://nano-gpt.com/api/v1"
+# API LLM model used by text stages: enrich, vocab and topics.
+model = "zai-org/glm-5.2"
+# Separate API LLM model for image/vision tasks (`describe` and digest-video frames).
+# With NanoGPT, default is xiaomi/mimo-v2.5 because text-only models may not process images.
+vision_model = "xiaomi/mimo-v2.5"
+
 [enrich]
 # Executor that produces the LLM judgment:
 #   "claude-code" - exports a worksheet a Claude Code session fills (no API cost) [default]
-#   "api"         - calls the Anthropic API (needs ANTHROPIC_API_KEY, pay-per-token)
+#   "api"         - calls [llm].provider (NanoGPT by default, needs NANOGPT_API_KEY)
 #   "manual"      - exports a worksheet to fill by hand
 executor = "claude-code"
-# Model used by the "api" executor. A cheap model for volume; a stronger one for quality.
-model = "claude-haiku-4-5-20251001"
 
 [vocab]
 # Number of topics the `vocab` stage induces from the corpus.
@@ -41,10 +52,6 @@ language = "English"
 topic_style = "wikilink"
 
 [describe]
-# Vision model used by `xbrain describe`. Sonnet 4.6 is the default —
-# the quality / cost sweet spot (~$3-5 for a 2k-image corpus). Override
-# per run with `--model` while iterating; the CLI flag wins.
-model = "claude-sonnet-4-6"
 # Description-version tag persisted on every described photo. Bumping
 # this value invalidates existing descriptions: the next `xbrain
 # describe` run re-describes stale entries automatically. Use it when
@@ -83,11 +90,11 @@ command = "parakeet-mlx"
 # (split with shlex, run without a shell). `--frames` is fully opt-in: a normal
 # `digest-video` run never touches ffmpeg or this command.
 #
-# The bundled `scripts/xbrain-vision` wrapper is a MULTI-BACKEND SELECTOR: the
-# `--model` name routes to a local mlx-vlm model OR a cloud Claude model, so one
-# command serves both. Pick per run with `digest-video --vision-model NAME`, or
-# set the default here:
-#   local (Apple Silicon, free/offline): qwen-3b | qwen-7b | qwen-32b | <hf/repo>
-#   cloud (needs ANTHROPIC_API_KEY):      opus | sonnet | haiku | claude-<id>
+# The bundled `scripts/xbrain-vision` wrapper routes local aliases to mlx-vlm and
+# every cloud call through `[llm].provider` (NanoGPT by default). Pick per run
+# with `digest-video --vision-model NAME`, or set the default here:
+#   local (Apple Silicon, free/offline): qwen-3b | qwen-7b | qwen-32b | local:<hf/repo>
+#   cloud via NanoGPT:                    any NanoGPT vision model id, e.g. xiaomi/mimo-v2.5
+#   cloud via Anthropic:                  set [llm].provider="anthropic", then opus|sonnet|haiku
 # command = "/absolute/path/to/scripts/xbrain-vision"
-# model = "qwen-3b"                       # omit → the wrapper's default (qwen-3b)
+# model = "qwen-3b"                       # omit → [llm].vision_model

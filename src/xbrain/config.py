@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import get_args
 
 from xbrain.i18n import strings_for
+from xbrain.llm_client import (
+    DEFAULT_ANTHROPIC_TEXT_MODEL,
+    DEFAULT_ANTHROPIC_VISION_MODEL,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_NANOGPT_BASE_URL,
+    DEFAULT_NANOGPT_MODEL,
+    DEFAULT_NANOGPT_VISION_MODEL,
+    LlmProvider,
+    normalize_llm_provider,
+    validate_llm_model,
+)
 from xbrain.models import ExecutorName
 
 # In-body `**Topics:**` line styles. `wikilink` (default) keeps the current
@@ -23,16 +35,18 @@ class Config:
     output_dir: Path
     data_dir: Path
     x_handle: str
+    llm_provider: LlmProvider
+    llm_model: str
+    llm_vision_model: str
+    llm_base_url: str
     enrich_executor: ExecutorName
     enrich_model: str
     vocab_target_count: int
     topics_resynth_threshold: int
     output_language: str  # one of xbrain.i18n.SUPPORTED_LANGUAGES
     topic_style: str  # one of xbrain.config.SUPPORTED_TOPIC_STYLES
-    # `describe_model` defaults to Sonnet 4.6 — the spec settled on it as the
-    # quality / cost sweet spot for vision (~$3-5 for a 2k-image corpus).
-    # Override per run via `xbrain describe --model ...` when iterating on
-    # prompt or budget; the CLI flag wins over the config value.
+    # Kept as a compatibility alias for call sites/tests that still read the old
+    # stage-specific field. It is always equal to `llm_vision_model`.
     describe_model: str
     # `describe_version` tags every produced description so a prompt
     # evolution can be rolled out incrementally: bumping the value here
@@ -89,8 +103,129 @@ class Config:
         return self.repo_root / "auth" / "storage_state.json"
 
 
+def _load_dotenv(repo_root: Path) -> None:
+    """Load simple KEY=VALUE pairs from `.env` without overriding the environment."""
+    dotenv = repo_root / ".env"
+    if not dotenv.exists():
+        return
+    for raw_line in dotenv.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+def _configured_text_model(provider: LlmProvider, settings: dict) -> str:
+    """Resolve the text API model: env > [llm].model > legacy [enrich].model."""
+    provider_default = (
+        DEFAULT_NANOGPT_MODEL if provider == "nanogpt" else DEFAULT_ANTHROPIC_TEXT_MODEL
+    )
+    env_model = os.environ.get("XBRAIN_LLM_MODEL")
+    env_setting = "XBRAIN_LLM_MODEL"
+    if provider == "nanogpt":
+        if not env_model:
+            env_model = os.environ.get("NANOGPT_MODEL")
+            env_setting = "NANOGPT_MODEL"
+    else:
+        if not env_model:
+            env_model = os.environ.get("ANTHROPIC_MODEL")
+            env_setting = "ANTHROPIC_MODEL"
+    if env_model:
+        validate_llm_model(provider, env_model, setting=env_setting)
+        return env_model
+
+    llm = settings.get("llm", {})
+    enrich = settings.get("enrich", {})
+    configured: list[tuple[str, str]] = []
+    for location, section in (
+        ("[llm].model", llm),
+        ("[enrich].model", enrich),
+    ):
+        value = section.get("model")
+        if isinstance(value, str) and value:
+            configured.append((location, value))
+    values = {value for _, value in configured}
+    if len(values) > 1:
+        locations = ", ".join(f"{location}={value!r}" for location, value in configured)
+        raise ValueError(
+            "config.toml: only one text API LLM model can be configured at a time; "
+            f"got {locations}. Move the chosen model to [llm].model."
+        )
+    model = configured[0][1] if configured else provider_default
+    setting = configured[0][0] if configured else "[llm].model"
+    validate_llm_model(provider, model, setting=setting)
+    return model
+
+
+def _configured_vision_model(provider: LlmProvider, settings: dict) -> str:
+    """Resolve the image/vision API model: env > [llm].vision_model > [describe].model."""
+    provider_default = (
+        DEFAULT_NANOGPT_VISION_MODEL if provider == "nanogpt" else DEFAULT_ANTHROPIC_VISION_MODEL
+    )
+    env_model = os.environ.get("XBRAIN_LLM_VISION_MODEL")
+    env_setting = "XBRAIN_LLM_VISION_MODEL"
+    if provider == "nanogpt":
+        if not env_model:
+            env_model = os.environ.get("NANOGPT_VISION_MODEL")
+            env_setting = "NANOGPT_VISION_MODEL"
+    else:
+        if not env_model:
+            env_model = os.environ.get("ANTHROPIC_VISION_MODEL")
+            env_setting = "ANTHROPIC_VISION_MODEL"
+    if env_model:
+        validate_llm_model(provider, env_model, setting=env_setting)
+        return env_model
+
+    llm = settings.get("llm", {})
+    describe = settings.get("describe", {})
+    configured: list[tuple[str, str]] = []
+    for location, section, key in (
+        ("[llm].vision_model", llm, "vision_model"),
+        ("[describe].model", describe, "model"),
+    ):
+        value = section.get(key)
+        if isinstance(value, str) and value:
+            configured.append((location, value))
+    values = {value for _, value in configured}
+    if len(values) > 1:
+        locations = ", ".join(f"{location}={value!r}" for location, value in configured)
+        raise ValueError(
+            "config.toml: only one vision API LLM model can be configured at a time; "
+            f"got {locations}. Move the chosen model to [llm].vision_model."
+        )
+    model = configured[0][1] if configured else provider_default
+    setting = configured[0][0] if configured else "[llm].vision_model"
+    validate_llm_model(provider, model, setting=setting)
+    return model
+
+
+def _configured_base_url(provider: LlmProvider, settings: dict) -> str:
+    """Resolve provider-specific API base URL."""
+    if provider != "nanogpt":
+        return ""
+    llm = settings.get("llm", {})
+    return (
+        os.environ.get("XBRAIN_LLM_BASE_URL")
+        or os.environ.get("NANOGPT_BASE_URL")
+        or llm.get("base_url")
+        or DEFAULT_NANOGPT_BASE_URL
+    )
+
+
 def load_config(repo_root: Path) -> Config:
     """Load config.toml from a repo root into a Config."""
+    _load_dotenv(repo_root)
     settings = tomllib.loads((repo_root / "config.toml").read_text(encoding="utf-8"))
     paths = settings["paths"]
     x_settings = settings["x"]
@@ -126,19 +261,30 @@ def load_config(repo_root: Path) -> Config:
     describe = settings.get("describe", {})
     transcribe = settings.get("transcribe", {})
     vision = settings.get("vision", {})
+    llm = settings.get("llm", {})
+    llm_provider = normalize_llm_provider(
+        os.environ.get("XBRAIN_LLM_PROVIDER") or llm.get("provider", DEFAULT_LLM_PROVIDER)
+    )
+    llm_base_url = _configured_base_url(llm_provider, settings)
+    llm_model = _configured_text_model(llm_provider, settings)
+    llm_vision_model = _configured_vision_model(llm_provider, settings)
     return Config(
         repo_root=repo_root,
         vault=vault,
         output_dir=vault / paths["output_subdir"],
         data_dir=repo_root / paths["data_dir"],
         x_handle=x_settings["handle"],
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_vision_model=llm_vision_model,
+        llm_base_url=llm_base_url,
         enrich_executor=executor,
-        enrich_model=enrich.get("model", "claude-haiku-4-5-20251001"),
+        enrich_model=llm_model,
         vocab_target_count=target_count,
         topics_resynth_threshold=resynth_threshold,
         output_language=output_language,
         topic_style=topic_style,
-        describe_model=describe.get("model", "claude-sonnet-4-6"),
+        describe_model=llm_vision_model,
         describe_version=describe.get("version", "v1"),
         transcribe_command=transcribe.get("command", "parakeet-mlx"),
         transcribe_model=transcribe.get("model"),

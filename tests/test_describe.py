@@ -1,6 +1,6 @@
 """Tests for `xbrain.describe` — the vision-describe orchestrator.
 
-The Anthropic client is faked via `tests.conftest.FakeAnthropic`; no
+The LLM client is faked via `tests.conftest.FakeLLMClient`; no
 real API calls. Photo bytes are written to a tmp `data/media/` tree so
 the orchestrator can read them through its normal `_load_bytes` path.
 
@@ -43,7 +43,7 @@ from xbrain.models import (
     MediaVideoPending,
 )
 
-from tests.conftest import FakeAnthropic, FakeBlock, FakeResponse
+from tests.conftest import FakeLLMClient, FakeBlock, FakeResponse
 
 # --------------------------------------------------------------------- fixtures + helpers
 
@@ -147,7 +147,7 @@ def _judgment(index: int, *, decorative: bool = False, description: str = "ok") 
 def _payload(judgments: list[dict]) -> list[dict]:
     """Wrap a list of judgments as the JSON list the rubric expects.
 
-    `FakeAnthropic` JSON-encodes the payload as `json.dumps(payload)` —
+    `FakeLLMClient` JSON-encodes the payload as `json.dumps(payload)` —
     a list payload survives that path unchanged because `dumps` accepts
     any JSON-serialisable value, not just dicts. The orchestrator's
     parser pulls the text from `.content[0].text` and parses it as a
@@ -159,7 +159,7 @@ def _payload(judgments: list[dict]) -> list[dict]:
 class _FakeListResponse:
     """A `FakeResponse`-shaped object whose `.content[0].text` is a JSON list.
 
-    `FakeAnthropic` wraps payloads in `FakeResponse(payload)` which calls
+    `FakeLLMClient` wraps payloads in `FakeResponse(payload)` which calls
     `json.dumps(payload)` — that path expects a dict. For describe we
     need to ship a list payload, so we build a parallel response
     type that mirrors the shape `_parse_batch_response` consumes.
@@ -1205,7 +1205,7 @@ def test_fake_response_round_trips():
 
 
 def test_fake_anthropic_records_calls():
-    """`FakeAnthropic.messages.calls` records every kwarg dict — relied on by other tests."""
-    client = FakeAnthropic([{"x": 1}])
+    """`FakeLLMClient.messages.calls` records every kwarg dict — relied on by other tests."""
+    client = FakeLLMClient([{"x": 1}])
     client.messages.create(model="m", system="s", messages=[])
     assert client.messages.calls[0]["model"] == "m"

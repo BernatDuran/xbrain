@@ -1463,6 +1463,7 @@ def test_describe_command_transitions_downloaded_to_described(tmp_path: Path, mo
     assert entry.description == "A chart."
     assert entry.description_lang == "English"
     assert entry.description_version == "v1"
+    assert fake_client.messages.calls[0]["model"] == "xiaomi/mimo-v2.5"
 
 
 def test_describe_command_runs_on_empty_store(tmp_path: Path, monkeypatch):
@@ -1481,6 +1482,14 @@ def test_describe_command_warns_when_items_filter_matches_nothing(tmp_path, monk
     result = runner.invoke(app, ["describe", "--items", "no-such-id"])
     assert result.exit_code == 0
     assert "AVISO" in result.output or "AVISO" in (result.stderr or "")
+
+
+def test_describe_command_rejects_provider_mismatched_model_override(tmp_path, monkeypatch):
+    """`--model` is still an API model, so it must match `[llm].provider`."""
+    _setup_describe_repo(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["describe", "--model", "claude-sonnet-4-6"])
+    assert result.exit_code == 1
+    assert "Anthropic-native" in result.output
 
 
 def test_describe_command_propagates_total_failure_as_exit_1(tmp_path, monkeypatch):
@@ -2576,7 +2585,7 @@ def test_digest_video_vision_model_override(tmp_path: Path, monkeypatch):
     _wire_frames(monkeypatch)  # extract → slide frames; real classify_visual runs
     seen: list = []
 
-    def _capture(path, *, command, model):
+    def _capture(path, *, command, model, env):
         seen.append(model)
         return "slide"
 
@@ -2614,7 +2623,7 @@ def test_digest_video_vision_model_defaults_to_config(tmp_path: Path, monkeypatc
     _wire_frames(monkeypatch)
     seen: list = []
 
-    def _capture(path, *, command, model):
+    def _capture(path, *, command, model, env):
         seen.append(model)
         return "slide"
 
@@ -2622,6 +2631,24 @@ def test_digest_video_vision_model_defaults_to_config(tmp_path: Path, monkeypatc
     result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
     assert result.exit_code == 0, result.output
     assert seen and set(seen) == {"qwen-7b"}  # config model, no override
+
+
+def test_digest_video_vision_model_defaults_to_llm_vision_model(tmp_path: Path, monkeypatch):
+    """With no `--vision-model` or `[vision].model`, frames use `[llm].vision_model`."""
+    _setup_repo_with_vision(tmp_path, monkeypatch)  # [vision].command set, model unset
+    save_store({"42": _video_item("42", url=_AMPLIFY_URL_1)}, tmp_path / "data" / "items.json")
+    _wire_digest(monkeypatch, _speech_transcript("the talk"))
+    _wire_frames(monkeypatch)
+    seen: list[tuple[str, str]] = []
+
+    def _capture(path, *, command, model, env):
+        seen.append((model, env["XBRAIN_LLM_VISION_MODEL"]))
+        return "slide"
+
+    monkeypatch.setattr("xbrain.cli.describe_image", _capture)
+    result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
+    assert result.exit_code == 0, result.output
+    assert seen and set(seen) == {("xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5")}
 
 
 def test_digest_video_frames_then_generate_embeds_slides(tmp_path: Path, monkeypatch):

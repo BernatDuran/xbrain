@@ -1,18 +1,18 @@
-"""The `api` executor — produces enrichment judgment via the Anthropic API.
+"""The `api` executor — produces enrichment judgments via the configured LLM API.
 
-One API call per item: simple, robust, easy to retry. The Anthropic client is
-injected (defaults to a real one) so tests run offline. The user prompt always
+One API call per item: simple, robust, easy to retry. The LLM client is
+injected (defaults to the configured real one) so tests run offline. The user prompt always
 carries the link URLs/domains and the bookmark folder — topic signal even when
 the article body was not fetched (design §15.2).
 """
 
 from __future__ import annotations
 
-import json
 import sys
 
 from xbrain.executors.base import EnrichmentJudgment
 from xbrain.llm_json import json_from_response
+from xbrain.llm_client import LlmProvider, build_llm_client, recoverable_llm_errors
 from xbrain.models import ContentSourceSuccess, Item, MediaPhotoDescribed, Topic
 from xbrain.rubrics import (
     ARTICLE_CHAR_LIMIT,
@@ -27,21 +27,12 @@ _MAX_TOKENS = 600
 def _recoverable_errors() -> tuple[type[Exception], ...]:
     """Exception classes a per-item failure should swallow + log + continue on.
 
-    `anthropic.APIError` covers auth, rate-limit, server-side and network
-    errors the SDK normalises. `ValueError` covers validator rejections and
-    `pydantic.ValidationError` (a `ValueError` subclass in pydantic v2).
-    `json.JSONDecodeError` covers a malformed LLM response. `KeyError` covers
-    a response missing an expected field.
-
-    Lazy-imported because `anthropic` is an optional dependency in the test
-    environment (the client is faked).
+    Provider-specific API errors cover auth, rate-limit, server-side and
+    network failures. `ValueError` covers validator rejections and
+    `pydantic.ValidationError` (a `ValueError` subclass in pydantic v2);
+    JSON/key errors cover malformed or incomplete LLM responses.
     """
-    try:
-        from anthropic import APIError
-
-        return (APIError, ValueError, json.JSONDecodeError, KeyError)
-    except ImportError:
-        return (ValueError, json.JSONDecodeError, KeyError)
+    return recoverable_llm_errors()
 
 
 def _vocab_block(vocab: list[Topic]) -> str:
@@ -171,13 +162,18 @@ def _user_prompt(item: Item, vocab: list[Topic]) -> str:
 
 
 class ApiExecutor:
-    """Enrichment executor backed by the Anthropic API."""
+    """Enrichment executor backed by the configured text LLM API."""
 
-    def __init__(self, model: str, output_language: str, client=None):
+    def __init__(
+        self,
+        model: str,
+        output_language: str,
+        client=None,
+        provider: LlmProvider = "nanogpt",
+        base_url: str | None = None,
+    ):
         if client is None:
-            from anthropic import Anthropic  # lazy: tests inject a fake
-
-            client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+            client = build_llm_client(provider, base_url=base_url)
         self._client = client
         self._model = model
         self._output_language = output_language

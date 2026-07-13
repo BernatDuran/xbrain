@@ -339,12 +339,13 @@ uv run xbrain status     # see the counts
 | Chromium | — | Installed via `uv run playwright install chromium`. |
 | An Obsidian vault | — | Or any folder — XBrain just writes markdown. |
 | An X account | — | Yours. XBrain reads *your* bookmarks and tweets. |
-| `ANTHROPIC_API_KEY` | — | **Optional.** Only for the `api` execution mode. |
+| `NANOGPT_API_KEY` | — | **Optional.** Needed when `[llm].provider = "nanogpt"` and an API-backed LLM command runs. |
+| `ANTHROPIC_API_KEY` | — | **Optional.** Needed only when `[llm].provider = "anthropic"`. |
 | `FIRECRAWL_API_KEY` | — | **Optional.** Fallback fetcher for JavaScript-heavy pages. |
 | ffmpeg, `parakeet-mlx`, `mlx-vlm` | — | **Optional — only for `digest-video`** (video → transcript/slide digests). External, not pulled by `uv pip install`. See [Local models for `digest-video`](#local-models-for-digest-video-apple-silicon). |
 
-Neither API key is required: the default execution mode uses a Claude Code
-session and costs nothing.
+No API key is required for the default worksheet flow: the default execution
+mode uses a Claude Code session or manual worksheet and costs nothing.
 
 ---
 
@@ -401,9 +402,14 @@ data_dir = "data"                         # JSON store, relative to the repo
 [x]
 handle = "your_handle"                    # without the @
 
+[llm]
+provider = "nanogpt"                      # nanogpt | anthropic
+base_url = "https://nano-gpt.com/api/v1"  # NanoGPT-only API base URL
+model = "zai-org/glm-5.2"                 # text model for enrich/vocab/topics
+vision_model = "xiaomi/mimo-v2.5"         # image model for describe/digest-video frames
+
 [enrich]
 executor = "claude-code"                  # claude-code | api | manual
-model = "claude-haiku-4-5-20251001"        # used only by the `api` executor
 
 [vocab]
 target_count = 45                         # how many topics to induce
@@ -430,13 +436,15 @@ command = "parakeet-mlx"                  # external transcriber for `digest-vid
 | `[paths]` | `output_subdir` | — | Wiki folder inside the vault. |
 | `[paths]` | `data_dir` | — | JSON store, relative to the repo. |
 | `[x]` | `handle` | — | Your X handle, no `@`. |
+| `[llm]` | `provider` | `nanogpt` | API LLM provider for all API-backed LLM calls: `nanogpt` or `anthropic`. |
+| `[llm]` | `model` | `zai-org/glm-5.2` | Text model used by `enrich`, `vocab` and `topics`. |
+| `[llm]` | `vision_model` | `xiaomi/mimo-v2.5` | Vision-capable model used by `describe` and cloud `digest-video --frames`. |
+| `[llm]` | `base_url` | `https://nano-gpt.com/api/v1` | NanoGPT API base URL. Ignored when `provider = "anthropic"`. |
 | `[enrich]` | `executor` | `claude-code` | Default [execution mode](#execution-modes) for the LLM stages. |
-| `[enrich]` | `model` | `claude-haiku-4-5` | Model for the `api` executor. |
 | `[vocab]` | `target_count` | `30` | Number of topics the `vocab` stage induces. |
 | `[topics]` | `resynth_threshold` | `25` | Post growth that marks a topic overview stale. |
 | `[output]` | `language` | `English` | Output language for LLM summaries/overviews AND wiki section headers. `English` or `Spanish`. |
 | `[output]` | `topic_style` | `wikilink` | How the in-body `**Topics:**` line is rendered: `wikilink` (`[[slug]] · [[slug]]`) or `hashtag` (`#slug #slug`). Frontmatter `tags:` are unaffected. |
-| `[describe]` | `model` | `claude-sonnet-4-6` | Vision model for `xbrain describe`. Override per run with `--model`. |
 | `[describe]` | `version` | `v1` | Tag persisted on every described photo. Bumping invalidates existing descriptions so the next `xbrain describe` re-describes stale entries. |
 | `[transcribe]` | `command` | `parakeet-mlx` | External transcriber `xbrain digest-video` shells out to (the ASR lives outside xbrain core). May be a multi-token wrapper; whisper / faster-whisper is the portable fallback. |
 | `[transcribe]` | `model` | — | Optional model id passed to the transcriber (`--model`). Omit for the tool default. |
@@ -451,8 +459,9 @@ every enrichment; the next `xbrain enrich` re-enriches in the new language) and
 [Snapshots & safety](#snapshots--safety)). Otherwise new items get the new
 language while old summaries stay as they were.
 
-Secrets (`ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`) live in the **environment
-only** — never in `config.toml`, never in the repo.
+Secrets (`NANOGPT_API_KEY`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`) live in
+the **environment** or local `.env` only — never in `config.toml`, never in the
+repo. For NanoGPT, copy `.env.example` to `.env` and set `NANOGPT_API_KEY`.
 
 ### Local models for `digest-video` (Apple Silicon)
 
@@ -479,11 +488,12 @@ uv tool install mlx-vlm
 ```
 
 Models download on first use and cache under `~/.cache/huggingface`: the ASR
-model (`parakeet-tdt-0.6b`, ~600 MB) and, for `--frames`, the vision model you
-select (`qwen-7b` ≈ 5 GB; `qwen-3b` ≈ 2 GB; `qwen-32b` ≈ 18 GB — needs ~20 GB
-RAM). Pre-pull a large vision model once before a `--frames` run so the first
-frame doesn't hit the per-frame timeout. Cloud vision (`--vision-model opus`)
-needs only `ANTHROPIC_API_KEY`, no local install.
+model (`parakeet-tdt-0.6b`, ~600 MB) and, for local `--frames`, the vision model
+you select (`qwen-7b` ≈ 5 GB; `qwen-3b` ≈ 2 GB; `qwen-32b` ≈ 18 GB — needs
+~20 GB RAM). Pre-pull a large local vision model once before a `--frames` run so
+the first frame doesn't hit the per-frame timeout. Cloud vision uses the global
+`[llm].provider` and `[llm].vision_model`; with the default NanoGPT provider it
+needs `NANOGPT_API_KEY`.
 
 **Transcriber wrapper — `scripts/xbrain-transcribe`.** Points `[transcribe]` at a
 thin parakeet-mlx wrapper: parakeet writes no file for a video with **no audio
@@ -494,18 +504,19 @@ parakeet failure on an audio-bearing file still surfaces. You can point
 `[transcribe].command` straight at `parakeet-mlx` if you don't need this.
 
 **Vision model selector — `scripts/xbrain-vision`.** One `[vision].command`
-serves both local and cloud models; the `--model` name is routed by a registry:
+serves local models and the globally configured cloud provider:
 
 | Name | Backend | Runs on | Cost / privacy |
 |------|---------|---------|----------------|
-| `qwen-3b` (default), `qwen-7b`, `qwen-32b`, or any `hf/repo` | local (mlx-vlm) | your Mac's Neural Engine/GPU | free, fully offline |
-| `opus`, `sonnet`, `haiku`, or any `claude-<id>` | cloud (Anthropic REST, stdlib — no SDK) | Anthropic API | needs `ANTHROPIC_API_KEY`; frames leave the machine |
+| `qwen-3b`, `qwen-7b`, `qwen-32b`, or `local:<hf/repo>` | local (mlx-vlm) | your Mac's Neural Engine/GPU | free, fully offline |
+| any NanoGPT vision model id, e.g. `xiaomi/mimo-v2.5` | cloud via NanoGPT | NanoGPT API | needs `NANOGPT_API_KEY`; frames leave the machine |
+| `opus`, `sonnet`, `haiku`, or any `claude-<id>` with `[llm].provider = "anthropic"` | cloud via Anthropic | Anthropic API | needs `ANTHROPIC_API_KEY`; frames leave the machine |
 
 Pick per run without editing config:
 
 ```bash
-xbrain digest-video --all-pending --frames                       # default (qwen-3b, local)
-xbrain digest-video --ids <slide-heavy-id> --frames --vision-model opus   # cloud, top quality
+xbrain digest-video --all-pending --frames                       # uses [llm].vision_model through [llm].provider
+xbrain digest-video --ids <slide-heavy-id> --frames --vision-model qwen-3b # local, no cloud API
 xbrain digest-video --topic ai-coding --frames --vision-model qwen-7b     # better local
 ```
 
@@ -625,7 +636,7 @@ uv run xbrain <command> [options]
 | `import-archive <zip>` | Backfill the full own-tweet history from the official X data archive. |
 | `fetch` | Download linked article content, expand threads, fetch linked X content. By default, items whose only previous failures were transient (`timeout`, `dns_error`) are re-fetched automatically; terminal failures (`not_found`, `paywall`, `forbidden`, `js_required`, `empty_content`) stay skipped until `--force`. `--force` re-fetches every external_article source regardless of state. |
 | `media` | Download X-post photos referenced in `Item.media` **and the inline images of a bookmarked X Article** (stored under `data/media/<id>/article/<n>`, separate from the item's own photos), reusing the one photo-download engine for both. `--limit` is a combined budget; the SUMMARY reports article images separately. Item photos and the downloaded Article images both render inline in the wiki — `generate` embeds each Article image in the author's order (see the blogpost render). `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Local media storage](#local-media-storage). |
-| `describe` | Describe downloaded photos with a vision LLM (Claude Sonnet 4.6 by default) and feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described photos unless `[describe].version` is bumped in `config.toml`. |
+| `describe` | Describe downloaded photos with `[llm].provider` + `[llm].vision_model` and feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described photos unless `[describe].version` is bumped in `config.toml`. |
 | `refresh-media` | Re-capture X and backfill the **playable video URL + bitrate + duration** onto items whose video is still poster-era (incremental `extract` + non-overwriting merge never refresh existing videos). Video-only — photos and enrichment/description state are preserved, and a good video is never degraded back to its poster if X drifts. Scrolls the full history (slow); destructive → auto-snapshot; prints a download-size estimate. Does **not** download video (that is `download-videos`). Re-seeing 0 known items on a non-empty store (likely expired session / GraphQL drift) aborts without saving unless `--force`. `--source bookmarks\|tweets\|all`, `--force`. |
 | `download-videos` | Download the actual **mp4 bytes** for backfilled videos and embed them inline in the wiki — the video counterpart to `media`. mp4 only: HLS (`.m3u8`) needs ffmpeg and is a deferred follow-up (skipped + counted); poster-era entries (run `refresh-media` first) are skipped too. Prints a `~X.X GB` size estimate and asks for confirmation **unless `--yes`**. `--max-size 500MB\|2GB` skips videos whose estimated size exceeds the cap. Validates the response is really a video (rejects HTML/JSON interstitials served as 200). Destructive → auto-snapshot; idempotent (re-runs skip downloaded videos unless `--force`). `--source bookmarks\|tweets\|all`, `--limit N`, `--items <a,b,c>`, `--max-size <size>`, `--force`, `--yes`. See [Local media storage](#local-media-storage). |
 | `list-videos` | **Read-only** catalog of every video referenced in `items.json` — one row per video entry with its state (`downloaded` / `failed` / `pending` / `poster-era`), estimated size (exact once downloaded, `unknown` without bitrate/duration), the item's `primary_topic` and a text snippet. Filters: `--topic`, `--status`, `--max-size`, `--source`, `--limit`. Human table by default; `--json` emits a stable machine array (`id, url, state, topic, size_bytes\|null, mp4_url, text`) an agent can parse to choose which videos to fetch. Writes nothing, takes no snapshot. |
@@ -941,12 +952,14 @@ xbrain diff <snap-a> --format json | jq '.summary.reassigned_pct'
 
 `vocab`, `enrich` and `topics` need an LLM. XBrain never embeds a Claude
 subscription token — instead the LLM work is **pluggable**, with three modes,
-selected by `--executor` or `config.toml`'s `[enrich].executor`.
+selected by `--executor` or `config.toml`'s `[enrich].executor`. API-backed
+text calls use `[llm].provider` / `[llm].model`; image calls use the same
+provider with `[llm].vision_model`.
 
 | Mode | Cost | When you reach for it |
 |------|------|----------------------|
 | **`claude-code`** *(default)* | None | You have Claude Code open. Day-to-day enrichment. |
-| **`api`** | Pay per token (cheap on Haiku) | Unattended runs (cron, CI, future `/schedule`). No human in the loop. |
+| **`api`** | Pay per token through `[llm].provider` | Unattended runs (cron, CI, future `/schedule`). No human in the loop. |
 | **`manual`** | None | Spot fixes, hand-curating a few items, fallback when the others fail. |
 
 All three modes end the same way — `xbrain` validates the judgments against the
@@ -961,9 +974,8 @@ You open a Claude Code session, the `enriching-x-knowledge` skill (in
 `xbrain enrich --apply` to validate and persist.
 
 **Why this mode exists.** Most XBrain users already have a Claude Code
-subscription. Spending another budget on the Anthropic API to do the same
-work is wasteful — this mode lets the existing subscription do the LLM work
-at zero extra cost.
+subscription. Spending another API budget to do the same work is wasteful —
+this mode lets the existing subscription do the LLM work at zero extra cost.
 
 **When to use it.** Default for interactive runs. You are at your machine,
 Claude Code is open, you want to enrich a batch.
@@ -1009,9 +1021,9 @@ sequenceDiagram
 
 ### Mode 2 — `api`
 
-**What it does.** The CLI loops over every pending item, calls the Anthropic
-API once per item with the rubric, item content and vocab. Each judgment is
-validated, then a single store write at the end persists everything.
+**What it does.** The CLI loops over every pending item, calls the configured
+API provider once per item with the rubric, item content and vocab. Each
+judgment is validated, then a single store write at the end persists everything.
 
 **Why this mode exists.** The `claude-code` mode needs a human present. A
 scheduled job, a cron, or a CI run cannot pop open a Claude Code session.
@@ -1048,7 +1060,7 @@ sequenceDiagram
     autonumber
     actor U as You
     participant CLI as xbrain CLI
-    participant API as Anthropic API
+    participant API as Configured LLM API
     participant Data as data/
 
     U->>CLI: xbrain enrich --executor api

@@ -61,6 +61,28 @@ def test_argv_carries_model_and_image_path(tmp_path: Path):
     assert argv[-1] == str(image)
 
 
+def test_runner_receives_llm_environment(tmp_path: Path):
+    seen = {}
+
+    def runner(_argv, **kwargs):
+        seen.update(kwargs)
+        return _completed("desc")
+
+    env = {
+        "XBRAIN_LLM_PROVIDER": "nanogpt",
+        "XBRAIN_LLM_MODEL": "zai-org/glm-5.2",
+        "XBRAIN_LLM_VISION_MODEL": "xiaomi/mimo-v2.5",
+    }
+    describe_image(
+        tmp_path / "f.png",
+        command="vlm-describe",
+        model="zai-org/glm-5.2",
+        env=env,
+        runner=runner,
+    )
+    assert seen["env"] == env
+
+
 def test_multi_token_command_is_split(tmp_path: Path):
     runner = _runner("desc")
     describe_image(tmp_path / "f.png", command="python -m my_vlm", runner=runner)

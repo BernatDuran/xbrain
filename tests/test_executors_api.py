@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from xbrain.executors.api import ApiExecutor, _user_prompt
 from xbrain.models import Author, Item, Link, Topic
 
-from tests.conftest import FakeAnthropic
+from tests.conftest import FakeLLMClient
 
 
 def _item(item_id: str, **extra) -> Item:
@@ -28,7 +28,7 @@ VOCAB = [
 
 def test_api_executor_returns_one_judgment_per_item():
     payload = {"summary": "r", "primary_topic": "ai-coding", "topics": ["ai-coding"]}
-    client = FakeAnthropic([payload, payload])
+    client = FakeLLMClient([payload, payload])
     ex = ApiExecutor(model="claude-haiku-4-5-20251001", output_language="English", client=client)
     out = ex.enrich_items([_item("1"), _item("2")], VOCAB)
     assert {j.item_id for j in out} == {"1", "2"}
@@ -41,7 +41,7 @@ def test_api_executor_substitutes_language_in_system_prompt():
     `language=`, the placeholder leaks and we get wrong-language output.
     """
     payload = {"summary": "r", "primary_topic": "misc", "topics": ["misc"]}
-    client = FakeAnthropic([payload])
+    client = FakeLLMClient([payload])
     ApiExecutor(model="m", output_language="Spanish", client=client).enrich_items(
         [_item("1")], VOCAB
     )
@@ -51,7 +51,7 @@ def test_api_executor_substitutes_language_in_system_prompt():
 
 
 def test_api_executor_sends_the_configured_model():
-    client = FakeAnthropic([{"summary": "r", "primary_topic": "misc", "topics": ["misc"]}])
+    client = FakeLLMClient([{"summary": "r", "primary_topic": "misc", "topics": ["misc"]}])
     ApiExecutor(model="claude-sonnet-4-6", output_language="English", client=client).enrich_items(
         [_item("1")], VOCAB
     )
@@ -86,7 +86,7 @@ def test_user_prompt_includes_link_domains_when_no_folder():
 def test_api_executor_skips_wrong_shape_response(capsys):
     # A response that is valid JSON but not a judgment object must be skipped
     # with a warning, not silently become an empty enrichment.
-    client = FakeAnthropic(
+    client = FakeLLMClient(
         [
             {"not": "a judgment"},
             {"summary": "r", "primary_topic": "misc", "topics": ["misc"]},
@@ -103,7 +103,7 @@ def test_api_executor_skips_item_on_api_failure(capsys):
     # A transient API failure on one item must not abort the whole batch.
     from anthropic import APIError
 
-    client = FakeAnthropic(
+    client = FakeLLMClient(
         [
             APIError("503 service unavailable", request=None, body=None),
             {"summary": "r", "primary_topic": "misc", "topics": ["misc"]},
@@ -124,7 +124,7 @@ def test_api_executor_raises_when_all_items_fail():
     import pytest
     from anthropic import APIError
 
-    client = FakeAnthropic(
+    client = FakeLLMClient(
         [
             APIError("401 unauthorized", request=None, body=None),
             APIError("401 unauthorized", request=None, body=None),
@@ -180,7 +180,7 @@ def test_api_executor_emits_no_summary_on_total_failure(capsys):
     import pytest
     from anthropic import APIError
 
-    client = FakeAnthropic([APIError("503", request=None, body=None)])
+    client = FakeLLMClient([APIError("503", request=None, body=None)])
     ex = ApiExecutor(model="m", output_language="English", client=client)
     with pytest.raises(RuntimeError):
         ex.enrich_items([_item("1")], VOCAB)
@@ -190,7 +190,7 @@ def test_api_executor_emits_no_summary_on_total_failure(capsys):
 def test_api_executor_emits_no_summary_when_all_succeed(capsys):
     """No failures, no noise: a clean batch stays silent on stderr."""
     payload = {"summary": "r", "primary_topic": "misc", "topics": ["misc"]}
-    client = FakeAnthropic([payload])
+    client = FakeLLMClient([payload])
     ex = ApiExecutor(model="m", output_language="English", client=client)
     ex.enrich_items([_item("1")], VOCAB)
     assert "SUMMARY:" not in capsys.readouterr().err

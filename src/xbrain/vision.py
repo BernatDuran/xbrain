@@ -35,6 +35,7 @@ import shlex
 import subprocess  # nosec B404 - the vision model is an external subprocess by design (#44)
 from collections.abc import Callable
 from pathlib import Path
+from typing import Mapping
 
 # A generous wall-clock cap: describing a single downscaled frame is quick, but a
 # wedged VLM process must not hang the run forever.
@@ -64,10 +65,15 @@ def _build_argv(command: str, model: str | None, path: Path) -> list[str]:
     return argv
 
 
-def _run_vision(argv: list[str], runner: Runner, timeout_seconds: int) -> str:
+def _run_vision(
+    argv: list[str],
+    runner: Runner,
+    timeout_seconds: int,
+    env: Mapping[str, str] | None,
+) -> str:
     """Run the vision command; return its stdout, or raise a clear operator error."""
     try:
-        completed = runner(argv, capture_output=True, text=True, timeout=timeout_seconds)
+        completed = runner(argv, capture_output=True, text=True, timeout=timeout_seconds, env=env)
     except FileNotFoundError as exc:
         raise VisionNotFound(
             f"vision command {argv[0]!r} not found — install it or set a valid "
@@ -97,6 +103,7 @@ def describe_image(
     *,
     command: str,
     model: str | None = None,
+    env: Mapping[str, str] | None = None,
     runner: Runner | None = None,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
@@ -117,7 +124,7 @@ def describe_image(
         )
     active_runner: Runner = runner if runner is not None else subprocess.run
     argv = _build_argv(command, model, Path(path))
-    stdout = _run_vision(argv, active_runner, timeout_seconds)
+    stdout = _run_vision(argv, active_runner, timeout_seconds, env)
     description = stdout.strip()
     if not description:
         raise VisionFailed(
