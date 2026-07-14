@@ -227,6 +227,16 @@ def test_render_dashboard_includes_ops_controls():
     assert "Daily refresh" in html
 
 
+def test_render_dashboard_includes_library_chat():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert 'id="chat-form"' in html
+    assert 'id="nav-chat"' in html
+    assert 'id="dashboard-view"' in html
+    assert 'id="chat-view"' in html
+    assert "/api/chat" in html
+    assert "Ask XBrain" in html
+
+
 def test_render_injects_data_and_library_and_leaves_no_placeholder():
     html = render_dashboard_html(
         {"meta": {"total": 7}}, template="A /*__DATA__*/ B /*__ECHARTS__*/ C", echarts="LIB"

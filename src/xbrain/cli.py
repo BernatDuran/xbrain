@@ -20,6 +20,7 @@ import typer
 
 from xbrain import snapshot
 from xbrain.archive import parse_archive
+from xbrain.chat import MAX_QUESTION_CHARS, answer_question
 from xbrain.config import Config, load_config
 from xbrain.describe import apply_describe_worksheet, export_describe_worksheet
 from xbrain.describe import describe_all as run_describe_all
@@ -587,6 +588,15 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             _run_generate(cfg, None, None)
         return dashboard.read_bytes()
 
+    def chat_payload(question: str) -> dict[str, object]:
+        return answer_question(
+            cfg.output_dir,
+            question,
+            provider=cfg.llm_provider,
+            model=cfg.llm_model,
+            base_url=cfg.llm_base_url,
+        ).to_payload()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib API name
             logging.getLogger(__name__).info("dashboard: " + fmt, *args)
@@ -600,6 +610,25 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
 
         def _send_json(self, status: int, payload: dict[str, object]) -> None:
             self._send(status, json.dumps(payload).encode(), "application/json")
+
+        def _read_json(self, *, max_bytes: int = 4096) -> dict[str, object]:
+            raw_length = self.headers.get("content-length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError as exc:
+                raise ValueError("invalid content-length") from exc
+            if length <= 0:
+                raise ValueError("empty request body")
+            if length > max_bytes:
+                raise ValueError(f"request body too large; max {max_bytes} bytes")
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError("request body must be JSON") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("request body must be a JSON object")
+            return payload
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib API name
             path = self.path.split("?", 1)[0]
@@ -616,13 +645,33 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib API name
             path = self.path.split("?", 1)[0]
-            if path != "/api/refresh-all":
-                self._send_json(404, {"error": "not found"})
+            if path == "/api/chat":
+                try:
+                    payload = self._read_json()
+                    raw_question = payload.get("question")
+                    if not isinstance(raw_question, str):
+                        raise ValueError("question must be a string")
+                    question = raw_question.strip()
+                    if not question:
+                        raise ValueError("question must not be empty")
+                    if len(question) > MAX_QUESTION_CHARS:
+                        raise ValueError(
+                            f"question is too long; max {MAX_QUESTION_CHARS} characters"
+                        )
+                    self._send_json(200, chat_payload(question))
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    logging.getLogger(__name__).warning("dashboard chat failed", exc_info=True)
+                    self._send_json(500, {"error": str(exc)})
                 return
-            if not start_refresh():
-                self._send_json(409, {**state_payload(), "error": "refresh already running"})
+            if path == "/api/refresh-all":
+                if not start_refresh():
+                    self._send_json(409, {**state_payload(), "error": "refresh already running"})
+                    return
+                self._send_json(202, state_payload())
                 return
-            self._send_json(202, state_payload())
+            self._send_json(404, {"error": "not found"})
 
     server = ThreadingHTTPServer((host, port), Handler)
     typer.echo(f"Dashboard local: http://{host}:{server.server_port}/")
