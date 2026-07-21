@@ -98,7 +98,7 @@ name is routed by the wrapper:
 | `--vision-model` | Backend | Notes |
 |------------------|---------|-------|
 | `qwen-3b` / `qwen-7b` / `qwen-32b` / `<hf/repo>` | local (mlx-vlm) | free, offline; `qwen-32b` needs ~20 GB RAM |
-| `minimax/minimax-m3` or another NanoGPT vision model id | cloud (NanoGPT) | default VPS path; needs `NANOGPT_API_KEY`; frames leave the machine |
+| `xiaomi/mimo-v2.5` or another NanoGPT vision model id | cloud (NanoGPT) | default VPS path; needs `NANOGPT_API_KEY`; frames leave the machine |
 | `opus` / `sonnet` / `haiku` / `claude-<id>` | cloud (Claude) | best quality; needs `ANTHROPIC_API_KEY`; frames leave the machine |
 
 ```bash

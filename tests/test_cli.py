@@ -1713,7 +1713,7 @@ def test_describe_command_transitions_downloaded_to_described(tmp_path: Path, mo
     assert entry.description == "A chart."
     assert entry.description_lang == "English"
     assert entry.description_version == "v1"
-    assert fake_client.messages.calls[0]["model"] == "minimax/minimax-m3"
+    assert fake_client.messages.calls[0]["model"] == "xiaomi/mimo-v2.5"
 
 
 def test_describe_command_runs_on_empty_store(tmp_path: Path, monkeypatch):
@@ -2344,7 +2344,7 @@ def test_refresh_all_runs_daily_pipeline_in_order(tmp_path: Path, monkeypatch):
         ("extract", "bookmarks", True),
         ("fetch", False, True),
         ("media", False, None, None),
-        ("describe", "minimax/minimax-m3", 5, 3),
+        ("describe", "xiaomi/mimo-v2.5", 5, 3),
         ("enrich", None, None),
         ("topics", "api", False),
         ("generate", None, None),
@@ -2941,7 +2941,7 @@ def test_digest_video_frames_without_vision_command_uses_cloud_llm(tmp_path: Pat
     monkeypatch.setattr("xbrain.cli.describe_image_with_llm", _cloud_capture)
     result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
     assert result.exit_code == 0, result.output
-    assert seen and set(seen) == {("nanogpt", "minimax/minimax-m3", "English")}
+    assert seen and set(seen) == {("nanogpt", "xiaomi/mimo-v2.5", "English")}
     frames = load_store(items_path)["42"].content.sources[0].frames
     assert frames[0].description == "cloud slide frame-00000"
 
@@ -3044,7 +3044,7 @@ def test_digest_video_vision_model_defaults_to_llm_vision_model(tmp_path: Path, 
     monkeypatch.setattr("xbrain.cli.describe_image", _capture)
     result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
     assert result.exit_code == 0, result.output
-    assert seen and set(seen) == {("minimax/minimax-m3", "minimax/minimax-m3")}
+    assert seen and set(seen) == {("xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5")}
 
 
 def test_digest_video_frames_then_generate_embeds_slides(tmp_path: Path, monkeypatch):

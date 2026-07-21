@@ -406,7 +406,7 @@ handle = "your_handle"                    # without the @
 provider = "nanogpt"                      # nanogpt | anthropic
 base_url = "https://nano-gpt.com/api/v1"  # NanoGPT-only API base URL
 model = "zai-org/glm-5.2"                 # text model for enrich/vocab/topics
-vision_model = "minimax/minimax-m3"         # image model for describe/digest-video frames
+vision_model = "xiaomi/mimo-v2.5"         # image model for describe/digest-video frames
 
 [enrich]
 executor = "claude-code"                  # claude-code | api | manual
@@ -438,7 +438,7 @@ command = "parakeet-mlx"                  # external transcriber for `digest-vid
 | `[x]` | `handle` | — | Your X handle, no `@`. |
 | `[llm]` | `provider` | `nanogpt` | API LLM provider for all API-backed LLM calls: `nanogpt` or `anthropic`. |
 | `[llm]` | `model` | `zai-org/glm-5.2` | Text model used by `enrich`, `vocab` and `topics`. |
-| `[llm]` | `vision_model` | `minimax/minimax-m3` | Vision-capable model used by `describe` and cloud `digest-video --frames`. |
+| `[llm]` | `vision_model` | `xiaomi/mimo-v2.5` | Vision-capable model used by `describe` and cloud `digest-video --frames`. |
 | `[llm]` | `base_url` | `https://nano-gpt.com/api/v1` | NanoGPT API base URL. Ignored when `provider = "anthropic"`. |
 | `[enrich]` | `executor` | `claude-code` | Default [execution mode](#execution-modes) for the LLM stages. |
 | `[vocab]` | `target_count` | `30` | Number of topics the `vocab` stage induces. |
@@ -510,7 +510,7 @@ when you want one command that can route local models and cloud aliases:
 | Name | Backend | Runs on | Cost / privacy |
 |------|---------|---------|----------------|
 | `qwen-3b`, `qwen-7b`, `qwen-32b`, or `local:<hf/repo>` | local (mlx-vlm) | your Mac's Neural Engine/GPU | free, fully offline |
-| any NanoGPT vision model id, e.g. `minimax/minimax-m3` | cloud via NanoGPT | NanoGPT API | needs `NANOGPT_API_KEY`; frames leave the machine |
+| any NanoGPT vision model id, e.g. `xiaomi/mimo-v2.5` | cloud via NanoGPT | NanoGPT API | needs `NANOGPT_API_KEY`; frames leave the machine |
 | `opus`, `sonnet`, `haiku`, or any `claude-<id>` with `[llm].provider = "anthropic"` | cloud via Anthropic | Anthropic API | needs `ANTHROPIC_API_KEY`; frames leave the machine |
 
 Pick per run without editing config:
@@ -770,7 +770,7 @@ describe pass (a one-time LLM cost), force the re-run: `xbrain vocab
 topics --resynth`.
 
 Describe cost depends on the configured provider/model and corpus size; the
-default NanoGPT vision model is `[llm].vision_model = "minimax/minimax-m3"`.
+default NanoGPT vision model is `[llm].vision_model = "xiaomi/mimo-v2.5"`.
 Bump `[describe].version` in
 `config.toml` to invalidate stored descriptions when you change the
 rubric — the next `xbrain describe` run re-describes stale entries

@@ -71,7 +71,7 @@ def test_runner_receives_llm_environment(tmp_path: Path):
     env = {
         "XBRAIN_LLM_PROVIDER": "nanogpt",
         "XBRAIN_LLM_MODEL": "zai-org/glm-5.2",
-        "XBRAIN_LLM_VISION_MODEL": "minimax/minimax-m3",
+        "XBRAIN_LLM_VISION_MODEL": "xiaomi/mimo-v2.5",
     }
     describe_image(
         tmp_path / "f.png",
@@ -183,7 +183,7 @@ def test_cloud_vision_posts_frame_to_configured_llm(tmp_path: Path):
     result = describe_image_with_llm(
         image,
         provider="nanogpt",
-        model="minimax/minimax-m3",
+        model="xiaomi/mimo-v2.5",
         output_language="English",
         base_url="https://nano-gpt.com/api/v1",
         client=client,
@@ -191,7 +191,7 @@ def test_cloud_vision_posts_frame_to_configured_llm(tmp_path: Path):
 
     assert result == "A slide about agent handoffs."
     call = client.messages.calls[0]
-    assert call["model"] == "minimax/minimax-m3"
+    assert call["model"] == "xiaomi/mimo-v2.5"
     assert "English" in call["system"]
     content = call["messages"][0]["content"]
     assert content[0]["source"]["media_type"] == "image/png"
@@ -213,7 +213,7 @@ def test_cloud_vision_empty_response_is_failure(tmp_path: Path):
         describe_image_with_llm(
             image,
             provider="nanogpt",
-            model="minimax/minimax-m3",
+            model="xiaomi/mimo-v2.5",
             output_language="English",
             client=_EmptyClient(),
         )

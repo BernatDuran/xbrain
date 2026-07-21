@@ -14,7 +14,7 @@ NAME`, set `[vision].model`, or rely on `[llm].vision_model`:
         qwen-32b  -> mlx-community/Qwen2.5-VL-32B-Instruct-4bit
         local:<hf/repo> -> any Hugging Face repo id
     cloud (provider from XBRAIN_LLM_PROVIDER, default nanogpt):
-        nanogpt   -> any NanoGPT vision model id such as minimax/minimax-m3
+        nanogpt   -> any NanoGPT vision model id such as xiaomi/mimo-v2.5
         anthropic -> opus | sonnet | haiku | claude-*
 
 Cloud uses the selected provider's REST API via stdlib urllib (no SDK
@@ -59,7 +59,7 @@ _LOCAL_MARKER = "<<<XBRAIN_VISION>>>"
 # Inner mlx subprocess bound, kept under xbrain.vision's 300s runner cap so a
 # wedged model is reaped here (not left orphaned when the outer runner SIGKILLs us).
 _LOCAL_TIMEOUT = 240
-DEFAULT_NANOGPT_VISION_MODEL = "minimax/minimax-m3"
+DEFAULT_NANOGPT_VISION_MODEL = "xiaomi/mimo-v2.5"
 DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-4-6"
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",

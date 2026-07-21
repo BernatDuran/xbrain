@@ -462,7 +462,7 @@ def test_describe_all_transitions_downloaded_article_image_to_described(tmp_path
     report = describe_all(
         store,
         media_root,
-        model="minimax/minimax-m3",
+        model="xiaomi/mimo-v2.5",
         output_language="English",
         description_version="v1",
         client=client,
@@ -498,7 +498,7 @@ def test_describe_all_persists_extracted_text_fields(tmp_path: Path):
     describe_all(
         store,
         media_root,
-        model="minimax/minimax-m3",
+        model="xiaomi/mimo-v2.5",
         output_language="English",
         description_version="v1",
         client=client,

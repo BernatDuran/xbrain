@@ -58,10 +58,10 @@ def test_resolve_unknown_model_exits():
 
 
 def test_default_model_is_nanogpt_model():
-    assert xv.DEFAULT_NANOGPT_VISION_MODEL == "minimax/minimax-m3"
+    assert xv.DEFAULT_NANOGPT_VISION_MODEL == "xiaomi/mimo-v2.5"
     assert xv._resolve(xv.DEFAULT_NANOGPT_VISION_MODEL, "nanogpt") == (
         "cloud",
-        "minimax/minimax-m3",
+        "xiaomi/mimo-v2.5",
     )
 
 
@@ -94,7 +94,7 @@ def test_main_uses_nanogpt_by_default(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(xv, "_describe_nanogpt", lambda model, image: f"nanogpt:{model}")
     monkeypatch.setattr(sys, "argv", ["xbrain-vision", str(img)])
     assert xv.main() == 0
-    assert "nanogpt:minimax/minimax-m3" in capsys.readouterr().out
+    assert "nanogpt:xiaomi/mimo-v2.5" in capsys.readouterr().out
 
 
 def test_main_prefers_vision_model_environment(monkeypatch, tmp_path, capsys):
@@ -102,8 +102,8 @@ def test_main_prefers_vision_model_environment(monkeypatch, tmp_path, capsys):
     img.write_bytes(b"x")
     monkeypatch.delenv("XBRAIN_LLM_PROVIDER", raising=False)
     monkeypatch.setenv("XBRAIN_LLM_MODEL", "zai-org/glm-5.2")
-    monkeypatch.setenv("XBRAIN_LLM_VISION_MODEL", "minimax/minimax-m3-pro")
+    monkeypatch.setenv("XBRAIN_LLM_VISION_MODEL", "xiaomi/mimo-v2.5-pro")
     monkeypatch.setattr(xv, "_describe_nanogpt", lambda model, image: f"nanogpt:{model}")
     monkeypatch.setattr(sys, "argv", ["xbrain-vision", str(img)])
     assert xv.main() == 0
-    assert "nanogpt:minimax/minimax-m3-pro" in capsys.readouterr().out
+    assert "nanogpt:xiaomi/mimo-v2.5-pro" in capsys.readouterr().out

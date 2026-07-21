@@ -13,7 +13,7 @@ LlmProvider = Literal["nanogpt", "anthropic"]
 
 DEFAULT_LLM_PROVIDER: LlmProvider = "nanogpt"
 DEFAULT_NANOGPT_MODEL = "zai-org/glm-5.2"
-DEFAULT_NANOGPT_VISION_MODEL = "minimax/minimax-m3"
+DEFAULT_NANOGPT_VISION_MODEL = "xiaomi/mimo-v2.5"
 DEFAULT_ANTHROPIC_TEXT_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-4-6"
 DEFAULT_NANOGPT_BASE_URL = "https://nano-gpt.com/api/v1"
