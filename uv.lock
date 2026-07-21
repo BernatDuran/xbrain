@@ -1590,6 +1590,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "markdown-it-py" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pydantic" },
@@ -1626,6 +1627,7 @@ requires-dist = [
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.16" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = ">=1.7" },
+    { name = "markdown-it-py", specifier = ">=4.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "playwright", specifier = ">=1.44" },

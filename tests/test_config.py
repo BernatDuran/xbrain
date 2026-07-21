@@ -142,7 +142,7 @@ def test_load_config_reads_pipeline_settings(tmp_path: Path):
         'handle = "vgonpa"\n'
         "[llm]\n"
         'model = "zai-org/glm-5.2"\n'
-        'vision_model = "xiaomi/mimo-v2.5"\n'
+        'vision_model = "minimax/minimax-m3"\n'
         "[enrich]\n"
         'executor = "api"\n'
         "[vocab]\n"
@@ -152,10 +152,10 @@ def test_load_config_reads_pipeline_settings(tmp_path: Path):
     cfg = load_config(tmp_path)
     assert cfg.llm_provider == "nanogpt"
     assert cfg.llm_model == "zai-org/glm-5.2"
-    assert cfg.llm_vision_model == "xiaomi/mimo-v2.5"
+    assert cfg.llm_vision_model == "minimax/minimax-m3"
     assert cfg.enrich_executor == "api"
     assert cfg.enrich_model == "zai-org/glm-5.2"
-    assert cfg.describe_model == "xiaomi/mimo-v2.5"
+    assert cfg.describe_model == "minimax/minimax-m3"
     assert cfg.vocab_target_count == 25
 
 
@@ -265,7 +265,7 @@ def test_load_config_reads_dotenv_without_overriding_environment(
     _write_repo(tmp_path)
     (tmp_path / ".env").write_text(
         'NANOGPT_MODEL="zai-org/glm-5.2:thinking"\n'
-        'NANOGPT_VISION_MODEL="xiaomi/mimo-v2.5-pro"\n'
+        'NANOGPT_VISION_MODEL="minimax/minimax-m3-pro"\n'
         'NANOGPT_BASE_URL="https://nano-gpt.example/api/v1"\n',
         encoding="utf-8",
     )
@@ -278,7 +278,7 @@ def test_load_config_reads_dotenv_without_overriding_environment(
         os.environ.pop("NANOGPT_VISION_MODEL", None)
 
     assert cfg.enrich_model == "zai-org/glm-5.2"
-    assert cfg.describe_model == "xiaomi/mimo-v2.5-pro"
+    assert cfg.describe_model == "minimax/minimax-m3-pro"
     assert cfg.llm_base_url == "https://nano-gpt.example/api/v1"
 
 
@@ -293,12 +293,12 @@ def test_load_config_allows_distinct_text_and_vision_models(tmp_path: Path):
         "[enrich]\n"
         'model = "zai-org/glm-5.2"\n'
         "[describe]\n"
-        'model = "xiaomi/mimo-v2.5"\n',
+        'model = "minimax/minimax-m3"\n',
         encoding="utf-8",
     )
     cfg = load_config(tmp_path)
     assert cfg.llm_model == "zai-org/glm-5.2"
-    assert cfg.llm_vision_model == "xiaomi/mimo-v2.5"
+    assert cfg.llm_vision_model == "minimax/minimax-m3"
 
 
 def test_load_config_rejects_multiple_text_models(tmp_path: Path):
@@ -328,9 +328,9 @@ def test_load_config_rejects_multiple_vision_models(tmp_path: Path):
         "[x]\n"
         'handle = "vgonpa"\n'
         "[llm]\n"
-        'vision_model = "xiaomi/mimo-v2.5"\n'
+        'vision_model = "minimax/minimax-m3"\n'
         "[describe]\n"
-        'model = "xiaomi/mimo-v2.5-pro"\n',
+        'model = "minimax/minimax-m3-pro"\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="vision API LLM model"):
@@ -452,13 +452,13 @@ def test_load_config_round_trips_describe_overrides(tmp_path: Path):
         "[x]\n"
         'handle = "vgonpa"\n'
         "[describe]\n"
-        'model = "xiaomi/mimo-v2.5-pro"\n'
+        'model = "minimax/minimax-m3-pro"\n'
         'version = "v3"\n',
         encoding="utf-8",
     )
     cfg = load_config(tmp_path)
     assert cfg.llm_model == DEFAULT_NANOGPT_MODEL
     assert cfg.enrich_model == DEFAULT_NANOGPT_MODEL
-    assert cfg.llm_vision_model == "xiaomi/mimo-v2.5-pro"
-    assert cfg.describe_model == "xiaomi/mimo-v2.5-pro"
+    assert cfg.llm_vision_model == "minimax/minimax-m3-pro"
+    assert cfg.describe_model == "minimax/minimax-m3-pro"
     assert cfg.describe_version == "v3"

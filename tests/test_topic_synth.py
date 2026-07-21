@@ -54,6 +54,23 @@ def test_synthesize_overviews_api_skips_an_invalid_judgment():
     assert [r.slug for r in results] == ["good"]
 
 
+def test_synthesize_overviews_api_ignores_harmless_extra_keys():
+    client = FakeLLMClient(
+        [
+            {
+                "overview": "Resumen válido.",
+                "notes": [],
+                "Extra prose accidentally used as a key.": "",
+            }
+        ]
+    )
+    inputs = [TopicInput(slug="productivity", description="d", summaries=["s"])]
+    results = synthesize_overviews_api(inputs, model="m", output_language="English", client=client)
+    assert results == [
+        OverviewJudgment(slug="productivity", overview="Resumen válido.", notes=[])
+    ]
+
+
 def test_synthesize_overviews_api_isolates_an_api_error(capsys):
     from anthropic import APIError
 

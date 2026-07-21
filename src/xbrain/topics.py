@@ -13,7 +13,14 @@ from pathlib import Path
 
 from xbrain import notes_io
 from xbrain.i18n import Strings, strings_for
-from xbrain.models import ContentSourceSuccess, Item, MediaPhotoDescribed, Topic, TopicPage
+from xbrain.models import (
+    ArticleImageBlock,
+    ContentSourceSuccess,
+    Item,
+    MediaPhotoDescribed,
+    Topic,
+    TopicPage,
+)
 from xbrain.rubrics import TOPIC_TRANSCRIPT_CHAR_LIMIT, truncate_transcript
 from xbrain.topic_synth import OverviewJudgment, TopicInput
 
@@ -183,14 +190,30 @@ def _collect_image_descriptions(item_pool: list[Item]) -> list[str]:
 
     Decorative photos are filtered out at this seam so the topic prompt
     never carries avatar / reaction-meme noise — same filter the enrich
-    prompt applies in `xbrain.executors.api`.
+    prompt applies in `xbrain.executors.api`. Inline X Article images are
+    included after post photos.
     """
-    return [
-        entry.description
-        for item in item_pool
-        for entry in item.media
-        if isinstance(entry, MediaPhotoDescribed) and not entry.is_decorative and entry.description
-    ]
+    descriptions: list[str] = []
+    for item in item_pool:
+        descriptions.extend(_described_photo_text(entry) for entry in item.media)
+        if item.content is None:
+            continue
+        for source in item.content.sources:
+            if not (isinstance(source, ContentSourceSuccess) and source.kind == "x_article"):
+                continue
+            descriptions.extend(
+                _described_photo_text(block.media)
+                for block in source.blocks
+                if isinstance(block, ArticleImageBlock)
+            )
+    return [description for description in descriptions if description]
+
+
+def _described_photo_text(entry: object) -> str:
+    """Return a non-decorative image description, or an empty string."""
+    if isinstance(entry, MediaPhotoDescribed) and not entry.is_decorative:
+        return entry.description
+    return ""
 
 
 def _collect_video_transcripts(item_pool: list[Item]) -> list[str]:

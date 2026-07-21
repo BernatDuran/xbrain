@@ -2,7 +2,16 @@
 from datetime import datetime, timezone
 
 from xbrain.executors.api import ApiExecutor, _user_prompt
-from xbrain.models import Author, Item, Link, Topic
+from xbrain.models import (
+    ArticleImageBlock,
+    ArticleTextBlock,
+    Author,
+    Content,
+    ContentSourceSuccess,
+    Item,
+    Link,
+    Topic,
+)
 
 from tests.conftest import FakeLLMClient
 
@@ -33,6 +42,21 @@ def test_api_executor_returns_one_judgment_per_item():
     out = ex.enrich_items([_item("1"), _item("2")], VOCAB)
     assert {j.item_id for j in out} == {"1", "2"}
     assert len(client.messages.calls) == 2
+
+
+def test_api_executor_returns_taxonomy_diagnostics():
+    payload = {
+        "summary": "r",
+        "primary_topic": "misc",
+        "topics": ["misc"],
+        "topic_confidence": "low",
+        "suggested_new_topics": ["modern-statistics"],
+    }
+    client = FakeLLMClient([payload])
+    ex = ApiExecutor(model="claude-haiku-4-5-20251001", output_language="English", client=client)
+    out = ex.enrich_items([_item("1")], VOCAB)
+    assert out[0].topic_confidence == "low"
+    assert out[0].suggested_new_topics == ["modern-statistics"]
 
 
 def test_api_executor_substitutes_language_in_system_prompt():
@@ -229,6 +253,35 @@ def test_user_prompt_includes_content_bearing_image_descriptions():
     prompt = _user_prompt(item, VOCAB)
     assert "Images in this post:" in prompt
     assert "A chart of MMLU scores." in prompt
+
+
+def test_user_prompt_includes_article_image_descriptions_near_article_body():
+    """Described inline Article images travel with the linked article section."""
+    item = _item(
+        "1",
+        content=Content(
+            fetched_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            sources=[
+                ContentSourceSuccess(
+                    kind="x_article",
+                    url="https://x.com/i/article/1",
+                    title="Deep dive",
+                    text="Article paragraph.",
+                    blocks=[
+                        ArticleTextBlock(text="Article paragraph."),
+                        ArticleImageBlock(
+                            media=_described_photo(description="A workflow diagram.")
+                        ),
+                    ],
+                )
+            ],
+        ),
+    )
+    prompt = _user_prompt(item, VOCAB)
+    assert "Images in this post:" not in prompt
+    assert "Linked article (Deep dive):" in prompt
+    assert "Images in linked article:" in prompt
+    assert "A workflow diagram." in prompt
 
 
 def test_user_prompt_excludes_decorative_image_descriptions():

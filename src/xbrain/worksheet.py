@@ -77,10 +77,13 @@ def export_worksheet(
         "executor": executor,
         "instructions": (
             "For each entry in `items`, append one object to `judgments` with "
-            "keys {item_id, summary, primary_topic, topics}. Use only slugs from "
-            "`vocab`. An item may also carry `links`, `article`, `video_transcript` "
-            "and `image_descriptions` (content-bearing photos) — weigh them all as "
-            "topic signal, not just `text`. Then run: xbrain enrich --apply <this file>."
+            "keys {item_id, summary, primary_topic, topics, topic_confidence, "
+            "suggested_new_topics}. Use only slugs from `vocab` in primary_topic "
+            "and topics. Put missing-but-useful new taxonomy slugs only in "
+            "`suggested_new_topics`. An item may also carry `links`, `article`, "
+            "`video_transcript` and `image_descriptions` (content-bearing photos) "
+            "— weigh them all as topic signal, not just `text`. Then run: "
+            "xbrain enrich --apply <this file>."
         ),
         "rubrics": {
             "summary": load_rubric("summary", language=output_language),

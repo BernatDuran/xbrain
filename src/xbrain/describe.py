@@ -1,9 +1,9 @@
-"""Describe downloaded photos with the configured vision-capable LLM API.
+"""Describe downloaded images with the configured vision-capable LLM API.
 
-The `describe_all` orchestrator walks every photo entry the downloader
-has produced, batches the bytes into vision-API calls (default: 5 images
-per call), parses the per-image JSON judgments, and
-transitions matched entries to `MediaPhotoDescribed`. Decorative photos
+The `describe_all` orchestrator walks every downloaded post photo and inline
+Article image the downloader has produced, batches the bytes into vision-API
+calls (default: 5 images per call), parses the per-image JSON judgments, and
+transitions matched entries to `MediaPhotoDescribed`. Decorative images
 (avatars, reaction memes) are filtered at the downstream consumption
 seam so they introduce no topic noise.
 
@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from xbrain.models import (
+    ArticleImageBlock,
+    ContentSourceSuccess,
     Item,
     MediaPhotoDescribed,
     MediaPhotoDownloaded,
@@ -105,7 +107,7 @@ class DescribeReport:
 
     `photos_skipped_already_described` is the idempotency proof — a
     no-op re-run with no version bump must report every previously
-    described photo here. `batches_attempted` counts API calls actually
+    described image here. `batches_attempted` counts API calls actually
     issued; `batches_failed` counts the ones the recoverable-errors
     tuple swallowed PLUS batches where the SDK refused or the model
     returned fewer judgments than the batch size. A run with
@@ -128,19 +130,20 @@ class DescribeReport:
 
 @dataclass(frozen=True)
 class _Candidate:
-    """One photo eligible for description on this run.
+    """One downloaded image eligible for description on this run.
 
-    Holds back-references to `Item` and the media-list `index` so the
+    Holds back-references to either `item.media[index]` (post photos) or
+    an `ArticleImageBlock.media` field (inline Article images), so the
     orchestrator can swap the transitioned variant back into place
-    without re-scanning the store. Bytes are loaded lazily by
-    `_load_bytes` — failing to read the file is a per-batch failure,
-    not a total-run abort.
+    without re-scanning the store. Bytes are loaded lazily by `_load_bytes`.
     """
 
     item_id: str
     item: Item
     index: int
     entry: MediaPhotoDownloaded | MediaPhotoDescribed
+    location: str = "post"
+    block: ArticleImageBlock | None = None
 
 
 def _recoverable_errors() -> tuple[type[Exception], ...]:
@@ -233,18 +236,91 @@ def _filtered_items(
     items: dict[str, Item],
     items_filter: set[str] | None,
 ) -> Iterator[tuple[str, Item]]:
-    """Yield `(item_id, item)` pairs the run should scan, skipping empty media.
+    """Yield `(item_id, item)` pairs the run should scan.
 
     Pulled out so `_iter_eligible_candidates` stays under radon grade C.
-    An `items_filter` of `None` is "every item"; an empty media list
-    is silently skipped (no photos to consider).
+    An `items_filter` of `None` is "every item". Items with no post media
+    may still carry downloaded inline Article images, so the candidate walk
+    decides whether an item has describable images.
     """
     for item_id, item in items.items():
         if items_filter is not None and item_id not in items_filter:
             continue
-        if not item.media:
-            continue
         yield item_id, item
+
+
+def _article_image_blocks(item: Item) -> Iterator[tuple[int, ArticleImageBlock]]:
+    """Yield every inline image block from an item's X Articles, with stable indexes."""
+    if item.content is None:
+        return
+    image_index = 0
+    for source in item.content.sources:
+        if not (isinstance(source, ContentSourceSuccess) and source.kind == "x_article"):
+            continue
+        for block in source.blocks:
+            if isinstance(block, ArticleImageBlock):
+                yield image_index, block
+                image_index += 1
+
+
+def _iter_item_candidates(
+    item_id: str,
+    item: Item,
+    *,
+    force: bool,
+    current_version: str,
+    current_language: str,
+    report: DescribeReport,
+) -> Iterator[_Candidate]:
+    """Yield eligible post photos first, then eligible inline Article images."""
+    for index, entry in enumerate(item.media):
+        if not _is_eligible(
+            entry,
+            force=force,
+            current_version=current_version,
+            current_language=current_language,
+        ):
+            _tally_idempotency_skip(
+                entry,
+                current_version=current_version,
+                current_language=current_language,
+                report=report,
+            )
+            continue
+        assert isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed))
+        yield _Candidate(item_id=item_id, item=item, index=index, entry=entry)
+    for image_index, block in _article_image_blocks(item):
+        entry = block.media
+        if not _is_eligible(
+            entry,
+            force=force,
+            current_version=current_version,
+            current_language=current_language,
+        ):
+            _tally_idempotency_skip(
+                entry,
+                current_version=current_version,
+                current_language=current_language,
+                report=report,
+            )
+            continue
+        assert isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed))
+        yield _Candidate(
+            item_id=item_id,
+            item=item,
+            index=image_index,
+            entry=entry,
+            location="article",
+            block=block,
+        )
+
+
+def _replace_candidate_entry(candidate: _Candidate, new_entry: MediaPhotoDescribed) -> None:
+    """Swap a described variant back into the correct store location."""
+    if candidate.block is not None:
+        candidate.block.media = new_entry
+        return
+    candidate.item.media[candidate.index] = new_entry
 
 
 def _iter_eligible_candidates(
@@ -276,29 +352,22 @@ def _iter_eligible_candidates(
     remaining = limit
     seen_item_ids: set[str] = set()
     for item_id, item in _filtered_items(items, items_filter):
-        for index, entry in enumerate(item.media):
+        for candidate in _iter_item_candidates(
+            item_id,
+            item,
+            force=force,
+            current_version=current_version,
+            current_language=current_language,
+            report=report,
+        ):
             if remaining is not None and remaining <= 0:
                 return
-            if not _is_eligible(
-                entry,
-                force=force,
-                current_version=current_version,
-                current_language=current_language,
-            ):
-                _tally_idempotency_skip(
-                    entry,
-                    current_version=current_version,
-                    current_language=current_language,
-                    report=report,
-                )
-                continue
-            assert isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed))
             if item_id not in seen_item_ids:
                 seen_item_ids.add(item_id)
                 report.items_processed += 1
             if remaining is not None:
                 remaining -= 1
-            yield _Candidate(item_id=item_id, item=item, index=index, entry=entry)
+            yield candidate
 
 
 def _media_type(local_path: str) -> str:
@@ -408,6 +477,21 @@ def _validate_judgment_entry(entry: object, *, batch_size: int) -> dict:
         )
     if not isinstance(entry["description"], str):
         raise ValueError(f"vision response `description` must be str, got {entry['description']!r}")
+    extracted_text = entry.get("extracted_text")
+    if extracted_text is not None and not isinstance(extracted_text, str):
+        raise ValueError(f"vision response `extracted_text` must be str or null, got {extracted_text!r}")
+    extracted_language = entry.get("extracted_text_language")
+    if extracted_language is not None and not isinstance(extracted_language, str):
+        raise ValueError(
+            "vision response `extracted_text_language` must be str or null, "
+            f"got {extracted_language!r}"
+        )
+    extracted_confidence = entry.get("extracted_text_confidence")
+    if extracted_confidence is not None and extracted_confidence not in {"high", "medium", "low"}:
+        raise ValueError(
+            "vision response `extracted_text_confidence` must be high/medium/low/null, "
+            f"got {extracted_confidence!r}"
+        )
     return entry
 
 
@@ -459,6 +543,11 @@ def _apply_judgment(
     """
     is_decorative = bool(judgment["is_decorative"])
     description = "" if is_decorative else str(judgment["description"])
+    extracted_text = None if is_decorative else judgment.get("extracted_text")
+    extracted_text_language = None if is_decorative else judgment.get("extracted_text_language")
+    extracted_text_confidence = (
+        None if is_decorative else judgment.get("extracted_text_confidence")
+    )
     return MediaPhotoDescribed(
         url=candidate.entry.url,
         local_path=candidate.entry.local_path,
@@ -471,6 +560,9 @@ def _apply_judgment(
         description_lang=language,
         description_version=version,
         described_at=described_at,
+        extracted_text=extracted_text,
+        extracted_text_language=extracted_text_language,
+        extracted_text_confidence=extracted_text_confidence,
     )
 
 
@@ -529,7 +621,7 @@ def _apply_batch_as_decorative_empty(
             description_version=version,
             described_at=described_at,
         )
-        candidate.item.media[candidate.index] = new_entry
+        _replace_candidate_entry(candidate, new_entry)
         report.photos_described += 1
 
 
@@ -793,7 +885,7 @@ def _apply_batch_judgments(
             version=version,
             described_at=described_at,
         )
-        candidate.item.media[candidate.index] = new_entry
+        _replace_candidate_entry(candidate, new_entry)
         report.photos_described += 1
     if batch_had_omission:
         # A batch with missing judgments did not return complete data
@@ -843,6 +935,7 @@ def export_describe_worksheet(
     photos = [
         {
             "item_id": candidate.item_id,
+            "location": candidate.location,
             "index": candidate.index,
             "local_path": candidate.entry.local_path,
             "image_path": str((media_root / candidate.entry.local_path).resolve()),
@@ -865,8 +958,9 @@ def export_describe_worksheet(
         "language": output_language,
         "instructions": (
             "For each entry in `photos`, READ the image at its `image_path` and append "
-            "one object to `judgments` with keys {item_id, index, is_decorative, "
-            "description}. Follow `rubric`. Mark avatars, reaction memes and abstract "
+            "one object to `judgments` with keys {item_id, location, index, is_decorative, "
+            "description, extracted_text, extracted_text_language, extracted_text_confidence}. "
+            "Follow `rubric`. Mark avatars, reaction memes and abstract "
             "backgrounds as is_decorative=true with an empty description. Then run: "
             "xbrain describe --apply <this file>."
         ),
@@ -879,8 +973,8 @@ def export_describe_worksheet(
     return len(photos)
 
 
-def _validate_worksheet_judgment(raw: object) -> tuple[str, int, dict] | str:
-    """Validate one worksheet judgment; return ``(item_id, index, judgment)`` or an error string.
+def _validate_worksheet_judgment(raw: object) -> tuple[str, str, int, dict] | str:
+    """Validate one worksheet judgment; return ``(item_id, location, index, judgment)`` or an error.
 
     The worksheet is authored by a human or a Claude Code session, NOT by
     the model-validated API path, so it must police the same wire contract
@@ -903,17 +997,35 @@ def _validate_worksheet_judgment(raw: object) -> tuple[str, int, dict] | str:
     index = raw["index"]
     if not isinstance(index, int) or isinstance(index, bool):
         return f"judgment `index` must be int, got {index!r}"
+    location = str(raw.get("location", "post"))
+    if location not in {"post", "article"}:
+        return f"judgment `location` must be 'post' or 'article', got {location!r}"
     if not isinstance(raw["is_decorative"], bool):
         return f"judgment `is_decorative` must be bool, got {raw['is_decorative']!r}"
     if not isinstance(raw["description"], str):
         return f"judgment `description` must be str, got {raw['description']!r}"
-    return (str(raw["item_id"]), index, raw)
+    extracted_text = raw.get("extracted_text")
+    if extracted_text is not None and not isinstance(extracted_text, str):
+        return f"judgment `extracted_text` must be str or null, got {extracted_text!r}"
+    extracted_language = raw.get("extracted_text_language")
+    if extracted_language is not None and not isinstance(extracted_language, str):
+        return (
+            "judgment `extracted_text_language` must be str or null, "
+            f"got {extracted_language!r}"
+        )
+    extracted_confidence = raw.get("extracted_text_confidence")
+    if extracted_confidence is not None and extracted_confidence not in {"high", "medium", "low"}:
+        return (
+            "judgment `extracted_text_confidence` must be high/medium/low/null, "
+            f"got {extracted_confidence!r}"
+        )
+    return (str(raw["item_id"]), location, index, raw)
 
 
 def _parse_worksheet_judgments(
     raw_judgments: list,
-) -> tuple[dict[tuple[str, int], dict], list[tuple[str, list[str]]]]:
-    """Validate + dedup worksheet judgments into a ``(item_id, index) -> judgment`` map.
+) -> tuple[dict[tuple[str, str, int], dict], list[tuple[str, list[str]]]]:
+    """Validate + dedup worksheet judgments into a ``(item_id, location, index)`` map.
 
     Split out of `apply_describe_worksheet` so the apply body stays a single
     store walk (keeps the complexity grade off C). Returns the keyed map plus
@@ -922,16 +1034,18 @@ def _parse_worksheet_judgments(
     duplicate-index rejection).
     """
     invalid: list[tuple[str, list[str]]] = []
-    by_key: dict[tuple[str, int], dict] = {}
+    by_key: dict[tuple[str, str, int], dict] = {}
     for position, raw in enumerate(raw_judgments):
         validated = _validate_worksheet_judgment(raw)
         if isinstance(validated, str):
             invalid.append((f"judgment[{position}]", [validated]))
             continue
-        item_id, index, judgment = validated
-        key = (item_id, index)
+        item_id, location, index, judgment = validated
+        key = (item_id, location, index)
         if key in by_key:
-            invalid.append((f"{item_id}#{index}", ["duplicate judgment for this (item_id, index)"]))
+            invalid.append(
+                (f"{item_id}#{location}:{index}", ["duplicate judgment for this image slot"])
+            )
             continue
         by_key[key] = judgment
     return by_key, invalid
@@ -972,19 +1086,39 @@ def apply_describe_worksheet(
 
     now = _utcnow()
     applied = 0
-    matched: set[tuple[str, int]] = set()
+    matched: set[tuple[str, str, int]] = set()
     for item in store.values():
         for index, entry in enumerate(item.media):
-            hit = by_key.get((item.id, index))
+            hit = by_key.get((item.id, "post", index))
             if hit is None or not isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed)):
                 continue
             candidate = _Candidate(item_id=item.id, item=item, index=index, entry=entry)
             item.media[index] = _apply_judgment(
                 candidate, hit, language=language, version=version, described_at=now
             )
-            matched.add((item.id, index))
+            matched.add((item.id, "post", index))
+            applied += 1
+        for index, block in _article_image_blocks(item):
+            entry = block.media
+            hit = by_key.get((item.id, "article", index))
+            if hit is None or not isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed)):
+                continue
+            candidate = _Candidate(
+                item_id=item.id,
+                item=item,
+                index=index,
+                entry=entry,
+                location="article",
+                block=block,
+            )
+            block.media = _apply_judgment(
+                candidate, hit, language=language, version=version, described_at=now
+            )
+            matched.add((item.id, "article", index))
             applied += 1
 
-    for item_id, index in by_key.keys() - matched:
-        invalid.append((f"{item_id}#{index}", ["no downloaded photo at this (item_id, index)"]))
+    for item_id, location, index in by_key.keys() - matched:
+        invalid.append(
+            (f"{item_id}#{location}:{index}", ["no downloaded photo at this image slot"])
+        )
     return applied, invalid

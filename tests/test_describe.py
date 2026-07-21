@@ -34,6 +34,9 @@ from xbrain.describe import (
     emit_summary_line,
 )
 from xbrain.models import (
+    ArticleImageBlock,
+    Content,
+    ContentSourceSuccess,
     Author,
     Item,
     MediaPhotoDescribed,
@@ -133,6 +136,23 @@ def _item(item_id: str, media: list) -> Item:
         captured_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
         media=media,
     )
+
+
+def _article_item(item_id: str, block: ArticleImageBlock) -> Item:
+    item = _item(item_id, [])
+    item.content = Content(
+        fetched_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        sources=[
+            ContentSourceSuccess(
+                kind="x_article",
+                url=f"https://x.com/i/article/{item_id}",
+                title="Article",
+                text="",
+                blocks=[block],
+            )
+        ],
+    )
+    return item
 
 
 def _judgment(index: int, *, decorative: bool = False, description: str = "ok") -> dict:
@@ -386,6 +406,22 @@ def test_validate_judgment_entry_rejects_non_bool_decorative():
         )
 
 
+def test_validate_judgment_entry_rejects_invalid_extracted_text_confidence():
+    """OCR confidence is constrained so downstream rendering/filters can trust it."""
+    with pytest.raises(ValueError, match="extracted_text_confidence"):
+        _validate_judgment_entry(
+            {
+                "index": 0,
+                "is_decorative": False,
+                "description": "A markdown screenshot.",
+                "extracted_text": "## Rules",
+                "extracted_text_language": "markdown",
+                "extracted_text_confidence": "certain",
+            },
+            batch_size=1,
+        )
+
+
 # --------------------------------------------------------------------- orchestrator
 
 
@@ -412,6 +448,68 @@ def test_describe_all_transitions_downloaded_to_described(tmp_path: Path):
     assert report.photos_described == 1
     assert report.photos_failed == 0
     assert report.batches_attempted == 1
+
+
+def test_describe_all_transitions_downloaded_article_image_to_described(tmp_path: Path):
+    """Inline Article images are described through the same photo-state union."""
+    media_root = tmp_path / "media"
+    entry = _downloaded(item_id="1", index=0, media_root=media_root)
+    block = ArticleImageBlock(media=entry, alt="Architecture diagram")
+    item = _article_item("1", block)
+    store = {"1": item}
+    client = _FakeVisionClient([[_judgment(0, description="A system diagram.")]])
+
+    report = describe_all(
+        store,
+        media_root,
+        model="minimax/minimax-m3",
+        output_language="English",
+        description_version="v1",
+        client=client,
+    )
+
+    assert isinstance(block.media, MediaPhotoDescribed)
+    assert block.media.description == "A system diagram."
+    assert report.items_processed == 1
+    assert report.photos_described == 1
+
+
+def test_describe_all_persists_extracted_text_fields(tmp_path: Path):
+    """Vision OCR fields are stored separately from the visual description."""
+    media_root = tmp_path / "media"
+    entry = _downloaded(item_id="1", index=0, media_root=media_root)
+    item = _item("1", [entry])
+    store = {"1": item}
+    client = _FakeVisionClient(
+        [
+            [
+                {
+                    "index": 0,
+                    "is_decorative": False,
+                    "description": "A screenshot of a CLAUDE.md rules file.",
+                    "extracted_text": "## Rules\n- Ask before acting.",
+                    "extracted_text_language": "markdown",
+                    "extracted_text_confidence": "high",
+                }
+            ]
+        ]
+    )
+
+    describe_all(
+        store,
+        media_root,
+        model="minimax/minimax-m3",
+        output_language="English",
+        description_version="v1",
+        client=client,
+    )
+
+    described = item.media[0]
+    assert isinstance(described, MediaPhotoDescribed)
+    assert described.description == "A screenshot of a CLAUDE.md rules file."
+    assert described.extracted_text == "## Rules\n- Ask before acting."
+    assert described.extracted_text_language == "markdown"
+    assert described.extracted_text_confidence == "high"
 
 
 def test_describe_all_is_noop_for_already_described_current_version(tmp_path: Path):

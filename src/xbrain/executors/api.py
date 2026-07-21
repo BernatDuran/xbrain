@@ -13,7 +13,7 @@ import sys
 from xbrain.executors.base import EnrichmentJudgment
 from xbrain.llm_json import json_from_response
 from xbrain.llm_client import LlmProvider, build_llm_client, recoverable_llm_errors
-from xbrain.models import ContentSourceSuccess, Item, MediaPhotoDescribed, Topic
+from xbrain.models import ArticleImageBlock, ContentSourceSuccess, Item, MediaPhotoDescribed, Topic
 from xbrain.rubrics import (
     ARTICLE_CHAR_LIMIT,
     TRANSCRIPT_CHAR_LIMIT,
@@ -52,24 +52,53 @@ def _system_prompt(language: str) -> str:
         + "\n\n---\n\n"
         "Respond with a single JSON object and nothing else:\n"
         '{"summary": "...", "primary_topic": "<slug>", '
-        '"topics": ["<slug>", ...]}'
+        '"topics": ["<slug>", ...], "topic_confidence": "high|medium|low", '
+        '"suggested_new_topics": ["optional-new-kebab-slug"]}'
     )
 
 
+def _usable_image_description(entry: object) -> str | None:
+    """Return a content-bearing vision caption, filtering decorative images."""
+    if isinstance(entry, MediaPhotoDescribed) and not entry.is_decorative and entry.description:
+        return entry.description
+    return None
+
+
+def _post_image_descriptions(item: Item) -> list[str]:
+    """Return non-decorative image descriptions from the post media list."""
+    return [
+        description
+        for entry in item.media
+        if (description := _usable_image_description(entry)) is not None
+    ]
+
+
+def _article_image_descriptions(source: ContentSourceSuccess) -> list[str]:
+    """Return non-decorative image descriptions from one structured X Article."""
+    return [
+        description
+        for block in source.blocks
+        if isinstance(block, ArticleImageBlock)
+        and (description := _usable_image_description(block.media)) is not None
+    ]
+
+
 def _content_image_descriptions(item: Item) -> list[str]:
-    """Return non-decorative image descriptions on the item, in media order.
+    """Return non-decorative image descriptions on the item, in reading order.
 
     Decorative photos (`is_decorative=True`) are filtered out at this
     seam so they introduce no topic noise — an avatar or a reaction
-    meme would otherwise drag the assigned topics toward whatever the
-    image happened to depict. Items without described photos return an
-    empty list.
+    meme would otherwise drag the assigned topics toward whatever the image
+    happened to depict. Post photos come first, followed by described inline
+    images from X Articles.
     """
-    return [
-        entry.description
-        for entry in item.media
-        if isinstance(entry, MediaPhotoDescribed) and not entry.is_decorative and entry.description
-    ]
+    descriptions = _post_image_descriptions(item)
+    if item.content is None:
+        return descriptions
+    for source in item.content.sources:
+        if isinstance(source, ContentSourceSuccess) and source.kind == "x_article":
+            descriptions.extend(_article_image_descriptions(source))
+    return descriptions
 
 
 def _images_section(item: Item) -> list[str]:
@@ -80,7 +109,7 @@ def _images_section(item: Item) -> list[str]:
     right before the article body so the LLM reads the post + the
     image evidence + the article in natural order.
     """
-    image_descriptions = _content_image_descriptions(item)
+    image_descriptions = _post_image_descriptions(item)
     if not image_descriptions:
         return []
     lines = ["", "Images in this post:"]
@@ -113,12 +142,20 @@ def _article_sections(item: Item) -> list[str]:
     lines: list[str] = []
     for src in item.content.sources:
         # Narrow to the success variant — only those carry `title`/`text`.
-        if isinstance(src, ContentSourceSuccess) and src.kind != "x_video" and src.text:
+        if isinstance(src, ContentSourceSuccess) and src.kind != "x_video":
+            image_descriptions = (
+                _article_image_descriptions(src) if src.kind == "x_article" else []
+            )
+            if not src.text and not image_descriptions:
+                continue
             lines += [
                 "",
                 f"Linked article ({src.title or src.url}):",
-                src.text[:ARTICLE_CHAR_LIMIT],
+                src.text[:ARTICLE_CHAR_LIMIT] if src.text else "(Image-only article.)",
             ]
+            if image_descriptions:
+                lines += ["", "Images in linked article:"]
+                lines += [f"- {description}" for description in image_descriptions]
     return lines
 
 
@@ -203,6 +240,8 @@ class ApiExecutor:
                         summary=str(judgment["summary"]),
                         primary_topic=str(judgment["primary_topic"]),
                         topics=list(judgment["topics"]),
+                        topic_confidence=judgment.get("topic_confidence"),
+                        suggested_new_topics=list(judgment.get("suggested_new_topics") or []),
                     )
                 )
             except recoverable as exc:

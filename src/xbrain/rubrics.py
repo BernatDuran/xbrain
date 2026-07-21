@@ -13,10 +13,11 @@ import yaml
 
 from xbrain.models import Topic
 
-# Case-insensitive sniff for any leftover `{...language...}` placeholder
-# after substitution — catches typos like `{Language}` or `{LANGUAGE}` that
-# str.replace("{language}", ...) would silently miss.
-_LEFTOVER_PLACEHOLDER = re.compile(r"\{[^}]*language[^}]*\}", re.IGNORECASE)
+# Case-insensitive sniff for a leftover language placeholder after substitution
+# — catches typos like `{Language}` or `{LANGUAGE}` that
+# str.replace("{language}", ...) would silently miss without mistaking JSON
+# examples containing an `extracted_text_language` key for placeholders.
+_LEFTOVER_PLACEHOLDER = re.compile(r"\{\s*language\s*\}", re.IGNORECASE)
 
 _PKG = Path(__file__).resolve().parent
 _RUBRICS_DIR = _PKG / "rubrics"

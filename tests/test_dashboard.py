@@ -12,6 +12,8 @@ from xbrain.dashboard import (
     render_dashboard_html,
 )
 from xbrain.models import (
+    ArticleImageBlock,
+    ArticleTextBlock,
     Author,
     Content,
     ContentSourceFailure,
@@ -59,6 +61,8 @@ def _item(
     content=None,
     created=DT,
     summary="resumen",
+    confidence=None,
+    suggested_topics=None,
 ):
     return Item(
         id=item_id,
@@ -77,6 +81,8 @@ def _item(
             summary=summary,
             primary_topic=topic,
             topics=[topic],
+            topic_confidence=confidence,
+            suggested_new_topics=suggested_topics or [],
         ),
     )
 
@@ -90,7 +96,7 @@ def test_humanize_topic_acronyms_and_ampersand():
 
 def test_compute_counts_topics_authors_and_deep_links():
     items = [
-        _item("100", "bookmark", "ai-coding", "alice"),
+        _item("100", "bookmark", "ai-coding", "alice", confidence="high"),
         _item(
             "101",
             "bookmark",
@@ -98,8 +104,10 @@ def test_compute_counts_topics_authors_and_deep_links():
             "bob",
             "Bob",
             links=[Link(url="https://ex.com/a", domain="ex.com")],
+            confidence="low",
+            suggested_topics=["ai-systems"],
         ),
-        _item("102", "own_tweet", "claude-code", "vgonpa"),
+        _item("102", "own_tweet", "claude-code", "vgonpa", confidence="medium"),
     ]
     id2note = {"100": "/v/items/100.md", "101": "/v/items/101.md", "102": "/v/items/102.md"}
     data = compute_dashboard_data(items, {}, id2note, [], "JUN 1, 2026")
@@ -117,10 +125,14 @@ def test_compute_counts_topics_authors_and_deep_links():
     assert {a["handle"] for a in data["authors"]} == {"alice", "bob"}
     assert data["domains"][0]["domain"] == "ex.com"
     assert "2026-06" in data["months_data"]
+    assert data["meta"]["taxonomy"]["confidence"]["high"] == 1
+    assert data["meta"]["taxonomy"]["confidence"]["low"] == 1
+    assert data["taxonomy"]["suggested"][0] == {"slug": "ai-systems", "count": 1}
 
     row = data["topic_data"]["ai-coding"]["samples"][0]
     assert row["url"].startswith("https://x.com/")
     assert row["note"].endswith(".md")
+    assert row["confidence"] in {"high", "low"}
 
 
 def test_long_form_and_media_counts():
@@ -162,15 +174,51 @@ def test_long_form_and_media_counts():
             ],
         ),
         _item("4", media=[MediaPhotoPending(url="https://p2")]),
+        _item(
+            "5",
+            content=Content(
+                fetched_at=DT,
+                sources=[
+                    ContentSourceSuccess(
+                        kind="x_article",
+                        url="https://x.com/i/article/5",
+                        text="body",
+                        blocks=[
+                            ArticleTextBlock(text="body"),
+                            ArticleImageBlock(media=_described_photo("5/article/0.png")),
+                            ArticleImageBlock(media=MediaPhotoPending(url="https://p3")),
+                        ],
+                    )
+                ],
+            ),
+        ),
     ]
     data = compute_dashboard_data(items, {}, {}, [], "JUN 1, 2026")
 
     lf = data["meta"]["longform"]
-    assert (lf["ext_saved"], lf["ext_failed"], lf["saved"], lf["total"]) == (1, 1, 1, 2)
+    assert (lf["ext_saved"], lf["ext_failed"], lf["x_saved"], lf["saved"], lf["total"]) == (
+        1,
+        1,
+        1,
+        2,
+        3,
+    )
     assert data["longform_full"]["items"][0]["title"] == "T"
+    assert data["meta"]["library"] == {
+        "articles": 2,
+        "videos": 1,
+        "article_failed": 1,
+        "post_only": 1,
+    }
 
     md = data["meta"]["media"]
-    assert (md["photos_downloaded"], md["photos_pending"], md["videos"]) == (1, 1, 1)
+    assert (
+        md["photos_downloaded"],
+        md["photos_pending"],
+        md["article_images_downloaded"],
+        md["article_images_pending"],
+        md["videos"],
+    ) == (1, 1, 1, 1, 1)
 
 
 def test_ops_section_counts_pending_work_and_article_failures():
@@ -202,16 +250,42 @@ def test_ops_section_counts_pending_work_and_article_failures():
                 downloaded_at=DT,
             ),
         ],
+        content=Content(
+            fetched_at=DT,
+            sources=[
+                ContentSourceSuccess(
+                    kind="x_article",
+                    url="https://x.com/i/article/3",
+                    text="body",
+                    blocks=[
+                        ArticleTextBlock(text="body"),
+                        ArticleImageBlock(media=MediaPhotoPending(url="https://p/article.jpg")),
+                        ArticleImageBlock(
+                            media=MediaPhotoDownloaded(
+                                url="https://p/article-done.jpg",
+                                local_path="3/article/0.jpg",
+                                width=10,
+                                height=10,
+                                bytes_size=100,
+                                downloaded_at=DT,
+                            )
+                        ),
+                    ],
+                )
+            ],
+        ),
     )
 
     data = compute_dashboard_data([pending, failed, media_item], {}, {"2": "/v/2.md"}, [], "x")
 
     ops = data["ops"]
     assert ops["command"] == "uv run xbrain refresh-all --headless"
+    assert ops["retry_failed_command"] == "uv run xbrain retry-failed --source bookmarks --headless"
+    assert ops["retry_failed_bookmarks"] == 1
     assert ops["pending"] == {
         "fetch": 1,
-        "media": 1,
-        "describe": 1,
+        "media": 2,
+        "describe": 2,
         "enrich": 1,
         "article_failures": 1,
     }
@@ -223,7 +297,9 @@ def test_ops_section_counts_pending_work_and_article_failures():
 def test_render_dashboard_includes_ops_controls():
     html = render_dashboard_html({"meta": {"total": 1}, "ops": {"command": "cmd"}})
     assert 'id="ops-run"' in html
+    assert 'id="ops-retry-failed"' in html
     assert "/api/refresh-all" in html
+    assert "/api/retry-failed" in html
     assert "Daily refresh" in html
 
 
@@ -235,6 +311,13 @@ def test_render_dashboard_includes_library_chat():
     assert 'id="chat-view"' in html
     assert "/api/chat" in html
     assert "Ask XBrain" in html
+
+
+def test_render_dashboard_uses_web_note_links_with_obsidian_fallback():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert "/notes?path=" in html
+    assert "WEB_NOTES" in html
+    assert "obsidian://open?path=" in html
 
 
 def test_render_injects_data_and_library_and_leaves_no_placeholder():
@@ -411,6 +494,41 @@ def test_collect_thumbnails_includes_described_and_carries_description(tmp_path)
     by_handle = {t["url"]: t for t in thumbs}
     assert by_handle["https://x.com/alice/status/1"]["desc"] == "Diagrama de flujo."
     assert by_handle["https://x.com/alice/status/2"]["desc"] == ""  # decorative → no caption
+
+
+def test_collect_thumbnails_includes_article_images(tmp_path):
+    article = _item(
+        "1",
+        content=Content(
+            fetched_at=DT,
+            sources=[
+                ContentSourceSuccess(
+                    kind="x_article",
+                    url="https://x.com/i/article/1",
+                    text="body",
+                    blocks=[
+                        ArticleTextBlock(text="body"),
+                        ArticleImageBlock(
+                            media=_described_photo(
+                                "1/article/0.png", description="Diagrama inline."
+                            )
+                        ),
+                    ],
+                )
+            ],
+        ),
+    )
+    (tmp_path / "1" / "article").mkdir(parents=True)
+    Image.new("RGB", (3, 3), "green").save(tmp_path / "1" / "article" / "0.png")
+
+    thumbs = collect_thumbnails([article], tmp_path, {"1": "/v/1.md"})
+
+    assert len(thumbs) == 1
+    assert thumbs[0]["kind"] == "article"
+    assert thumbs[0]["desc"] == "Diagrama inline."
+    data = compute_dashboard_data([article], {}, {"1": "/v/1.md"}, thumbs, "x")
+    assert data["photos"]["article_downloaded"] == 1
+    assert data["photos"]["samples"][0]["url"] == "https://x.com/alice/status/1"
 
 
 def test_generate_writes_dashboard_with_valid_blob_and_links_it(tmp_path):

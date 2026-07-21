@@ -20,8 +20,8 @@ base_url = "https://nano-gpt.com/api/v1"
 # API LLM model used by text stages: enrich, vocab and topics.
 model = "zai-org/glm-5.2"
 # Separate API LLM model for image/vision tasks (`describe` and digest-video frames).
-# With NanoGPT, default is xiaomi/mimo-v2.5 because text-only models may not process images.
-vision_model = "xiaomi/mimo-v2.5"
+# With NanoGPT, default is minimax/minimax-m3 because text-only models may not process images.
+vision_model = "minimax/minimax-m3"
 
 [enrich]
 # Executor that produces the LLM judgment:
@@ -52,7 +52,7 @@ language = "English"
 topic_style = "wikilink"
 
 [describe]
-# Description-version tag persisted on every described photo. Bumping
+# Description-version tag persisted on every described image. Bumping
 # this value invalidates existing descriptions: the next `xbrain
 # describe` run re-describes stale entries automatically. Use it when
 # you change the describe-image rubric or expectations.
@@ -94,7 +94,7 @@ command = "parakeet-mlx"
 # every cloud call through `[llm].provider` (NanoGPT by default). Pick per run
 # with `digest-video --vision-model NAME`, or set the default here:
 #   local (Apple Silicon, free/offline): qwen-3b | qwen-7b | qwen-32b | local:<hf/repo>
-#   cloud via NanoGPT:                    any NanoGPT vision model id, e.g. xiaomi/mimo-v2.5
+#   cloud via NanoGPT:                    any NanoGPT vision model id, e.g. minimax/minimax-m3
 #   cloud via Anthropic:                  set [llm].provider="anthropic", then opus|sonnet|haiku
 # command = "/absolute/path/to/scripts/xbrain-vision"
 # model = "qwen-3b"                       # omit → [llm].vision_model

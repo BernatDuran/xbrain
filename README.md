@@ -4,14 +4,14 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> Your X bookmarks and posts, turned into a second brain.
+> Your saved X articles and videos, turned into a second brain.
 
 You bookmark a sharp thread, a research paper, a tool someone shipped over the
 weekend — and a small part of your brain checks a box: *handled, I have that
 now.* Then you never see it again. A bookmark folder is not a library; it is a
 graveyard with good intentions.
 
-XBrain digs it up. It extracts your X bookmarks and your own posts, stores them
+XBrain digs it up. It extracts your X bookmarks that contain articles or videos, stores them
 as structured JSON, and generates a layered, cross-linked Obsidian wiki you can
 actually navigate, search and think with — in the same vault, the same graph,
 as the notes you already keep.
@@ -163,8 +163,8 @@ posts → fewer topics → one index.
 
 ### Layer 1 — Items
 
-One note per bookmark or own-tweet: the original text, the link, the **linked
-article fetched and stored inline**, an LLM summary and its topics. A saved link
+One note per retained bookmark: the original text, the link, the **linked
+article or video fetched and stored inline**, an LLM summary and its topics. A saved link
 stops being a URL that will quietly rot and becomes a saved *article*. This now
 includes an X long-form **Article you bookmarked directly** (not just one linked
 inside a tweet): `extract` detects the Article and threads it into the same fetch
@@ -406,7 +406,7 @@ handle = "your_handle"                    # without the @
 provider = "nanogpt"                      # nanogpt | anthropic
 base_url = "https://nano-gpt.com/api/v1"  # NanoGPT-only API base URL
 model = "zai-org/glm-5.2"                 # text model for enrich/vocab/topics
-vision_model = "xiaomi/mimo-v2.5"         # image model for describe/digest-video frames
+vision_model = "minimax/minimax-m3"         # image model for describe/digest-video frames
 
 [enrich]
 executor = "claude-code"                  # claude-code | api | manual
@@ -438,14 +438,14 @@ command = "parakeet-mlx"                  # external transcriber for `digest-vid
 | `[x]` | `handle` | — | Your X handle, no `@`. |
 | `[llm]` | `provider` | `nanogpt` | API LLM provider for all API-backed LLM calls: `nanogpt` or `anthropic`. |
 | `[llm]` | `model` | `zai-org/glm-5.2` | Text model used by `enrich`, `vocab` and `topics`. |
-| `[llm]` | `vision_model` | `xiaomi/mimo-v2.5` | Vision-capable model used by `describe` and cloud `digest-video --frames`. |
+| `[llm]` | `vision_model` | `minimax/minimax-m3` | Vision-capable model used by `describe` and cloud `digest-video --frames`. |
 | `[llm]` | `base_url` | `https://nano-gpt.com/api/v1` | NanoGPT API base URL. Ignored when `provider = "anthropic"`. |
 | `[enrich]` | `executor` | `claude-code` | Default [execution mode](#execution-modes) for the LLM stages. |
 | `[vocab]` | `target_count` | `30` | Number of topics the `vocab` stage induces. |
 | `[topics]` | `resynth_threshold` | `25` | Post growth that marks a topic overview stale. |
 | `[output]` | `language` | `English` | Output language for LLM summaries/overviews AND wiki section headers. `English` or `Spanish`. |
 | `[output]` | `topic_style` | `wikilink` | How the in-body `**Topics:**` line is rendered: `wikilink` (`[[slug]] · [[slug]]`) or `hashtag` (`#slug #slug`). Frontmatter `tags:` are unaffected. |
-| `[describe]` | `version` | `v1` | Tag persisted on every described photo. Bumping invalidates existing descriptions so the next `xbrain describe` re-describes stale entries. |
+| `[describe]` | `version` | `v1` | Tag persisted on every described image. Bumping invalidates existing descriptions so the next `xbrain describe` re-describes stale entries. |
 | `[transcribe]` | `command` | `parakeet-mlx` | External transcriber `xbrain digest-video` shells out to (the ASR lives outside xbrain core). May be a multi-token wrapper; whisper / faster-whisper is the portable fallback. |
 | `[transcribe]` | `model` | — | Optional model id passed to the transcriber (`--model`). Omit for the tool default. |
 | `[vision]` | `command` | — (unset) | External vision model `xbrain digest-video --frames` shells out to (describes key-frame slides; lives outside xbrain core). No bundled default — `--frames` errors until it is set. May be a multi-token wrapper. |
@@ -509,7 +509,7 @@ serves local models and the globally configured cloud provider:
 | Name | Backend | Runs on | Cost / privacy |
 |------|---------|---------|----------------|
 | `qwen-3b`, `qwen-7b`, `qwen-32b`, or `local:<hf/repo>` | local (mlx-vlm) | your Mac's Neural Engine/GPU | free, fully offline |
-| any NanoGPT vision model id, e.g. `xiaomi/mimo-v2.5` | cloud via NanoGPT | NanoGPT API | needs `NANOGPT_API_KEY`; frames leave the machine |
+| any NanoGPT vision model id, e.g. `minimax/minimax-m3` | cloud via NanoGPT | NanoGPT API | needs `NANOGPT_API_KEY`; frames leave the machine |
 | `opus`, `sonnet`, `haiku`, or any `claude-<id>` with `[llm].provider = "anthropic"` | cloud via Anthropic | Anthropic API | needs `ANTHROPIC_API_KEY`; frames leave the machine |
 
 Pick per run without editing config:
@@ -588,7 +588,8 @@ plain markdown notes.
 - **`data/items.json`** is the hub. Three stages mutate it (`extract`,
   `fetch`, `enrich`); every later stage reads it.
 - **`data/vocab.yaml`** is the closed taxonomy. Read by `enrich` (to assign
-  topics from it), `topics` (to know which pages to synthesise) and
+  topics from it), `taxonomy-health` (to spot drift and missing topics), `topics`
+  (to know which pages to synthesise) and
   `generate` (for the tags).
 - **`data/topics.json`** is the synthesised topic overviews. Read by
   `generate`.
@@ -603,13 +604,26 @@ bit-for-bit from `data/`.
 | ① | `extract` | mechanical | `items.json` + `state.json` | Pulls new bookmarks + own tweets from X (incremental — stops at known ids). |
 | ② | `fetch` | mechanical | `items.json` | Downloads linked article bodies, expands threads, fetches linked X content. Records structured evidence for broken links. |
 | ③ | `vocab` | **LLM** | `vocab.yaml` | Induces the controlled topic taxonomy from the whole corpus. |
-| ④ | `enrich` | **LLM** | `items.json` | Per item: a summary + a primary topic + 1-4 topics, all from the taxonomy. |
+| ④ | `enrich` | **LLM** | `items.json` | Per item: a summary + a primary topic + 1-4 topics, all from the taxonomy, plus diagnostic confidence/suggested missing topics. |
 | ⑤ | `topics` | **LLM** | `topics.json` | Synthesises each topic page's overview; builds the mechanical post lists. |
 | ⑥ | `generate` | mechanical | the Obsidian vault | Renders the three-layer wiki: `items/*.md`, `topics/*.md`, `_index.md`. |
 
 Every stage is **idempotent and incremental** — re-running it only processes
 what is new. `vocab --regenerate` is the deliberate exception: it re-induces the
 taxonomy and marks every item for re-enrichment.
+
+Use `taxonomy-health` after normal ingestion to decide whether the taxonomy is
+drifting. If it reports repeated `misc`, low/unknown confidence or suggested
+missing topics, first try the cheaper repair path:
+
+```bash
+uv run xbrain enrich --taxonomy-risk
+uv run xbrain topics --resynth
+uv run xbrain generate
+```
+
+Only run `vocab --regenerate` when the health report shows a real pattern that
+requires changing the vocabulary itself.
 
 A typical full run:
 
@@ -632,18 +646,20 @@ uv run xbrain <command> [options]
 
 | Command | Description |
 |---------|-------------|
-| `extract` | Extract bookmarks and/or own tweets from X. `--source bookmarks\|tweets\|all`. |
-| `import-archive <zip>` | Backfill the full own-tweet history from the official X data archive. |
-| `fetch` | Download linked article content, expand threads, fetch linked X content. By default, items whose only previous failures were transient (`timeout`, `dns_error`) are re-fetched automatically; terminal failures (`not_found`, `paywall`, `forbidden`, `js_required`, `empty_content`) stay skipped until `--force`. `--force` re-fetches every external_article source regardless of state. |
+| `extract` | Extract retained X bookmarks: articles and videos. Own tweets and plain post-only bookmarks are ignored. `--source tweets` remains as an empty compatibility scope. |
+| `import-archive <zip>` | Legacy helper for historical own-tweet imports; not part of the normal retained-library workflow. |
+| `fetch` | Download linked article content, expand linked X Article content, then prune non-library items from `items.json`. By default, items whose only previous failures were transient (`timeout`, `dns_error`) are re-fetched automatically; terminal failures (`not_found`, `paywall`, `forbidden`, `js_required`, `empty_content`) stay skipped until `--force`. `--force` re-fetches every external_article source regardless of state. |
+| `retry-failed` | Force-retry only retained bookmarks whose linked article/X-article sources failed, then regenerate the vault. This is the same action exposed by the dashboard's retry button for failed bookmarks. |
 | `media` | Download X-post photos referenced in `Item.media` **and the inline images of a bookmarked X Article** (stored under `data/media/<id>/article/<n>`, separate from the item's own photos), reusing the one photo-download engine for both. `--limit` is a combined budget; the SUMMARY reports article images separately. Item photos and the downloaded Article images both render inline in the wiki — `generate` embeds each Article image in the author's order (see the blogpost render). `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Local media storage](#local-media-storage). |
-| `describe` | Describe downloaded photos with `[llm].provider` + `[llm].vision_model` and feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described photos unless `[describe].version` is bumped in `config.toml`. |
+| `describe` | Describe downloaded X-post photos and inline X Article images with `[llm].provider` + `[llm].vision_model`, then feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described images unless `[describe].version` is bumped in `config.toml`. |
 | `refresh-media` | Re-capture X and backfill the **playable video URL + bitrate + duration** onto items whose video is still poster-era (incremental `extract` + non-overwriting merge never refresh existing videos). Video-only — photos and enrichment/description state are preserved, and a good video is never degraded back to its poster if X drifts. Scrolls the full history (slow); destructive → auto-snapshot; prints a download-size estimate. Does **not** download video (that is `download-videos`). Re-seeing 0 known items on a non-empty store (likely expired session / GraphQL drift) aborts without saving unless `--force`. `--source bookmarks\|tweets\|all`, `--force`. |
 | `download-videos` | Download the actual **mp4 bytes** for backfilled videos and embed them inline in the wiki — the video counterpart to `media`. mp4 only: HLS (`.m3u8`) needs ffmpeg and is a deferred follow-up (skipped + counted); poster-era entries (run `refresh-media` first) are skipped too. Prints a `~X.X GB` size estimate and asks for confirmation **unless `--yes`**. `--max-size 500MB\|2GB` skips videos whose estimated size exceeds the cap. Validates the response is really a video (rejects HTML/JSON interstitials served as 200). Destructive → auto-snapshot; idempotent (re-runs skip downloaded videos unless `--force`). `--source bookmarks\|tweets\|all`, `--limit N`, `--items <a,b,c>`, `--max-size <size>`, `--force`, `--yes`. See [Local media storage](#local-media-storage). |
 | `list-videos` | **Read-only** catalog of every video referenced in `items.json` — one row per video entry with its state (`downloaded` / `failed` / `pending` / `poster-era`), estimated size (exact once downloaded, `unknown` without bitrate/duration), the item's `primary_topic` and a text snippet. Filters: `--topic`, `--status`, `--max-size`, `--source`, `--limit`. Human table by default; `--json` emits a stable machine array (`id, url, state, topic, size_bytes\|null, mp4_url, text`) an agent can parse to choose which videos to fetch. Writes nothing, takes no snapshot. |
 | `fetch-video` | **Ephemeral** download of the real mp4 for selected videos to `--to <dir>/<id>.mp4`, for agent-side processing (transcription/analysis is external — see below). Select with `--ids a,b` and/or `--topic <t>` (+ `--max-size`, `--limit`, `--source`). Reuses `download-videos`' content-validation, failure classification, atomic write and mp4/HLS/poster discriminator; HLS and poster-era are skipped + counted. **Deliberately non-persisting:** never mutates `items.json`, never snapshots, never touches `data/media/` — it writes only under `--to`. `--json` for machine output. |
 | `digest-video` | Turn bookmarked videos into text: **ephemeral** fetch → **external** transcriber (`[transcribe].command`, default `parakeet-mlx` — the ASR is *not* bundled in xbrain) → attach the transcript to the item as an `x_video` content source → discard the bytes. **Dedups by video identity** (the stable `amplify_video`/`ext_tw_video`/`tweet_video` id from the mp4 path, not the signed URL): N bookmarks of one video → **one** fetch+transcribe, every item gets the transcript. No-speech / no-audio videos attach with empty text + `has_speech=false` (never a hard failure). Idempotent — skips items already carrying an `x_video` source unless `--force`. Destructive (rewrites `items.json`) → auto-snapshot. Select with `--ids a,b`, `--topic <t>`, or `--all-pending` (+ `--source`, `--limit`, `--language`). **`--frames`** (opt-in visual layer, needs `[vision].command`): for slide-heavy videos it extracts key slides (ffmpeg scene detection + interval sampling so the whole video is covered), describes each via the **external** vision model, records the descriptions on the `x_video` source, and embeds the slide images into the note like downloaded photos; talking-head videos are detected and skipped (logged). The transcript then flows through the normal `enrich → topics → generate` pipeline. |
 | `vocab` | Induce the topic taxonomy. `--executor`, `--apply <file>`, `--regenerate`. |
-| `enrich` | Enrich items with a summary + topics. `--executor`, `--apply <file>`. |
+| `enrich` | Enrich items with a summary + topics. `--executor`, `--apply <file>`, `--taxonomy-risk` to re-enrich only items flagged by taxonomy diagnostics (`misc`, low/unknown confidence, suggested missing topics, or stale content). |
+| `taxonomy-health` | Read-only diagnostics for taxonomy drift: `misc` usage, confidence counts, single-topic assignments, unused topics and repeated `suggested_new_topics`. |
 | `topics` | Synthesise topic pages. `--executor`, `--apply <file>`, `--resynth`. |
 | `generate` | Render the wiki into the vault. |
 | `sync` | `extract` + `fetch` + `generate`, in order. |
@@ -724,22 +740,27 @@ describe`, into `described`).
 **Vision descriptions**
 
 Once `xbrain media` has the bytes on disk, `xbrain describe` runs every
-photo through Claude vision and stores a short prose description on
-the entry (transitioning `MediaPhotoDownloaded` → `MediaPhotoDescribed`).
+downloaded X-post photo and inline X Article image through the configured
+vision model and stores a short prose description on the entry (transitioning
+`MediaPhotoDownloaded` → `MediaPhotoDescribed`).
 Descriptions are 1-3 sentences, faithful, in the configured
-`output_language`. Decorative photos (avatars, reaction memes,
-abstract backgrounds) are classified as such and persisted with an
-empty description so they introduce no topic noise downstream.
+`output_language`. When the image is a screenshot, slide, code sample,
+Markdown snippet, or UI with meaningful visible text, `describe` can also store
+that extracted text separately for later processing, but the generated note only
+shows the short image description so the article stays readable. Real code or
+Markdown blocks that are part of an X Article body render as fenced code blocks
+in the article flow. Decorative photos (avatars, reaction memes, abstract
+backgrounds) are classified as such and persisted with an empty description so
+they introduce no topic noise downstream.
 
-`xbrain enrich` and `xbrain topics` consume the descriptions
-automatically, on **both** the API and the worksheet (`claude-code` /
-`manual`) tracks: an item with content-bearing photos gets an
-`Images in this post:` block in the API enrichment prompt and an
-`image_descriptions` field in the worksheet; topic-page synthesis sees
-the flat list of content image descriptions across the topic's posts on
-either track. This is how a tweet that is mostly a screenshot of a
-paper becomes searchable by what the screenshot was actually about —
-even when the pipeline runs entirely on the Claude Code subscription.
+`xbrain enrich` and `xbrain topics` consume the descriptions automatically, on
+**both** the API and the worksheet (`claude-code` / `manual`) tracks: post photos
+appear as `Images in this post:`, inline Article images appear next to the
+linked-article body, and worksheets carry the combined `image_descriptions`
+field. Topic-page synthesis sees the flat list of content image descriptions
+across the topic's posts on either track. This is how a tweet that is mostly a
+screenshot or an Article figure becomes searchable by what the image was
+actually about.
 
 These descriptions flow whenever `enrich` / `topics` next run for an
 item. To back-fill items that were already enriched *before* the
@@ -747,8 +768,9 @@ describe pass (a one-time LLM cost), force the re-run: `xbrain vocab
 --regenerate` (clears enrichments) then `xbrain enrich`, and `xbrain
 topics --resynth`.
 
-Describing the full corpus costs about $3-5 with the default model
-(Sonnet 4.6, 5 images per call). Bump `[describe].version` in
+Describe cost depends on the configured provider/model and corpus size; the
+default NanoGPT vision model is `[llm].vision_model = "minimax/minimax-m3"`.
+Bump `[describe].version` in
 `config.toml` to invalidate stored descriptions when you change the
 rubric — the next `xbrain describe` run re-describes stale entries
 automatically without `--force`.

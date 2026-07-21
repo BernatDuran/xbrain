@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # data model, the config loader and the enrichment phase.
 ExecutorName = Literal["manual", "api", "claude-code"]
 
+# Confidence signal emitted by enrichment. It is diagnostic only: topic routing
+# still depends on the controlled vocabulary.
+TopicConfidence = Literal["high", "medium", "low"]
+
 # The set of item source names — one source of truth shared by the data model
 # and the GraphQL parser.
 SourceName = Literal["bookmark", "own_tweet"]
@@ -81,6 +85,8 @@ MediaFailureReason = Literal[
     "format_error",  # permanent: bytes downloaded but Pillow rejected them
     "unknown_error",  # bare-except bucket; transient by default (mirrors fetch.py)
 ]
+
+ExtractedTextConfidence = Literal["high", "medium", "low"]
 
 
 class _MediaPhotoBase(BaseModel):
@@ -265,6 +271,9 @@ class MediaPhotoDescribed(_MediaPhotoBase):
     description_lang: SupportedLanguage
     description_version: str
     described_at: datetime
+    extracted_text: str | None = None
+    extracted_text_language: str | None = None
+    extracted_text_confidence: ExtractedTextConfidence | None = None
 
     @field_validator("local_path")
     @classmethod
@@ -284,8 +293,16 @@ class MediaPhotoDescribed(_MediaPhotoBase):
         _ = cls
         return _require_utc_aware("described_at", value)
 
+    @field_validator("extracted_text", "extracted_text_language", mode="before")
+    @classmethod
+    def _blank_extracted_text_fields_to_none(cls, value: object) -> object:
+        _ = cls
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
-    def _decorative_implies_empty_description(self) -> "MediaPhotoDescribed":
+    def _validate_description_and_extracted_text(self) -> "MediaPhotoDescribed":
         """A decorative photo MUST have an empty description (rubric contract).
 
         Enforced at the type boundary so downstream callers can rely on
@@ -298,6 +315,16 @@ class MediaPhotoDescribed(_MediaPhotoBase):
             raise ValueError(
                 f"is_decorative=True requires an empty description, got {self.description!r}"
             )
+        if self.is_decorative and self.extracted_text:
+            raise ValueError("is_decorative=True requires no extracted_text")
+        if not self.extracted_text:
+            self.extracted_text_language = None
+            self.extracted_text_confidence = None
+        else:
+            if self.extracted_text_language is None:
+                self.extracted_text_language = "text"
+            if self.extracted_text_confidence is None:
+                self.extracted_text_confidence = "medium"
         return self
 
 
@@ -822,6 +849,8 @@ class Enrichment(BaseModel):
     summary: str | None = None
     primary_topic: str | None = None
     topics: list[str] = Field(default_factory=list)
+    topic_confidence: TopicConfidence | None = None
+    suggested_new_topics: list[str] = Field(default_factory=list)
     user_notes: str | None = None
 
 

@@ -71,7 +71,7 @@ def test_runner_receives_llm_environment(tmp_path: Path):
     env = {
         "XBRAIN_LLM_PROVIDER": "nanogpt",
         "XBRAIN_LLM_MODEL": "zai-org/glm-5.2",
-        "XBRAIN_LLM_VISION_MODEL": "xiaomi/mimo-v2.5",
+        "XBRAIN_LLM_VISION_MODEL": "minimax/minimax-m3",
     }
     describe_image(
         tmp_path / "f.png",

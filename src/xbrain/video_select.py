@@ -37,11 +37,12 @@ _VIDEO_STATES: tuple[VideoState, ...] = ("downloaded", "failed", "pending", "pos
 _VIDEO_VARIANTS = (MediaVideoPending, MediaVideoDownloaded, MediaVideoFailed)
 _VideoEntry = MediaVideoPending | MediaVideoDownloaded | MediaVideoFailed
 
-# `--source` → item source set, identical to `extract` / `download-videos`.
+# `--source` → item source set. XBrain's retained library is bookmark-only;
+# `tweets` is kept as a backwards-compatible empty scope.
 _SOURCE_SETS: dict[str, set[str]] = {
     "bookmarks": {"bookmark"},
-    "tweets": {"own_tweet"},
-    "all": {"bookmark", "own_tweet"},
+    "tweets": set(),
+    "all": {"bookmark"},
 }
 
 # Text-snippet cap: a one-line preview so the human table stays scannable. The
@@ -189,7 +190,8 @@ def list_video_entries(
     order (one per video entry). Filters compose: `topic` (exact
     `primary_topic` match), `status` (one of the four `VideoState`s),
     `max_size_bytes` (known size ≤ cap; unknown-size excluded), `source`
-    (bookmark / own-tweet), and `limit` (first N after filtering).
+    (retained bookmarks; `tweets` is an empty compatibility scope), and `limit`
+    (first N after filtering).
     """
     if status is not None and status not in _VIDEO_STATES:
         raise ValueError(f"--status must be one of {', '.join(_VIDEO_STATES)}, got {status!r}")

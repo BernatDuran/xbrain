@@ -112,6 +112,7 @@ def generate(
     items = sorted(store.values(), key=lambda i: i.created_at, reverse=True)
     items_dir = output_dir / "items"
     items_dir.mkdir(parents=True, exist_ok=True)
+    _remove_stale_item_notes(items_dir, items)
     # Absolute file:// URI so Obsidian opens the dashboard in the external browser
     # on click — a relative `dashboard.html` link is unreliable for non-markdown
     # files (Obsidian hides .html from the explorer and won't render its JS inline).
@@ -163,6 +164,17 @@ def _write_dashboard(
     updated = f"{now:%b} {now.day}, {now.year}".upper()
     data = compute_dashboard_data(items, topic_pages, id2note, thumbs, updated)
     (output_dir / "dashboard.html").write_text(render_dashboard_html(data), encoding="utf-8")
+
+
+def _remove_stale_item_notes(items_dir: Path, items: list[Item]) -> int:
+    """Delete item notes no longer present in the rendered corpus."""
+    expected = {note_filename(item) for item in items if _has_note(item)}
+    removed = 0
+    for path in items_dir.glob("*.md"):
+        if path.name not in expected:
+            path.unlink()
+            removed += 1
+    return removed
 
 
 def _has_note(item: Item) -> bool:
@@ -278,14 +290,15 @@ def _render_media_lines(item: Item) -> list[str]:
     for entry in item.media:
         if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed, MediaVideoDownloaded)):
             lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{entry.local_path}]]")
-            # A described (non-decorative) photo carries a vision caption right
-            # under the embed — plain note text, so Obsidian search finds it.
+            # A described (non-decorative) photo carries a short vision caption
+            # under the embed. Full OCR/transcribed text stays in the JSON store;
+            # rendering it after every image makes the note noisy.
             # One `>` per physical line: Markdown blockquotes scope to a single
             # line, so a multi-line description must re-prefix every line or the
             # trailing lines leak into the note body (worst case: a line that
             # starts with `#`/`-`/`![[` injects unintended structure).
-            if isinstance(entry, MediaPhotoDescribed) and entry.description:
-                lines.extend(f"> {line}" for line in entry.description.splitlines())
+            if isinstance(entry, MediaPhotoDescribed):
+                lines.extend(_described_photo_text_lines(entry))
         elif isinstance(entry, MediaPhotoFailed):
             reason = _FAILURE_ES_MEDIA.get(entry.failure_reason, entry.failure_reason)
             lines.append(f"> ⚠ Foto no disponible ({reason}): <{entry.url}>")
@@ -301,6 +314,14 @@ def _render_media_lines(item: Item) -> list[str]:
             lines.append(f"> 🎥 [Ver vídeo]({entry.url}) (pendiente de descarga)")
         else:
             assert_never(entry)
+    return lines
+
+
+def _described_photo_text_lines(entry: MediaPhotoDescribed) -> list[str]:
+    """Render a described image's short visible caption."""
+    lines: list[str] = []
+    if entry.description:
+        lines.extend(f"> {line}" for line in entry.description.splitlines())
     return lines
 
 
@@ -488,8 +509,11 @@ def _article_caption_lines(
     lines: list[str] = []
     if block.alt:
         lines += [f"> {line}" for line in block.alt.splitlines()]
-    if isinstance(entry, MediaPhotoDescribed) and entry.description:
-        lines += [f"> {line}" for line in entry.description.splitlines()]
+    if isinstance(entry, MediaPhotoDescribed):
+        described_lines = _described_photo_text_lines(entry)
+        if lines and described_lines:
+            lines.append("")
+        lines += described_lines
     return lines
 
 

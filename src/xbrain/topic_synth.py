@@ -21,6 +21,7 @@ from xbrain.rubrics import load_rubric
 from xbrain.validate import validate_overview
 
 _MAX_TOKENS = 2000
+_OVERVIEW_JUDGMENT_KEYS = ("overview", "notes")
 
 
 class OverviewJudgment(BaseModel):
@@ -103,11 +104,29 @@ def _user_prompt(topic: TopicInput) -> str:
     return "\n".join(lines)
 
 
+def _validated_overview_judgment(judgment: dict) -> dict:
+    """Return a clean overview judgment, tolerating harmless extra keys.
+
+    Some LLMs occasionally append an accidental prose-shaped key while still
+    providing valid `overview` and `notes`. The worksheet path stays strict via
+    `validate_overview`; the API path can safely project the allowed keys and
+    keep the batch moving.
+    """
+    errors = validate_overview(judgment)
+    if not errors:
+        return judgment
+
+    if any(error.startswith("unexpected keys") for error in errors):
+        candidate = {key: judgment.get(key) for key in _OVERVIEW_JUDGMENT_KEYS}
+        if not validate_overview(candidate):
+            return candidate
+
+    raise ValueError(f"overview rechazado: {'; '.join(errors)}")
+
+
 def _judgment_from_response(response, slug: str) -> OverviewJudgment:
     judgment = json_from_response(response, context=f"topic {slug}")
-    errors = validate_overview(judgment)
-    if errors:
-        raise ValueError(f"overview rechazado: {'; '.join(errors)}")
+    judgment = _validated_overview_judgment(judgment)
     return OverviewJudgment(
         slug=slug, overview=str(judgment["overview"]), notes=list(judgment["notes"])
     )

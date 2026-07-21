@@ -37,6 +37,21 @@ def test_generate_creates_index_log_and_only_link_notes(tmp_path: Path):
     assert len(notes) == 1
 
 
+def test_generate_removes_stale_item_notes(tmp_path: Path):
+    from xbrain.notes_io import note_filename
+
+    item = _item("1", with_link=True)
+    items_dir = tmp_path / "items"
+    items_dir.mkdir(parents=True)
+    stale = items_dir / "stale.md"
+    stale.write_text("old", encoding="utf-8")
+
+    generate({"1": item}, tmp_path)
+
+    assert (items_dir / note_filename(item)).exists()
+    assert not stale.exists()
+
+
 def test_regeneration_preserves_user_content_after_marker(tmp_path: Path):
     store = {"1": _item("1", with_link=True)}
     generate(store, tmp_path)
@@ -1081,6 +1096,44 @@ def test_generate_article_described_image_renders_caption(tmp_path: Path):
     assert "![[_media/99/article/0.png]]" in body
     assert "> A labeled architecture diagram." in body
     assert (tmp_path / "_media" / "99" / "article" / "0.png").exists()
+
+
+def test_generate_article_described_image_keeps_extracted_text_out_of_visible_note(
+    tmp_path: Path,
+):
+    """OCR text from an image is stored data, not visible note body noise."""
+    from xbrain.models import ArticleImageBlock, MediaPhotoDescribed
+
+    media_root = tmp_path / "media"
+    (media_root / "99" / "article").mkdir(parents=True)
+    (media_root / "99" / "article" / "0.png").write_bytes(b"\x89PNG d0")
+
+    block = ArticleImageBlock(
+        media=MediaPhotoDescribed(
+            url="https://pbs.twimg.com/media/d.png",
+            local_path="99/article/0.png",
+            width=10,
+            height=8,
+            bytes_size=12,
+            downloaded_at=_ART_TS,
+            is_decorative=False,
+            description="Screenshot of a CLAUDE.md file with project rules.",
+            description_lang="English",
+            description_version="v1",
+            described_at=_ART_TS,
+            extracted_text="## Project context\nThis workspace is for research.\n\n## Rules\n- Ask before acting.",
+            extracted_text_language="markdown",
+            extracted_text_confidence="high",
+        ),
+        alt=None,
+    )
+    generate({"99": _article_item(blocks=[block])}, tmp_path, media_root=media_root)
+    body = next((tmp_path / "items").glob("*-99.md")).read_text(encoding="utf-8")
+
+    assert "> Screenshot of a CLAUDE.md file with project rules." in body
+    assert "## Project context" not in body
+    assert "This workspace is for research." not in body
+    assert "- Ask before acting." not in body
 
 
 def test_generate_article_empty_blocks_falls_back_to_text(tmp_path: Path):

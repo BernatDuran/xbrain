@@ -20,7 +20,9 @@ from typing import Any, Callable
 
 from PIL import Image
 
+from xbrain.content_policy import has_video
 from xbrain.models import (
+    ArticleImageBlock,
     ContentSourceFailure,
     ContentSourceSuccess,
     Item,
@@ -49,6 +51,48 @@ _VIDEO_TYPES = (MediaVideoPending, MediaVideoDownloaded, MediaVideoFailed)
 # corpus of described photos vanishes from the dashboard. Mirrors the isinstance
 # grouping in `generate._render_media_lines`.
 _DOWNLOADED_PHOTO_TYPES = (MediaPhotoDownloaded, MediaPhotoDescribed)
+
+
+def _article_image_blocks(item: Item) -> list[ArticleImageBlock]:
+    """Return inline image blocks from X Articles on an item."""
+    if item.content is None:
+        return []
+    return [
+        block
+        for source in item.content.sources
+        if isinstance(source, ContentSourceSuccess) and source.kind == "x_article"
+        for block in source.blocks
+        if isinstance(block, ArticleImageBlock)
+    ]
+
+
+def _downloaded_image_entries(item: Item) -> list[tuple[MediaPhotoDownloaded | MediaPhotoDescribed, str]]:
+    """Downloaded images for thumbnailing: post photos first, then article images."""
+    entries: list[tuple[MediaPhotoDownloaded | MediaPhotoDescribed, str]] = [
+        (entry, "post")
+        for entry in item.media
+        if isinstance(entry, _DOWNLOADED_PHOTO_TYPES)
+    ]
+    entries.extend(
+        (block.media, "article")
+        for block in _article_image_blocks(item)
+        if isinstance(block.media, _DOWNLOADED_PHOTO_TYPES)
+    )
+    return entries
+
+
+def _article_media_counts(item: Item) -> tuple[int, int, int]:
+    """Return downloaded, pending and undescribed counts for inline Article images."""
+    downloaded = pending = undescribed = 0
+    for block in _article_image_blocks(item):
+        entry = block.media
+        if isinstance(entry, _DOWNLOADED_PHOTO_TYPES):
+            downloaded += 1
+        if isinstance(entry, MediaPhotoPending):
+            pending += 1
+        if isinstance(entry, MediaPhotoDownloaded):
+            undescribed += 1
+    return downloaded, pending, undescribed
 
 
 def humanize_topic(slug: str) -> str:
@@ -83,6 +127,14 @@ def _primary(item: Item) -> str | None:
     return item.enriched.primary_topic if item.enriched else None
 
 
+def _confidence(item: Item) -> str | None:
+    return item.enriched.topic_confidence if item.enriched else None
+
+
+def _suggested_topics(item: Item) -> list[str]:
+    return item.enriched.suggested_new_topics if item.enriched else []
+
+
 def _recent(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     """The `n` most recent rows by their ``date`` field."""
     return sorted(rows, key=lambda r: r["date"], reverse=True)[:n]
@@ -91,24 +143,67 @@ def _recent(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
 def _row(item: Item, id2note: dict[str, str], slug2label: dict[str, str]) -> dict[str, Any]:
     """A drill-down post row: who/when/what plus deep links to X and the vault."""
     topic = _primary(item)
+    suggestions = _suggested_topics(item)
     return {
         "handle": item.author.handle,
         "name": item.author.name,
         "source": item.source,
+        "content_type": _content_type(item),
         "date": _date(item),
         "topic": slug2label.get(topic or "", topic or "—"),
+        "topic_slug": topic,
+        "confidence": _confidence(item) or "unknown",
+        "suggested_topics": suggestions,
         "summary": _summary(item),
         "url": item.url,
         "note": id2note.get(item.id),
     }
 
 
+def _article_sources(item: Item) -> list[ContentSourceSuccess | ContentSourceFailure]:
+    """Article-like fetched sources attached to an item."""
+    if item.content is None:
+        return []
+    return [
+        source
+        for source in item.content.sources
+        if source.kind in ("external_article", "x_article")
+        and isinstance(source, (ContentSourceSuccess, ContentSourceFailure))
+    ]
+
+
+def _saved_article_sources(item: Item) -> list[ContentSourceSuccess]:
+    return [
+        source for source in _article_sources(item) if isinstance(source, ContentSourceSuccess)
+    ]
+
+
+def _failed_article_sources(item: Item) -> list[ContentSourceFailure]:
+    return [
+        source for source in _article_sources(item) if isinstance(source, ContentSourceFailure)
+    ]
+
+
+def _content_type(item: Item) -> str:
+    """Dashboard content bucket: article, video, article_failed or post_only."""
+    if _saved_article_sources(item):
+        return "article"
+    if any(
+        isinstance(source, ContentSourceSuccess) and source.kind == "x_video"
+        for source in (item.content.sources if item.content else [])
+    ) or has_video(item):
+        return "video"
+    if _failed_article_sources(item):
+        return "article_failed"
+    return "post_only"
+
+
 def collect_thumbnails(
     items: list[Item], media_root: Path | None, id2note: dict[str, str], limit: int = _THUMB_LIMIT
 ) -> list[dict[str, Any]]:
-    """Base64-encode a sample of downloaded photos with their post metadata.
+    """Base64-encode a sample of downloaded images with their post metadata.
 
-    Reads at most `limit` downloaded photos from `media_root`, downscaling each
+    Reads at most `limit` downloaded images from `media_root`, downscaling each
     to a small JPEG data URI so the dashboard stays self-contained. Returns an
     empty list when `media_root` is None. Unreadable files are skipped.
     """
@@ -116,11 +211,9 @@ def collect_thumbnails(
         return []
     thumbs: list[dict[str, Any]] = []
     for item in items:
-        for entry in item.media:
+        for entry, location in _downloaded_image_entries(item):
             if len(thumbs) >= limit:
                 return thumbs
-            if not isinstance(entry, _DOWNLOADED_PHOTO_TYPES):
-                continue
             path = media_root / entry.local_path
             if not path.exists():
                 continue
@@ -150,6 +243,7 @@ def collect_thumbnails(
                     "date": _date(item),
                     "summary": _summary(item),
                     "desc": desc,
+                    "kind": location,
                 }
             )
     return thumbs
@@ -187,11 +281,7 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
     counts = {"ext_saved": 0, "ext_failed": 0, "x_saved": 0, "x_failed": 0}
     articles: list[dict[str, Any]] = []
     for item in items:
-        if not item.content:
-            continue
-        for source in item.content.sources:
-            if source.kind not in ("external_article", "x_article"):
-                continue
+        for source in _article_sources(item):
             prefix = "ext" if source.kind == "external_article" else "x"
             if isinstance(source, ContentSourceSuccess):
                 counts[f"{prefix}_saved"] += 1
@@ -203,6 +293,9 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
                         "handle": item.author.handle,
                         "date": _date(item),
                         "summary": _summary(item),
+                        "topic": humanize_topic(_primary(item) or "misc"),
+                        "confidence": _confidence(item) or "unknown",
+                        "suggested_topics": _suggested_topics(item),
                         "post": item.url,
                         "note": id2note.get(item.id),
                     }
@@ -247,9 +340,36 @@ def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[s
     return _recent(rows, 20)
 
 
+def _article_failure_count(items: list[Item]) -> int:
+    """Total failed linked article sources across the corpus."""
+    return sum(
+        1
+        for item in items
+        if item.content is not None
+        for source in item.content.sources
+        if isinstance(source, ContentSourceFailure)
+        and source.kind in ("external_article", "x_article")
+    )
+
+
+def _failed_bookmark_count(items: list[Item]) -> int:
+    """Bookmarks with at least one failed linked article source."""
+    return sum(
+        1
+        for item in items
+        if item.source == "bookmark"
+        and item.content is not None
+        and any(
+            isinstance(source, ContentSourceFailure)
+            and source.kind in ("external_article", "x_article")
+            for source in item.content.sources
+        )
+    )
+
+
 def _media_counts(items: list[Item]) -> dict[str, int]:
     """Downloaded/pending photo counts and captured-video count across the store."""
-    downloaded = pending = videos = 0
+    downloaded = pending = videos = article_downloaded = article_pending = 0
     for item in items:
         for entry in item.media:
             if isinstance(entry, _DOWNLOADED_PHOTO_TYPES):
@@ -258,7 +378,16 @@ def _media_counts(items: list[Item]) -> dict[str, int]:
                 pending += 1
             elif isinstance(entry, _VIDEO_TYPES):
                 videos += 1
-    return {"photos_downloaded": downloaded, "photos_pending": pending, "videos": videos}
+        item_article_downloaded, item_article_pending, _ = _article_media_counts(item)
+        article_downloaded += item_article_downloaded
+        article_pending += item_article_pending
+    return {
+        "photos_downloaded": downloaded,
+        "photos_pending": pending,
+        "article_images_downloaded": article_downloaded,
+        "article_images_pending": article_pending,
+        "videos": videos,
+    }
 
 
 def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, Any]:
@@ -269,19 +398,31 @@ def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, A
         for entry in item.media
         if isinstance(entry, MediaPhotoDownloaded)
     )
+    article_pending = article_undescribed = 0
+    for item in items:
+        _, item_article_pending, item_article_undescribed = _article_media_counts(item)
+        article_pending += item_article_pending
+        article_undescribed += item_article_undescribed
     pending_fetch = sum(1 for item in items if item.links and item.content is None)
     pending_enrich = sum(1 for item in items if item.enriched is None)
     failures = _article_failures(items, id2note)
+    failure_count = _article_failure_count(items)
+    failed_bookmarks = _failed_bookmark_count(items)
     recent_bookmarks = _recent(rows([item for item in items if item.source == "bookmark"]), 8)
     return {
         "command": "uv run xbrain refresh-all --headless",
+        "retry_failed_command": "uv run xbrain retry-failed --source bookmarks --headless",
         "serve_command": "uv run xbrain serve-dashboard --host 127.0.0.1 --port 8765",
+        "retry_failed_bookmarks": failed_bookmarks,
         "pending": {
             "fetch": pending_fetch,
-            "media": sum(1 for item in items for entry in item.media if isinstance(entry, MediaPhotoPending)),
-            "describe": downloaded_undescribed,
+            "media": sum(
+                1 for item in items for entry in item.media if isinstance(entry, MediaPhotoPending)
+            )
+            + article_pending,
+            "describe": downloaded_undescribed + article_undescribed,
             "enrich": pending_enrich,
-            "article_failures": len(failures),
+            "article_failures": failure_count,
         },
         "recent_bookmarks": recent_bookmarks,
         "article_failures": failures,
@@ -401,11 +542,56 @@ _META_LONGFORM_KEYS = (
 )
 
 
+def _library_section(items: list[Item]) -> dict[str, Any]:
+    """Counts by retained content type for the article/video-first product."""
+    counts = Counter(_content_type(item) for item in items)
+    return {
+        "articles": counts["article"],
+        "videos": counts["video"],
+        "article_failed": counts["article_failed"],
+        "post_only": counts["post_only"],
+    }
+
+
+def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
+    """Topic-assignment quality signals exposed in the dashboard."""
+    confidence = Counter(_confidence(item) or "unknown" for item in items)
+    misc_items = [item for item in items if _primary(item) == "misc"]
+    low_items = [item for item in items if _confidence(item) == "low"]
+    suggested = Counter(
+        suggestion for item in items for suggestion in _suggested_topics(item)
+    )
+    review_items = {
+        item.id: item
+        for item in sorted(
+            [*misc_items, *low_items],
+            key=lambda i: i.created_at,
+            reverse=True,
+        )
+    }
+    return {
+        "confidence": {
+            "high": confidence["high"],
+            "medium": confidence["medium"],
+            "low": confidence["low"],
+            "unknown": confidence["unknown"],
+        },
+        "misc": len(misc_items),
+        "low": len(low_items),
+        "suggested": [
+            {"slug": slug, "count": count} for slug, count in suggested.most_common(20)
+        ],
+        "review_items": rows(list(review_items.values()))[:12],
+    }
+
+
 def _meta(
     items: list[Item],
     topic_freq: "Counter[str]",
     longform: dict[str, Any],
     media: dict[str, int],
+    library: dict[str, Any],
+    taxonomy: dict[str, Any],
     updated: str,
     bookmarks: int,
     own: int,
@@ -419,6 +605,8 @@ def _meta(
         "topics_count": len(topic_freq),
         "longform": {k: longform[k] for k in _META_LONGFORM_KEYS},
         "media": media,
+        "library": library,
+        "taxonomy": taxonomy,
         "updated": updated,
     }
 
@@ -450,13 +638,23 @@ def compute_dashboard_data(
     months_data = _months_section(per_month, rows)
     longform = _longform(items, id2note)
     media = _media_counts(items)
+    library = _library_section(items)
+    taxonomy = _taxonomy_section(items, rows)
     bookmark_items = [i for i in items if i.source == "bookmark"]
     own_items = [i for i in items if i.source == "own_tweet"]
-    photo_posts = [i for i in items if any(isinstance(m, _DOWNLOADED_PHOTO_TYPES) for m in i.media)]
+    photo_posts = [i for i in items if _downloaded_image_entries(i)]
 
     return {
         "meta": _meta(
-            items, topic_freq, longform, media, updated, len(bookmark_items), len(own_items)
+            items,
+            topic_freq,
+            longform,
+            media,
+            library,
+            taxonomy,
+            updated,
+            len(bookmark_items),
+            len(own_items),
         ),
         **growth,
         "topics_sorted": topics_sorted,
@@ -467,9 +665,12 @@ def compute_dashboard_data(
         "domain_data": domain_data,
         "months_data": months_data,
         "longform_full": longform,
+        "taxonomy": taxonomy,
         "photos": {
             "downloaded": media["photos_downloaded"],
             "pending": media["photos_pending"],
+            "article_downloaded": media["article_images_downloaded"],
+            "article_pending": media["article_images_pending"],
             "thumbs": thumbs,
             "samples": _recent(rows(photo_posts), 6),
         },

@@ -49,10 +49,10 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .view.on{display:block}
 
 /* kpi band */
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);margin-top:34px;
-  border:1px solid var(--hairline);border-radius:12px;overflow:hidden;background:var(--surface);
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:34px;
+  border:1px solid var(--hairline);border-radius:12px;overflow:hidden;background:var(--hairline);
   opacity:0;animation:rise .7s cubic-bezier(.2,.7,.2,1) .14s forwards}
-.kpi{padding:22px 24px 20px;border-right:1px solid var(--hairline);border-bottom:1px solid var(--hairline);position:relative}
+.kpi{padding:22px 24px 20px;border:0;background:var(--surface);position:relative;min-width:0}
 .kpi:nth-child(4n){border-right:0}
 .kpi:nth-child(n+5){border-bottom:0}
 .kpi .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-faint)}
@@ -64,7 +64,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 
 	/* mobile ops */
 	.ops{margin-top:20px;display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
-	.ops-main,.ops-side{background:var(--surface);border:1px solid var(--hairline);border-radius:14px;padding:20px 22px}
+	.ops-main,.ops-side{background:var(--surface);border:1px solid var(--hairline);border-radius:14px;padding:20px 22px;min-width:0}
 	.ops-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--hairline-2);padding-bottom:14px;margin-bottom:14px}
 	.ops h2{font-family:var(--display);font-size:22px;line-height:1.12;font-weight:600}
 	.ops .kick{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:7px}
@@ -76,7 +76,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 	.ops-metric{border:1px solid var(--hairline-2);border-radius:8px;padding:10px;background:rgba(255,255,255,.015)}
 	.ops-metric .n{font-family:var(--display);font-size:25px;font-weight:600;line-height:1}
 	.ops-metric .l{font-family:var(--mono);font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-top:6px}
-	.ops-command{font-family:var(--mono);font-size:11px;color:var(--ink-muted);border:1px solid var(--hairline-2);border-radius:7px;padding:9px 10px;overflow:auto;white-space:nowrap;background:#100E0A}
+	.ops-command{font-family:var(--mono);font-size:11px;color:var(--ink-muted);border:1px solid var(--hairline-2);border-radius:7px;padding:9px 10px;overflow:auto;white-space:nowrap;background:#100E0A;min-width:0}
 	.ops-status{font-size:12px;color:var(--ink-faint);margin-top:9px;min-height:18px}
 	.ops-list{display:flex;flex-direction:column;gap:10px}
 	.ops-item{border-top:1px solid var(--hairline-2);padding-top:10px}
@@ -84,6 +84,12 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 	.ops-item .m{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.04em;margin-bottom:4px}
 	.ops-item .s{font-size:12.5px;line-height:1.45;color:var(--ink-muted)}
 	.ops-fail{color:var(--failed)}
+	.badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+	.badge{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--hairline);border-radius:4px;padding:2px 6px;color:var(--ink-faint)}
+	.badge.high{color:var(--sage);border-color:rgba(124,154,142,.36)}
+	.badge.medium{color:var(--sand);border-color:rgba(201,168,124,.36)}
+	.badge.low,.badge.unknown{color:var(--failed);border-color:rgba(181,83,63,.36)}
+	.badge.kind{color:var(--accent);border-color:rgba(224,162,51,.32)}
 
 	/* library chat */
 	.chat{margin-top:34px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(260px,.85fr);gap:20px}
@@ -143,6 +149,13 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .toggle.on .sw{background:var(--accent-soft);border-color:rgba(224,162,51,.5)}
 .toggle.on .sw::after{transform:translateX(15px);background:var(--accent)}
 .hint{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--ink-faint);margin-left:auto}
+.topic-rank{display:none}
+.topic-rank-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 10px;padding:10px 0;border-top:1px solid var(--hairline-2);cursor:pointer}
+.topic-rank-row:first-child{border-top:0}
+.topic-rank-row .name{font-size:13px;color:var(--ink);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topic-rank-row .count{font-family:var(--mono);font-size:11px;color:var(--accent);text-align:right}
+.topic-rank-row .meter{grid-column:1 / -1;height:7px;border-radius:8px;background:rgba(236,230,218,.06);overflow:hidden}
+.topic-rank-row .meter span{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,var(--accent),var(--sand))}
 
 /* drill-down drawer */
 .scrim{position:fixed;inset:0;background:rgba(6,5,4,.62);backdrop-filter:blur(2px);z-index:40;opacity:0;visibility:hidden;transition:.28s}
@@ -198,7 +211,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
   font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--ink-faint);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 
 @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-	@media (max-width:900px){.masthead{align-items:flex-start;flex-direction:column}.headtools{justify-content:flex-start;align-items:flex-start}.grid,.ops,.chat{grid-template-columns:1fr}.span2{grid-column:auto}.kpis{grid-template-columns:repeat(2,1fr)}.kpi:nth-child(2n){border-right:0}.ops-grid{grid-template-columns:repeat(2,1fr)}.ops-actions{justify-content:flex-start}.chat-form{grid-template-columns:1fr}.chat button{height:38px}.chat-model{text-align:left;max-width:100%}.brand h1{font-size:42px}.wrap{padding:38px 18px 52px}}
+	@media (max-width:900px){.masthead{align-items:flex-start;flex-direction:column}.headtools{justify-content:flex-start;align-items:flex-start}.grid,.ops,.chat{grid-template-columns:1fr}.span2{grid-column:auto}.kpis{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:26px}.kpi{padding:12px 8px;min-height:116px}.kpi .lab{font-size:8px;letter-spacing:.12em;line-height:1.25;overflow-wrap:anywhere}.kpi .num{font-size:34px;margin-top:10px}.kpi .ctx{font-size:11px;line-height:1.34}.phead{display:block}.phead .sub{text-align:left;white-space:normal;margin-top:6px}.ops-grid{grid-template-columns:repeat(2,1fr)}.ops-actions{justify-content:flex-start}.chat-form{grid-template-columns:1fr}.chat button{height:38px}.chat-model{text-align:left;max-width:100%}.topic-rank{display:block;margin-top:12px}.topic-chart{display:none}.brand h1{font-size:42px}.wrap{padding:38px 18px 52px}}
 	</style>
 </head>
 <body>
@@ -208,7 +221,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
   <header class="masthead">
     <div class="brand">
       <h1>XBrain<span class="dot">.</span></h1>
-      <p id="subtitle">A knowledge almanac of curated posts</p>
+      <p id="subtitle">A knowledge library of saved articles and videos</p>
     </div>
     <div class="headtools">
       <nav class="viewnav" aria-label="XBrain views">
@@ -228,6 +241,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
 	        <div><span class="kick">Ops</span><h2>Daily refresh</h2></div>
 	        <div class="ops-actions">
 	          <button id="ops-run">Run refresh</button>
+	          <button id="ops-retry-failed">Retry failures</button>
 	          <button class="secondary" id="ops-copy">Copy command</button>
 	        </div>
 	      </div>
@@ -245,7 +259,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
 
 	  <section class="grid">
     <div class="panel span2">
-      <div class="phead"><div><span class="kick">01 · Growth</span><h3>Corpus growth over time</h3></div><div class="sub">cumulative · total, bookmarks &amp; own posts</div></div>
+      <div class="phead"><div><span class="kick">01 · Growth</span><h3>Library growth over time</h3></div><div class="sub">cumulative · retained bookmarks</div></div>
       <div class="chart" id="c-growth" style="height:360px"></div>
     </div>
 
@@ -255,12 +269,12 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
     </div>
 
     <div class="panel">
-      <div class="phead"><div><span class="kick">03 · Origin</span><h3>Source split</h3></div><div class="sub">bookmarks vs. own posts</div></div>
+      <div class="phead"><div><span class="kick">03 · Content</span><h3>Library content split</h3></div><div class="sub">articles, videos and failures</div></div>
       <div class="chart" id="c-sources" style="height:300px"></div>
     </div>
 
     <div class="panel span2">
-      <div class="phead"><div><span class="kick">04 · Themes</span><h3>Topics by primary theme</h3></div><div class="sub">45 topics · one post counted once</div></div>
+      <div class="phead"><div><span class="kick">04 · Themes</span><h3>Topics by primary theme</h3></div><div class="sub">one library item counted once</div></div>
       <div class="controls">
         <div class="seg" id="seg-top">
           <button data-n="12" class="on">Top 12</button>
@@ -270,7 +284,8 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
         <div class="toggle" id="tg-misc"><span class="sw"></span><span>Hide “misc”</span></div>
         <span class="hint">click a bar → topic detail</span>
       </div>
-      <div class="chart" id="c-topics" style="height:520px"></div>
+      <div class="topic-rank" id="topic-rank"></div>
+      <div class="chart topic-chart" id="c-topics" style="height:520px"></div>
     </div>
 
     <div class="panel">
@@ -284,7 +299,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
     </div>
 
     <div class="panel">
-      <div class="phead"><div><span class="kick">07 · Voices</span><h3>Most-bookmarked authors</h3></div><div class="sub">top 10 · by handle</div></div>
+      <div class="phead"><div><span class="kick">07 · Voices</span><h3>Most-saved authors</h3></div><div class="sub">top 10 · by handle</div></div>
       <div class="chart" id="c-authors" style="height:340px"></div>
     </div>
 
@@ -346,18 +361,20 @@ const pct=(n,d)=>d?Math.round(n/d*100):0;
 const mlabel=m=>{const [y,mm]=m.split('-');return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mm-1]+" '"+y.slice(2)};
 
 /* header + kpis */
-document.getElementById('subtitle').textContent='A knowledge almanac of '+nf(DATA.meta.total)+' curated posts';
-document.getElementById('stamp').innerHTML='UPDATED '+DATA.meta.updated+' · <b>'+nf(DATA.meta.total)+' POSTS</b>';
+document.getElementById('subtitle').textContent='A knowledge library of '+nf(DATA.meta.total)+' saved articles and videos';
+document.getElementById('stamp').innerHTML='UPDATED '+DATA.meta.updated+' · <b>'+nf(DATA.meta.total)+' ITEMS</b>';
 const M=DATA.meta;
+const LIB=M.library||{articles:M.longform.saved||0,videos:M.media.videos||0,article_failed:M.longform.total-M.longform.saved,post_only:0};
+const TAX=M.taxonomy||{confidence:{high:0,medium:0,low:0,unknown:0},misc:0,low:0,suggested:[],review_items:[]};
 const kpis=[
-	 ['Total posts',nf(M.total),'across '+M.topics_count+' topics',false],
-	 ['Bookmarks',nf(M.bookmarks),pct(M.bookmarks,M.total)+'% of corpus',false],
-	 ['Own posts',nf(M.own),pct(M.own,M.total)+'% of corpus',false],
-	 ['Enriched',pct(M.enriched,M.total)+'%','summary + topics · <b>all</b>',true],
+ ['Library items',nf(M.total),'articles/videos retained',false],
+ ['Articles saved',nf(LIB.articles),'<b>'+M.longform.saved_pct+'%</b> of '+M.longform.total+' article fetches',true],
+ ['Videos',nf(LIB.videos),'bookmarked video items',false],
+ ['Article failures',nf(LIB.article_failed),'retry candidates',LIB.article_failed>0],
+ ['High confidence',nf(TAX.confidence.high||0),pct(TAX.confidence.high||0,M.enriched)+'% of enriched items',false],
+ ['Low confidence',nf(TAX.confidence.low||0),nf(TAX.misc||0)+' misc · '+nf((TAX.suggested||[]).length)+' suggestions',TAX.confidence.low>0],
  ['Topics',nf(M.topics_count),'thematic clusters',false],
- ['Long-form saved',nf(M.longform.saved),'<b>'+M.longform.saved_pct+'%</b> of '+M.longform.total+' fetched',false],
- ['Photos',nf(M.media.photos_downloaded),'downloaded · +'+M.media.photos_pending+' pending',false],
- ['Videos',nf(M.media.videos),'captured',false],
+ ['Article imgs',nf(M.media.article_images_downloaded||0),'inline · +'+(M.media.article_images_pending||0)+' pending',false],
 ];
 document.getElementById('kpis').innerHTML=kpis.map(k=>
  `<div class="kpi"><div class="lab">${k[0]}</div><div class="num${k[3]?' accent':''}">${k[1]}</div><div class="ctx">${k[2]}</div></div>`).join('');
@@ -377,6 +394,9 @@ const mk=id=>echarts.init(document.getElementById(id),null,{renderer:'canvas',de
 
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mlabelFull=m=>{const[y,mm]=m.split('-');return['January','February','March','April','May','June','July','August','September','October','November','December'][+mm-1]+' '+y};
+const WEB_NOTES=location.protocol==='http:'||location.protocol==='https:';
+const noteHref=n=>WEB_NOTES?'/notes?path='+encodeURIComponent(n):'obsidian://open?path='+encodeURIComponent(n);
+const noteAnchor=(n,label='note ↗',cls='lk',title='Open note')=>n?`<a class="${cls}" href="${esc(noteHref(n))}"${WEB_NOTES?' target="_blank" rel="noopener"':''} title="${esc(title)}">${esc(label)}</a>`:'';
 const chartIds=['c-growth','c-activity','c-sources','c-topics','c-longform','c-media','c-authors','c-domains'];
 function resizeCharts(){chartIds.forEach(id=>{const el=document.getElementById(id);if(el&&echarts.getInstanceByDom(el))echarts.getInstanceByDom(el).resize();});}
 function setView(view,{updateHash=true}={}){
@@ -393,41 +413,53 @@ document.getElementById('nav-chat').onclick=()=>setView('chat');
 addEventListener('hashchange',()=>setView(location.hash==='#chat'?'chat':'dashboard',{updateHash:false}));
 
 /* Ops panel */
-const OPS=DATA.ops||{pending:{},recent_bookmarks:[],article_failures:[],command:'uv run xbrain refresh-all --headless',serve_command:'uv run xbrain serve-dashboard'};
+const OPS=DATA.ops||{pending:{},recent_bookmarks:[],article_failures:[],command:'uv run xbrain refresh-all --headless',retry_failed_command:'uv run xbrain retry-failed --source bookmarks --headless',retry_failed_bookmarks:0,serve_command:'uv run xbrain serve-dashboard'};
 const P=OPS.pending||{};
 const pendingRows=[
  ['Fetch',P.fetch||0],['Media',P.media||0],['Describe',P.describe||0],['Enrich',P.enrich||0],['Failures',P.article_failures||0]
 ];
 document.getElementById('ops-pending').innerHTML=pendingRows.map(([label,n])=>
  `<div class="ops-metric"><div class="n${label==='Failures'&&n?' ops-fail':''}">${nf(n)}</div><div class="l">${esc(label)}</div></div>`).join('');
-document.getElementById('ops-command').textContent=OPS.command;
+document.getElementById('ops-command').textContent=OPS.command+' · retry: '+OPS.retry_failed_command;
 const opsLk=(u,label)=>u?`<a class="lk" href="${esc(u)}" target="_blank">${label}</a>`:'';
-const opsNoteLk=n=>n?`<a class="lk" href="obsidian://open?path=${encodeURIComponent(n)}">note ↗</a>`:'';
-function opsRow(r,fail=false){return `<div class="ops-item"><div class="m">${fail?esc(r.reason||'failure')+' · ':''}@${esc(r.handle||'—')} · ${esc(r.date||'')}</div><div class="s">${esc(r.summary||r.url||'')}</div>${r.url?`<div class="sm-links">${opsLk(r.url,fail?'article ↗':'post ↗')}${r.post?opsLk(r.post,'post ↗'):''}${opsNoteLk(r.note)}</div>`:''}</div>`}
-const sig=[...(OPS.article_failures||[]).slice(0,3).map(x=>opsRow(x,true)),...(OPS.recent_bookmarks||[]).slice(0,3).map(x=>opsRow(x,false))];
+const opsNoteLk=n=>noteAnchor(n);
+const badge=(text,cls='')=>text?`<span class="badge ${esc(cls)}">${esc(text)}</span>`:'';
+const itemBadges=r=>`<div class="badges">${badge(r.content_type||'', 'kind')}${badge(r.confidence||'', r.confidence||'')}${(r.suggested_topics||[]).slice(0,2).map(s=>badge(s)).join('')}</div>`;
+function opsRow(r,fail=false){return `<div class="ops-item"><div class="m">${fail?esc(r.reason||'failure')+' · ':''}@${esc(r.handle||'—')} · ${esc(r.date||'')}</div><div class="s">${esc(r.summary||r.url||'')}</div>${itemBadges(r)}${r.url?`<div class="sm-links">${opsLk(r.url,fail?'article ↗':'post ↗')}${r.post?opsLk(r.post,'post ↗'):''}${opsNoteLk(r.note)}</div>`:''}</div>`}
+const taxRows=(DATA.taxonomy&&DATA.taxonomy.review_items?DATA.taxonomy.review_items:[]).slice(0,3).map(x=>opsRow(x,false));
+const sig=[...(OPS.article_failures||[]).slice(0,3).map(x=>opsRow(x,true)),...taxRows];
 document.getElementById('ops-list').innerHTML=sig.length?sig.join(''):'<div class="ops-item"><div class="s">No pending operational signals.</div></div>';
-const opsStatus=document.getElementById('ops-status'),opsRun=document.getElementById('ops-run');
+const opsStatus=document.getElementById('ops-status'),opsRun=document.getElementById('ops-run'),opsRetry=document.getElementById('ops-retry-failed');
+const retryFailedCount=OPS.retry_failed_bookmarks||0;
+function setOpsRunning(running){
+ opsRun.disabled=!!running;
+ opsRetry.disabled=!!running||retryFailedCount===0;
+}
+if(retryFailedCount===0) opsRetry.textContent='No failures';
 async function refreshStatus(){
  try{
   const res=await fetch('/api/status'); const s=await res.json();
-  opsRun.disabled=!!s.running;
-  if(s.running){opsStatus.textContent='refresh-all running since '+s.last_started;setTimeout(refreshStatus,3000);return;}
-  if(s.last_error){opsStatus.textContent='last run failed: '+s.last_error.split('\n')[0];return;}
-  if(s.last_finished){opsStatus.textContent='last run finished '+s.last_finished;return;}
+  setOpsRunning(!!s.running);
+  if(s.running){opsStatus.textContent=(s.action||'job')+' running since '+s.last_started;setTimeout(refreshStatus,3000);return;}
+  if(s.last_error){opsStatus.textContent='last '+(s.last_action||'run')+' failed: '+s.last_error.split('\n')[0];return;}
+  if(s.last_finished){opsStatus.textContent='last '+(s.last_action||'run')+' finished '+s.last_finished;return;}
  }catch(e){}
 }
 document.getElementById('ops-copy').onclick=async()=>{try{await navigator.clipboard.writeText(OPS.command);opsStatus.textContent='command copied';}catch(e){opsStatus.textContent=OPS.command;}};
-opsRun.onclick=async()=>{
- opsRun.disabled=true;opsStatus.textContent='starting refresh-all...';
+async function startOps(endpoint,label,command){
+ setOpsRunning(true);opsStatus.textContent='starting '+label+'...';
  try{
-  const res=await fetch('/api/refresh-all',{method:'POST'}); const s=await res.json();
+  const res=await fetch(endpoint,{method:'POST'}); const s=await res.json();
   if(!res.ok) throw new Error(s.error||'request failed');
-  opsStatus.textContent='refresh-all started'; refreshStatus();
+  opsStatus.textContent=label+' started'; refreshStatus();
  }catch(e){
-  opsRun.disabled=false;
-  opsStatus.textContent='Open this dashboard with `'+OPS.serve_command+'` to run from the button. '+e.message;
+  setOpsRunning(false);
+  opsStatus.textContent='Open this dashboard with `'+OPS.serve_command+'` or run `'+command+'`. '+e.message;
  }
-};
+}
+opsRun.onclick=()=>startOps('/api/refresh-all','refresh-all',OPS.command);
+opsRetry.onclick=()=>startOps('/api/retry-failed','retry-failed',OPS.retry_failed_command);
+setOpsRunning(false);
 refreshStatus();
 
 /* Library chat */
@@ -439,7 +471,7 @@ const chatSources=document.getElementById('chat-sources');
 const chatModel=document.getElementById('chat-model');
 const answerHtml=s=>esc(s||'').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
 function sourceRow(s){
- const note=s.path?`<div class="sm-links"><a class="lk" href="obsidian://open?path=${encodeURIComponent(s.path)}">note ↗</a></div>`:'';
+ const note=s.path?`<div class="sm-links">${noteAnchor(s.path)}</div>`:'';
  return `<div class="chat-source"><div class="id">${esc(s.id||'S')}</div><div class="title">${esc(s.title||s.path||'source')}</div><div class="excerpt">${esc(s.excerpt||'')}</div>${note}</div>`;
 }
 chatForm.onsubmit=async(e)=>{
@@ -490,17 +522,22 @@ chAct.setOption({
   itemStyle:{borderRadius:[3,3,0,0],color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:C.accent},{offset:1,color:'#B8842A'}]}}}]});
 chAct.on('click',p=>{if(p.dataIndex!=null)openMonth(DATA.months[p.dataIndex]);});
 
-/* 03 sources donut */
+/* 03 content split donut */
 const chSrc=mk('c-sources');
 chSrc.setOption({
  tooltip:{...TIP,trigger:'item',formatter:p=>p.name+': '+nf(p.value)+' ('+p.percent+'%)'},
  legend:{bottom:2,textStyle:{color:C.muted,fontFamily:UI,fontSize:12},itemWidth:12,itemHeight:12},
  series:[{type:'pie',radius:['58%','80%'],center:['50%','44%'],avoidLabelOverlap:false,
-  label:{show:true,position:'center',formatter:'{v|'+nf(M.total)+'}\n{u|posts}',
+  label:{show:true,position:'center',formatter:'{v|'+nf(M.total)+'}\n{u|items}',
     rich:{v:{fontFamily:DISP,fontSize:34,fontWeight:600,color:C.ink},u:{fontFamily:MONO,fontSize:11,color:C.faint,padding:[6,0,0,0]}}},
   labelLine:{show:false},
-  data:[{value:M.bookmarks,name:'Bookmarks',itemStyle:{color:C.accent}},{value:M.own,name:'Own posts',itemStyle:{color:C.sage}}]}]});
-chSrc.on('click',p=>openSource(p.name==='Bookmarks'?'bookmark':'own_tweet'));
+  data:[
+   {value:LIB.articles||0,name:'Articles',itemStyle:{color:C.accent}},
+   {value:LIB.videos||0,name:'Videos',itemStyle:{color:C.sage}},
+   {value:LIB.article_failed||0,name:'Article failures',itemStyle:{color:C.failed}},
+   {value:LIB.post_only||0,name:'Post-only',itemStyle:{color:C.faint}},
+  ].filter(x=>x.value>0)}]});
+chSrc.on('click',()=>openLongform());
 
 /* 04 topics — filterable + drill-down */
 const topicsChart=mk('c-topics');
@@ -510,8 +547,14 @@ function topicColor(i,tot){ // amber -> sand gradient by rank
  return `rgb(${a.map((x,k)=>Math.round(x+(b[k]-x)*t)).join(',')})`;
 }
 function renderTopics(){
- let rows=DATA.topics_sorted.filter(r=>!(state.hideMisc&&r.slug==='misc')).slice(0,state.n);
- rows=rows.slice().reverse(); // ECharts y-category bottom-up
+ const topRows=DATA.topics_sorted.filter(r=>!(state.hideMisc&&r.slug==='misc')).slice(0,state.n);
+ const maxTopic=Math.max(1,...topRows.map(r=>r.count));
+ const rank=document.getElementById('topic-rank');
+ if(rank){
+  rank.innerHTML=topRows.map(r=>`<div class="topic-rank-row" data-slug="${esc(r.slug)}"><div class="name">${esc(r.label)}</div><div class="count">${nf(r.count)}</div><div class="meter"><span style="width:${Math.max(6,100*r.count/maxTopic)}%"></span></div></div>`).join('');
+  rank.querySelectorAll('[data-slug]').forEach(el=>el.onclick=()=>openTopic(el.dataset.slug));
+ }
+ let rows=topRows.slice().reverse(); // ECharts y-category bottom-up
  topicsChart.setOption({
   grid:{left:150,right:44,top:6,bottom:24},tooltip:{...TIP,trigger:'item',formatter:p=>p.name+' · '+nf(p.value)+' posts'},
   xAxis:{type:'value',...axisY()},
@@ -548,12 +591,12 @@ const md=M.media;
 const chMedia=mk('c-media');
 chMedia.setOption({
  grid:{left:42,right:18,top:20,bottom:40},tooltip:{trigger:'axis',...TIP,axisPointer:{type:'shadow'}},
- xAxis:{type:'category',data:['Photos\nsaved','Photos\npending','Videos'],...axisX()},
+ xAxis:{type:'category',data:['Post\nphotos','Article\nimgs','Pending','Videos'],...axisX()},
  yAxis:{type:'value',...axisY()},
  series:[{type:'bar',barWidth:'50%',
-  data:[{value:md.photos_downloaded,itemStyle:{color:C.sage}},{value:md.photos_pending,itemStyle:{color:C.sand}},{value:md.videos,itemStyle:{color:C.slate}}],
+  data:[{value:md.photos_downloaded,itemStyle:{color:C.sage}},{value:md.article_images_downloaded||0,itemStyle:{color:C.mauve}},{value:(md.photos_pending||0)+(md.article_images_pending||0),itemStyle:{color:C.sand}},{value:md.videos,itemStyle:{color:C.slate}}],
   itemStyle:{borderRadius:[4,4,0,0]},label:{show:true,position:'top',color:C.muted,fontFamily:MONO,fontSize:11,formatter:p=>nf(p.value)}}]});
-chMedia.on('click',p=>{p.dataIndex===2?openVideos():openPhotos();});
+chMedia.on('click',p=>{p.dataIndex===3?openVideos():openPhotos();});
 
 /* 07 authors */
 const au=DATA.authors.slice().reverse();
@@ -588,9 +631,9 @@ function openDrawer(kick,title,meta,html){
 }
 function closeDrawer(){drawer.classList.remove('open');scrim.classList.remove('open');}
 const lk=(u,label)=>u?`<a class="lk" href="${esc(u)}" target="_blank">${label}</a>`:'';
-const noteLk=n=>n?`<a class="lk" href="obsidian://open?path=${encodeURIComponent(n)}">note ↗</a>`:'';
+const noteLk=n=>noteAnchor(n);
 function links(r){const l=lk(r.url,'post ↗')+noteLk(r.note);return l?`<div class="sm-links">${l}</div>`:''}
-function srow(r){return `<div class="sample"><div class="sm-meta"><span class="h">@${esc(r.handle)}</span> · ${r.source==='bookmark'?'bookmark':'own post'} · ${esc(r.date)}${r.topic?' · '+esc(r.topic):''}</div><div class="sm-sum">${esc(r.summary)}</div>${links(r)}</div>`}
+function srow(r){return `<div class="sample"><div class="sm-meta"><span class="h">@${esc(r.handle)}</span> · ${esc(r.content_type||'item')} · ${esc(r.date)}${r.topic?' · '+esc(r.topic):''}</div><div class="sm-sum">${esc(r.summary)}</div>${itemBadges(r)}${links(r)}</div>`}
 function sampleSec(rows,label){return `<div class="dwsec">${esc(label||'Sample posts')}</div>`+((rows&&rows.length)?rows.map(srow).join(''):'<div class="sample"><div class="sm-sum" style="color:var(--ink-faint)">No posts.</div></div>')}
 function miniBars(list,pre){const mx=Math.max(1,...list.map(x=>x.count));return `<div class="mini">`+list.map(x=>`<div class="row"><span class="nm">${pre||''}${esc(x.label||x.handle)}</span><span class="bar" style="width:${16+78*x.count/mx}px"></span><span class="ct">${x.count}</span></div>`).join('')+`</div>`}
 
@@ -605,13 +648,14 @@ function openAuthor(h){const a=DATA.author_data[h];if(!a)return;
 function openDomain(d){const x=DATA.domain_data[d];if(!x)return;
  openDrawer('Domain',d,nf(x.count)+' LINKED POSTS',sampleSec(x.samples,'Posts linking '+d));}
 function openLongform(){const L=DATA.longform_full;
- const rows=L.items.map(i=>`<div class="lf-item"><a class="lft" href="${esc(i.url)}" target="_blank"><span class="t">${esc(i.title)}</span></a><div class="m"><span class="tag">${esc(i.source)}</span>@${esc(i.handle)} · ${esc(i.date)}${lk(i.post,'post ↗')}${noteLk(i.note)}</div></div>`).join('');
- openDrawer('Long-form','Captured articles',nf(L.saved)+' SAVED · '+L.ext_saved+' external · '+L.x_saved+' X',
+ const rows=L.items.map(i=>`<div class="lf-item"><a class="lft" href="${esc(i.url)}" target="_blank"><span class="t">${esc(i.title)}</span></a><div class="m"><span class="tag">${esc(i.source)}</span>@${esc(i.handle)} · ${esc(i.date)} · ${esc(i.topic||'—')}${lk(i.post,'post ↗')}${noteLk(i.note)}</div><div class="badges">${badge(i.confidence||'',i.confidence||'')}${(i.suggested_topics||[]).slice(0,2).map(s=>badge(s)).join('')}</div></div>`).join('');
+ openDrawer('Articles','Captured articles',nf(L.saved)+' SAVED · '+L.ext_saved+' external · '+L.x_saved+' X',
   `<p class="ov">Full article text fetched and stored. Showing the ${L.items.length} most recent. Title → article; post → the X post; note → the vault.</p><div class="dwsec">Articles</div><div class="lf">${rows}</div>`);}
 function openPhotos(){const p=DATA.photos;
- const th=p.thumbs.map(t=>`<div class="thumb"><a href="${esc(t.url)}" target="_blank" title="@${esc(t.handle)} · ${esc(t.date)} — ${esc((t.desc||t.summary||'').slice(0,240))}"><img src="${t.thumb}"><span class="cap">@${esc(t.handle)}</span></a>${t.note?`<a class="nl" href="obsidian://open?path=${encodeURIComponent(t.note)}" title="Open vault note">◆</a>`:''}</div>`).join('');
- openDrawer('Media · Photos','Captured photos',nf(p.downloaded)+' DOWNLOADED · '+p.pending+' PENDING',
-  `<div class="dwsec">Sample thumbnails — click → the post · ◆ → the note</div><div class="thumbs">${th}</div>`+sampleSec(p.samples,'Posts with photos'));}
+ const total=(p.downloaded||0)+(p.article_downloaded||0), pending=(p.pending||0)+(p.article_pending||0);
+ const th=p.thumbs.map(t=>`<div class="thumb"><a href="${esc(t.url)}" target="_blank" title="${esc(t.kind==='article'?'Article image':'Post photo')} · @${esc(t.handle)} · ${esc(t.date)} — ${esc((t.desc||t.summary||'').slice(0,240))}"><img src="${t.thumb}"><span class="cap">${esc(t.kind==='article'?'ARTICLE':'POST')}</span></a>${noteAnchor(t.note,'◆','nl','Open note')}</div>`).join('');
+ openDrawer('Media · Images','Captured images',nf(total)+' DOWNLOADED · '+pending+' PENDING',
+  `<p class="ov">${nf(p.downloaded||0)} post photos · ${nf(p.article_downloaded||0)} inline article images.</p><div class="dwsec">Sample thumbnails — click → the post · ◆ → the note</div><div class="thumbs">${th}</div>`+sampleSec(p.samples,'Posts with images'));}
 function openVideos(){const v=DATA.videos;
  const rows=v.items.map(i=>`<div class="vid">${i.poster?`<a href="${esc(i.url)}" target="_blank"><img src="${esc(i.poster)}" onerror="this.style.display='none'"></a>`:''}<div><div class="s">${esc(i.summary)}</div><div class="m">@${esc(i.handle)} · ${esc(i.date)}${i.dur?' · '+Math.floor(i.dur/60)+'m'+String(i.dur%60).padStart(2,'0')+'s':''}</div><div class="sm-links">${lk(i.url,'post ↗')}${noteLk(i.note)}</div></div></div>`).join('');
  openDrawer('Media · Video','Captured videos',nf(v.count)+' CAPTURED',

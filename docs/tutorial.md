@@ -64,12 +64,12 @@ and `_index.md` (the map). Open `_index.md` in Obsidian and click into a topic.
 ## 4. Download the media
 
 ```bash
-uv run xbrain media                 # download bookmarked photos
+uv run xbrain media                 # download bookmarked photos + inline Article images
 uv run xbrain download-videos --yes # download videos (prints a size gate first)
 ```
 
-Photos embed under each post note. To make photos **searchable**, add vision
-descriptions:
+Photos embed under each post note; inline X Article images render inside the
+article body. To make those images **searchable**, add vision descriptions:
 
 ```bash
 uv run xbrain describe --executor claude-code   # export a worksheet
@@ -78,8 +78,9 @@ uv run xbrain describe --apply data/describe-worksheet.json
 uv run xbrain generate
 ```
 
-Each photo now renders with a one-line caption under it — plain note text, so
-Obsidian's search finds "that chart about pricing".
+Each content-bearing image now renders with a caption or feeds the enrichment
+pipeline as plain note text, so Obsidian's search finds "that chart about
+pricing".
 
 ## 5. Digest a bookmarked video
 
@@ -109,6 +110,13 @@ top of `_index.md`, or directly in your browser:
 # <vault>/<output_subdir>/dashboard.html — from your config.toml [paths]:
 open ~/Documents/Vault/vault/learnings/x-knowledge/dashboard.html
 ```
+
+When the dashboard is served with `xbrain serve-dashboard`, note links open a
+read-only web note viewer (`/notes?path=...`) so they work from Safari/mobile.
+The served dashboard can also run the daily refresh and retry failed bookmarked
+article fetches from its Ops panel.
+When the HTML is opened as a local file, those same links fall back to Obsidian
+deep links.
 
 ## Keeping it fresh
 

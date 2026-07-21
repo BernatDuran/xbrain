@@ -2,10 +2,12 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from xbrain.cli import app
+from xbrain.cli import _render_note_page, _resolve_served_media, _resolve_served_note, app
 from xbrain.models import Author, Item, Link
+from xbrain.notes_io import GEN_END, GEN_START
 from xbrain.store import save_store
 
 runner = CliRunner()
@@ -71,6 +73,93 @@ def test_generate_writes_item_note_for_linked_item(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0
     notes = list((vault / "x-knowledge" / "items").glob("*.md"))
     assert notes
+
+
+def test_served_note_resolver_allows_only_generated_markdown(tmp_path: Path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    notes_dir = output_dir / "items"
+    notes_dir.mkdir(parents=True)
+    note = notes_dir / "source.md"
+    note.write_text("# Source\n\nBody", encoding="utf-8")
+
+    assert _resolve_served_note(output_dir, str(note)) == note.resolve()
+    assert _resolve_served_note(output_dir, "items/source.md") == note.resolve()
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    with pytest.raises(PermissionError):
+        _resolve_served_note(output_dir, str(outside))
+
+    text_file = notes_dir / "source.txt"
+    text_file.write_text("not markdown", encoding="utf-8")
+    with pytest.raises(ValueError):
+        _resolve_served_note(output_dir, str(text_file))
+
+
+def test_served_media_resolver_allows_only_generated_images(tmp_path: Path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    media_dir = output_dir / "_media" / "1" / "article"
+    media_dir.mkdir(parents=True)
+    image = media_dir / "0.jpg"
+    image.write_bytes(b"jpg")
+
+    assert _resolve_served_media(output_dir, "_media/1/article/0.jpg") == image.resolve()
+    assert _resolve_served_media(output_dir, "1/article/0.jpg") == image.resolve()
+
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"outside")
+    with pytest.raises(PermissionError):
+        _resolve_served_media(output_dir, str(outside))
+
+    text_file = media_dir / "note.txt"
+    text_file.write_text("not an image", encoding="utf-8")
+    with pytest.raises(ValueError):
+        _resolve_served_media(output_dir, "_media/1/article/note.txt")
+
+
+def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    notes_dir = output_dir / "items"
+    notes_dir.mkdir(parents=True)
+    note = notes_dir / "source.md"
+    note.write_text(
+        "---\nid: 1\n---\n"
+        f"{GEN_START}\n"
+        "# Mobile Source\n\n- **Insight**\n\n<script>alert(1)</script>\n"
+        f"{GEN_END}\n\nPersonal tail",
+        encoding="utf-8",
+    )
+
+    html = _render_note_page(note, output_dir).decode()
+
+    assert "<h1>Mobile Source</h1>" in html
+    assert "<li><strong>Insight</strong></li>" in html
+    assert "# Mobile Source" not in html
+    assert "xbrain:generated" not in html
+    assert "id: 1" not in html
+    assert "Personal tail" in html
+    assert "items/source.md" in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "obsidian://open?path=" in html
+
+
+def test_render_note_page_renders_obsidian_image_embeds(tmp_path: Path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    notes_dir = output_dir / "items"
+    media_dir = output_dir / "_media" / "1" / "article"
+    notes_dir.mkdir(parents=True)
+    media_dir.mkdir(parents=True)
+    (media_dir / "4.jpg").write_bytes(b"jpg")
+    note = notes_dir / "source.md"
+    note.write_text(
+        "# Source\n\nBefore\n\n![[_media/1/article/4.jpg]]\n\nAfter",
+        encoding="utf-8",
+    )
+
+    html = _render_note_page(note, output_dir).decode()
+
+    assert '<img src="/media?path=_media%2F1%2Farticle%2F4.jpg" alt="4.jpg"' in html
+    assert "![[_media/1/article/4.jpg]]" not in html
 
 
 def test_cli_reports_missing_config_cleanly(tmp_path: Path, monkeypatch):
@@ -950,6 +1039,53 @@ def test_enrich_api_executor_enriches_the_store(tmp_path, monkeypatch):
     assert store["1"].enriched is not None
 
 
+def test_enrich_taxonomy_risk_reenriches_existing_misc_item(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    from xbrain.store import load_store, save_store
+    from xbrain.rubrics import save_vocab
+    from xbrain.models import Enrichment, Topic
+    from xbrain.executors.base import EnrichmentJudgment
+    import xbrain.cli as cli
+
+    item = _linked_item("1")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="old",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="high",
+    )
+    save_store({"1": item}, tmp_path / "data" / "items.json")
+    save_vocab(
+        [Topic(slug="ai-coding", description="d"), Topic(slug="misc", description="d")],
+        tmp_path / "data" / "vocab.yaml",
+    )
+
+    class _FakeApiExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+        def enrich_items(self, items, vocab):
+            return [
+                EnrichmentJudgment(
+                    item_id=i.id,
+                    summary="new",
+                    primary_topic="ai-coding",
+                    topics=["ai-coding"],
+                    topic_confidence="high",
+                )
+                for i in items
+            ]
+
+    monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
+    result = runner.invoke(app, ["enrich", "--executor", "api", "--taxonomy-risk"])
+    assert result.exit_code == 0, result.output
+    store = load_store(tmp_path / "data" / "items.json")
+    assert store["1"].enriched.summary == "new"
+    assert store["1"].enriched.primary_topic == "ai-coding"
+
+
 def test_enrich_rejects_unknown_executor(tmp_path, monkeypatch):
     _setup_repo(tmp_path, monkeypatch)
     from xbrain.store import save_store
@@ -1036,7 +1172,7 @@ def test_describe_apply_dispatches_and_reports_unmatched(tmp_path, monkeypatch):
     result = runner.invoke(app, ["describe", "--apply", str(ws)])
     assert result.exit_code == 0
     assert "1 fotos descritas" in result.output
-    assert "ghost#0" in result.output  # unmatched judgment surfaced, not dropped silently
+    assert "ghost#post:0" in result.output  # unmatched judgment surfaced, not dropped silently
     store = load_store(tmp_path / "data" / "items.json")
     assert isinstance(store["1"].media[0], MediaPhotoDescribed)
 
@@ -1102,6 +1238,35 @@ def test_cli_fetch_reports_x_articles(tmp_path, monkeypatch):
     assert "3 de X" in result.output
 
 
+def test_cli_fetch_prunes_non_library_items(tmp_path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    import xbrain.cli as cli
+    from xbrain.models import Media
+    from xbrain.store import load_store
+
+    article = _linked_item("article")
+    video = _linked_item("video")
+    video.links = []
+    video.media = [Media(type="video", url="https://video.twimg.com/v/video.mp4")]
+    plain = _linked_item("plain")
+    plain.links = []
+    own = _linked_item("own")
+    own.source = "own_tweet"
+    save_store(
+        {item.id: item for item in [article, video, plain, own]},
+        tmp_path / "data" / "items.json",
+    )
+    monkeypatch.setattr(cli, "fetch_pending", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "fetch_x_articles", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "expand_threads", lambda *a, **k: 0)
+
+    result = runner.invoke(app, ["fetch"])
+
+    assert result.exit_code == 0, result.output
+    assert "2 descartados por política" in result.output
+    assert set(load_store(tmp_path / "data" / "items.json")) == {"article", "video"}
+
+
 def test_cli_fetch_persists_partial_work_when_a_stage_raises(tmp_path, monkeypatch):
     # `_run_fetch` wraps the three fetch stages in `try:` and `save_store` in
     # `finally:` — a stage error must not discard the in-memory work the
@@ -1143,6 +1308,91 @@ def test_cli_fetch_persists_partial_work_when_a_stage_raises(tmp_path, monkeypat
     store = load_store(tmp_path / "data" / "items.json")
     assert store["1"].content is not None
     assert store["1"].content.sources[0].text == "cuerpo"
+
+
+def test_retry_failed_retries_only_failed_bookmarks(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    import xbrain.cli as cli
+    from xbrain.models import Content, ContentSourceFailure, ContentSourceSuccess
+
+    failed_external = _linked_item("ext")
+    failed_external.content = Content(
+        fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
+        sources=[
+            ContentSourceFailure(
+                kind="external_article",
+                url="https://example.com/p",
+                failure_reason="js_required",
+            )
+        ],
+    )
+    failed_x = _linked_item("x")
+    failed_x.links = [Link(url="https://x.com/i/article/1", domain="x.com")]
+    failed_x.content = Content(
+        fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
+        sources=[
+            ContentSourceFailure(
+                kind="x_article",
+                url="https://x.com/i/article/1",
+                failure_reason="empty_content",
+            )
+        ],
+    )
+    own_failed = _linked_item("own")
+    own_failed.source = "own_tweet"
+    own_failed.content = failed_external.content
+    ok = _linked_item("ok")
+    ok.content = Content(
+        fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
+        sources=[ContentSourceSuccess(kind="external_article", url="https://example.com/p", text="ok")],
+    )
+    save_store(
+        {"ext": failed_external, "x": failed_x, "own": own_failed, "ok": ok},
+        tmp_path / "data" / "items.json",
+    )
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(cli, "_auto_snapshot", lambda _cfg, command: calls.append(("snapshot", command)))
+    monkeypatch.setattr(
+        cli,
+        "fetch_pending",
+        lambda store, *args, **kwargs: calls.append(
+            ("fetch_pending", sorted(store), kwargs["force"])
+        )
+        or len(store),
+    )
+
+    def _fake_fetch_x_articles(store, _state, force, *args, headless=False, **kwargs):
+        calls.append(("fetch_x", sorted(store), force, headless))
+        return len(store)
+
+    monkeypatch.setattr(cli, "fetch_x_articles", _fake_fetch_x_articles)
+    monkeypatch.setattr(cli, "_run_generate", lambda _cfg, since, until: calls.append(("generate", since, until)))
+
+    result = runner.invoke(app, ["retry-failed"])
+
+    assert result.exit_code == 0, result.output
+    assert ("snapshot", "retry-failed-bookmarks") in calls
+    assert ("fetch_pending", ["ext"], True) in calls
+    assert ("fetch_x", ["x"], True, True) in calls
+    assert ("generate", None, None) in calls
+    assert "Fallidos relanzados: 2 items" in result.output
+
+
+def test_retry_failed_noops_without_failed_bookmarks(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    import xbrain.cli as cli
+
+    save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
+    monkeypatch.setattr(cli, "_auto_snapshot", lambda *_args, **_kwargs: pytest.fail("no snapshot"))
+    monkeypatch.setattr(cli, "fetch_pending", lambda *_args, **_kwargs: pytest.fail("no fetch"))
+    monkeypatch.setattr(cli, "fetch_x_articles", lambda *_args, **_kwargs: pytest.fail("no x fetch"))
+    monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: pytest.fail("no generate"))
+
+    result = runner.invoke(app, ["retry-failed"])
+
+    assert result.exit_code == 0, result.output
+    assert "No hay bookmarks fallidos que relanzar." in result.output
 
 
 def _enriched_item(item_id: str = "1"):
@@ -1463,7 +1713,7 @@ def test_describe_command_transitions_downloaded_to_described(tmp_path: Path, mo
     assert entry.description == "A chart."
     assert entry.description_lang == "English"
     assert entry.description_version == "v1"
-    assert fake_client.messages.calls[0]["model"] == "xiaomi/mimo-v2.5"
+    assert fake_client.messages.calls[0]["model"] == "minimax/minimax-m3"
 
 
 def test_describe_command_runs_on_empty_store(tmp_path: Path, monkeypatch):
@@ -1980,6 +2230,46 @@ def test_extract_reports_seen_existing_and_batch_duplicates(tmp_path: Path, monk
     assert "bookmark: 1 nuevos, 1 ya existentes, 1 duplicados en lote (3 vistos)" in result.output
 
 
+def test_extract_discards_own_tweets_and_plain_bookmarks(tmp_path: Path, monkeypatch):
+    from xbrain.models import Media
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    article = _linked_item("1")
+    video = _linked_item("2")
+    video.links = []
+    video.media = [Media(type="video", url="https://video.twimg.com/v/2.mp4")]
+    plain = _linked_item("3")
+    plain.links = []
+
+    def _extract(_context, source, *_args, **_kwargs):
+        return [article, video, plain] if source == "bookmark" else []
+
+    _mock_browser(monkeypatch, _extract)
+
+    result = runner.invoke(app, ["extract", "--source", "all"])
+
+    assert result.exit_code == 0, result.output
+    assert "bookmark: 2 nuevos" in result.output
+    assert "1 descartados por política" in result.output
+    store = load_store(tmp_path / "data" / "items.json")
+    assert set(store) == {"1", "2"}
+
+
+def test_extract_tweets_source_is_disabled_by_content_policy(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+
+    def _extract(*_args, **_kwargs):
+        raise AssertionError("own tweet extraction should not run")
+
+    _mock_browser(monkeypatch, _extract)
+
+    result = runner.invoke(app, ["extract", "--source", "tweets"])
+
+    assert result.exit_code == 0, result.output
+    assert "tweets propios desactivada" in result.output
+
+
 def test_extract_truncation_persists_nothing_and_exits_nonzero(tmp_path: Path, monkeypatch):
     """A RateLimitTruncated source must not merge items nor advance the cursor."""
     from xbrain.extract.extractor import RateLimitTruncated
@@ -2054,7 +2344,7 @@ def test_refresh_all_runs_daily_pipeline_in_order(tmp_path: Path, monkeypatch):
         ("extract", "bookmarks", True),
         ("fetch", False, True),
         ("media", False, None, None),
-        ("describe", "xiaomi/mimo-v2.5", 5, 3),
+        ("describe", "minimax/minimax-m3", 5, 3),
         ("enrich", None, None),
         ("topics", "api", False),
         ("generate", None, None),
@@ -2190,8 +2480,9 @@ def test_resolve_fetch_ids_union_dedup_and_source_asymmetry(tmp_path: Path, monk
     # "t" is kept verbatim though it is an own_tweet and source=bookmarks;
     # the topic expansion under bookmarks yields only "b".
     assert _resolve_fetch_ids(store, "t", "ai", "bookmarks") == ["t", "b"]
-    # order-preserving dedup across --ids + --topic.
-    assert _resolve_fetch_ids(store, "b,b", "ai", "all") == ["b", "t"]
+    # order-preserving dedup across --ids + --topic; `all` is retained-library
+    # scope now, so it expands bookmarks only.
+    assert _resolve_fetch_ids(store, "b,b", "ai", "all") == ["b"]
 
 
 def test_resolve_fetch_ids_requires_selection():
@@ -2725,7 +3016,7 @@ def test_digest_video_vision_model_defaults_to_llm_vision_model(tmp_path: Path, 
     monkeypatch.setattr("xbrain.cli.describe_image", _capture)
     result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
     assert result.exit_code == 0, result.output
-    assert seen and set(seen) == {("xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5")}
+    assert seen and set(seen) == {("minimax/minimax-m3", "minimax/minimax-m3")}
 
 
 def test_digest_video_frames_then_generate_embeds_slides(tmp_path: Path, monkeypatch):

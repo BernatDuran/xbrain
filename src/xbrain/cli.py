@@ -4,30 +4,41 @@ from __future__ import annotations
 
 import enum
 import functools
+import html
 import json
 import logging
 import os
 import re
 import threading
 import traceback
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
 
 import typer
+from markdown_it import MarkdownIt
 
 from xbrain import snapshot
 from xbrain.archive import parse_archive
 from xbrain.chat import MAX_QUESTION_CHARS, answer_question
 from xbrain.config import Config, load_config
+from xbrain.content_policy import prune_store, retained_store, should_keep_item
 from xbrain.describe import apply_describe_worksheet, export_describe_worksheet
 from xbrain.describe import describe_all as run_describe_all
 from xbrain.describe import emit_summary_line as describe_emit_summary_line
 from xbrain.diff import diff_snapshots, format_json, format_text
 from xbrain.digest import VisualConfig, digest_videos, format_digest_summary
-from xbrain.enrich import apply_worksheet_judgments, enrich_with_executor, items_pending_enrichment
+from xbrain.enrich import (
+    apply_worksheet_judgments,
+    enrich_selected_with_executor,
+    enrich_with_executor,
+    items_for_taxonomy_reenrichment,
+    items_pending_enrichment,
+)
 from xbrain.executors.api import ApiExecutor
 from xbrain.extract.browser import login as run_login
 from xbrain.extract.browser import x_context
@@ -39,7 +50,8 @@ from xbrain.generate import generate as run_generate
 from xbrain.llm_client import validate_llm_model
 from xbrain.media import download_all as run_media_download
 from xbrain.media import emit_summary_line as media_emit_summary_line
-from xbrain.models import ArchiveImport, Author, Item, SourceName
+from xbrain.models import ArchiveImport, Author, ContentSourceFailure, Item, SourceName, Topic
+from xbrain.notes_io import GEN_END, GEN_START
 from xbrain.refresh import estimate_download_size, refresh_video_media
 from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import (
@@ -96,7 +108,7 @@ from xbrain.vocab import (
 )
 from xbrain.worksheet import export_worksheet, import_worksheet
 
-app = typer.Typer(help="XBrain — bookmarks y tweets de X a un wiki de Obsidian")
+app = typer.Typer(help="XBrain — artículos y vídeos guardados en X a un wiki de Obsidian")
 
 _BOOKMARKS_URL = "https://x.com/i/bookmarks"
 
@@ -113,14 +125,24 @@ class ExtractReport:
     added: int
     already_known: int
     duplicates: int
+    discarded: int = 0
 
 
 @dataclass
 class DashboardRunState:
     running: bool = False
+    action: str | None = None
+    last_action: str | None = None
     last_started: str | None = None
     last_finished: str | None = None
     last_error: str | None = None
+
+
+@dataclass(frozen=True)
+class RetryFailedReport:
+    candidates: int
+    articles: int
+    x_articles: int
 
 
 @app.callback()
@@ -234,10 +256,13 @@ def _report_invalid(invalid: list[tuple[str, list[str]]]) -> None:
 
 
 def _format_extract_report(report: ExtractReport) -> str:
-    return (
+    text = (
         f"{report.source}: {report.added} nuevos, {report.already_known} ya existentes, "
         f"{report.duplicates} duplicados en lote ({report.seen} vistos)"
     )
+    if report.discarded:
+        text += f" · {report.discarded} descartados por política"
+    return text
 
 
 def _run_extract(
@@ -256,10 +281,13 @@ def _run_extract(
     }
     source_sets: dict[str, list[SourceName]] = {
         "bookmarks": ["bookmark"],
-        "tweets": ["own_tweet"],
-        "all": ["bookmark", "own_tweet"],
+        "tweets": [],
+        "all": ["bookmark"],
     }
     chosen = source_sets[source]
+    if not chosen:
+        typer.echo("Extracción de tweets propios desactivada por política: 0 items.")
+        return []
     known_ids = set(store)
     reports: list[ExtractReport] = []
     truncated: list[str] = []
@@ -283,15 +311,18 @@ def _run_extract(
                     "revisa la sesión de X o el parser GraphQL (spec §6).",
                     err=True,
                 )
+            kept_items = [item for item in items if should_keep_item(item)]
+            discarded = len(items) - len(kept_items)
             before_ids = set(store)
-            unique_ids = {item.id for item in items}
-            added = merge_items(store, items)
+            unique_ids = {item.id for item in kept_items}
+            added = merge_items(store, kept_items)
             report = ExtractReport(
                 source=src,
                 seen=len(items),
                 added=added,
                 already_known=len(unique_ids & before_ids),
-                duplicates=len(items) - len(unique_ids),
+                duplicates=len(kept_items) - len(unique_ids),
+                discarded=discarded,
             )
             reports.append(report)
             if items:
@@ -381,8 +412,8 @@ def _run_refresh_media(cfg: Config, source: str, *, force: bool, headless: bool 
     }
     source_sets: dict[str, list[SourceName]] = {
         "bookmarks": ["bookmark"],
-        "tweets": ["own_tweet"],
-        "all": ["bookmark", "own_tweet"],
+        "tweets": [],
+        "all": ["bookmark"],
     }
     chosen = source_sets[source]
     typer.echo(
@@ -434,6 +465,10 @@ def _run_fetch(
     if force:
         _auto_snapshot(cfg, "fetch-force")
     store = load_store(cfg.items_path)
+    snapshot_taken = force
+    if any(not should_keep_item(item) for item in store.values()) and not snapshot_taken:
+        _auto_snapshot(cfg, "prune-content-policy")
+        snapshot_taken = True
     try:
         articles = fetch_pending(store, since, until, force)
         x_articles = fetch_x_articles(
@@ -441,14 +476,95 @@ def _run_fetch(
         )
         threads = expand_threads(store, cfg.storage_state_path, force, headless=headless)
     finally:
+        discarded = prune_store(store)
         # Persist whatever was fetched even if a later stage raised — a stage
         # error (e.g. an expired X session) must not discard in-memory work.
         save_store(store, cfg.items_path)
-    typer.echo(f"Contenido descargado: {articles} artículos, {x_articles} de X, {threads} hilos")
+    suffix = f" · {len(discarded)} descartados por política" if discarded else ""
+    typer.echo(
+        f"Contenido descargado: {articles} artículos, {x_articles} de X, {threads} hilos{suffix}"
+    )
+
+
+_RETRY_SOURCE_SETS: dict[str, list[SourceName]] = {
+    "bookmarks": ["bookmark"],
+    "tweets": [],
+    "all": ["bookmark"],
+}
+
+
+def _failed_article_kinds(item: Item) -> set[str]:
+    """The failed article source kinds present on an item."""
+    if item.content is None:
+        return set()
+    return {
+        source.kind
+        for source in item.content.sources
+        if isinstance(source, ContentSourceFailure)
+        and source.kind in ("external_article", "x_article")
+    }
+
+
+def _failed_article_items(
+    store: dict[str, Item], source: str = "bookmarks"
+) -> dict[str, tuple[Item, set[str]]]:
+    """Items whose fetched linked content has failed, scoped by X source."""
+    chosen = set(_RETRY_SOURCE_SETS[source])
+    return {
+        item_id: (item, kinds)
+        for item_id, item in store.items()
+        if item.source in chosen and (kinds := _failed_article_kinds(item))
+    }
+
+
+def _run_retry_failed_articles(
+    cfg: Config,
+    source: str = "bookmarks",
+    *,
+    headless: bool = True,
+    regenerate: bool = True,
+) -> RetryFailedReport:
+    """Force-retry only items with failed linked article/X-article sources."""
+    store = load_store(cfg.items_path)
+    failed = _failed_article_items(store, source)
+    if not failed:
+        label = "bookmarks" if source == "bookmarks" else source
+        typer.echo(f"No hay {label} fallidos que relanzar.")
+        return RetryFailedReport(candidates=0, articles=0, x_articles=0)
+
+    _auto_snapshot(cfg, f"retry-failed-{source}")
+    external_scoped = {
+        item_id: item for item_id, (item, kinds) in failed.items() if "external_article" in kinds
+    }
+    x_scoped = {item_id: item for item_id, (item, kinds) in failed.items() if "x_article" in kinds}
+
+    try:
+        articles = fetch_pending(external_scoped, force=True) if external_scoped else 0
+        x_articles = (
+            fetch_x_articles(x_scoped, cfg.storage_state_path, True, headless=headless)
+            if x_scoped
+            else 0
+        )
+    finally:
+        save_store(store, cfg.items_path)
+
+    report = RetryFailedReport(
+        candidates=len(failed),
+        articles=articles,
+        x_articles=x_articles,
+    )
+    typer.echo(
+        f"Fallidos relanzados: {report.candidates} items "
+        f"({report.articles} artículos, {report.x_articles} de X)"
+    )
+    if regenerate:
+        _run_generate(cfg, None, None)
+    return report
 
 
 def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -> None:
     store = load_store(cfg.items_path)
+    store = retained_store(store)
     topic_pages = load_topic_pages(cfg.topics_path) if cfg.topics_path.exists() else {}
     run_generate(
         store,
@@ -463,32 +579,48 @@ def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -
     typer.echo(f"Markdown generado en {cfg.output_dir}")
 
 
-def _run_enrich_api(cfg: Config, since: datetime | None, until: datetime | None) -> None:
+def _run_enrich_api(
+    cfg: Config,
+    since: datetime | None,
+    until: datetime | None,
+    *,
+    taxonomy_risk: bool = False,
+) -> None:
     """Run API enrichment with the configured provider and persist the store."""
     store = load_store(cfg.items_path)
+    library_store = retained_store(store)
     vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
     if not vocab_topics:
         raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
-    enriched, invalid = enrich_with_executor(
-        store,
-        ApiExecutor(
-            model=cfg.enrich_model,
-            output_language=cfg.output_language,
-            provider=cfg.llm_provider,
-            base_url=cfg.llm_base_url,
-        ),
-        vocab_topics,
-        since,
-        until,
+    executor = ApiExecutor(
+        model=cfg.enrich_model,
+        output_language=cfg.output_language,
+        provider=cfg.llm_provider,
+        base_url=cfg.llm_base_url,
     )
+    if taxonomy_risk:
+        candidates = items_for_taxonomy_reenrichment(library_store, since, until)
+        if not candidates:
+            typer.echo("No hay items con riesgo taxonómico para re-enriquecer.")
+            return
+        _auto_snapshot(cfg, "enrich-taxonomy-risk")
+        enriched, invalid = enrich_selected_with_executor(
+            library_store, executor, vocab_topics, candidates
+        )
+        typer.echo(f"Re-enriquecidos por riesgo taxonómico: {enriched}/{len(candidates)} items")
+    else:
+        enriched, invalid = enrich_with_executor(
+            library_store, executor, vocab_topics, since, until
+        )
+        typer.echo(f"Enriquecidos: {enriched} items")
     save_store(store, cfg.items_path)
-    typer.echo(f"Enriquecidos: {enriched} items")
     _report_invalid(invalid)
 
 
 def _run_topics_executor(cfg: Config, executor: str | None, *, resynth: bool = False) -> None:
     """Run topic-page update/synthesis through the existing topic pipeline."""
     store = load_store(cfg.items_path)
+    store = retained_store(store)
     vocab = load_vocab(cfg.data_dir / "vocab.yaml")
     if not vocab:
         raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
@@ -543,6 +675,239 @@ def _run_refresh_all(
     typer.echo("refresh-all: completado")
 
 
+def _resolve_served_note(output_dir: Path, raw_path: str) -> Path:
+    """Resolve one dashboard note path without allowing filesystem escape."""
+    if not raw_path.strip():
+        raise ValueError("missing note path")
+
+    root = output_dir.resolve()
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise FileNotFoundError("note not found") from exc
+
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError("note path is outside the generated vault") from exc
+
+    if resolved.suffix.lower() != ".md":
+        raise ValueError("only markdown notes can be opened")
+    return resolved
+
+
+_WEB_IMAGE_SUFFIXES: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _resolve_served_media(output_dir: Path, raw_path: str) -> Path:
+    """Resolve one generated media file for the web note viewer.
+
+    The route intentionally serves only files below `<output>/_media` and only
+    known image suffixes. Notes can reference local media, but arbitrary files in
+    the generated vault or elsewhere must not become downloadable through the
+    dashboard server.
+    """
+    if not raw_path.strip():
+        raise ValueError("missing media path")
+    root = (output_dir / "_media").resolve()
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        raise PermissionError("absolute media paths are not allowed")
+    if candidate.parts and candidate.parts[0] == "_media":
+        candidate = Path(*candidate.parts[1:])
+    try:
+        resolved = (root / candidate).resolve(strict=True)
+    except OSError as exc:
+        raise FileNotFoundError("media not found") from exc
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError("media path is outside generated media") from exc
+    if resolved.suffix.lower() not in _WEB_IMAGE_SUFFIXES:
+        raise ValueError("only generated image media can be opened")
+    return resolved
+
+
+def _note_title(markdown: str, path: Path) -> str:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip() or path.stem
+    return path.stem.replace("-", " ")
+
+
+def _note_view_markdown(markdown: str) -> str:
+    """Hide machine-only note wrappers before rendering for the web viewer."""
+    text = markdown.replace(GEN_START, "").replace(GEN_END, "").lstrip()
+    text = re.sub(r"^---\s*\n.*?\n---\s*\n", "", text, count=1, flags=re.S)
+    return text.strip()
+
+
+def _web_media_url(target: str) -> str | None:
+    """Return the safe `/media` URL for an Obsidian image embed target."""
+    path = target.strip()
+    if not path or path.startswith("/") or "\\" in path:
+        return None
+    if path.startswith("_media/"):
+        rel = path
+    elif path.startswith("./_media/"):
+        rel = path[2:]
+    else:
+        return None
+    suffix = Path(rel).suffix.lower()
+    if suffix not in _WEB_IMAGE_SUFFIXES:
+        return None
+    return "/media?path=" + quote(rel, safe="")
+
+
+def _obsidian_image_embed_to_markdown(match: re.Match[str]) -> str:
+    """Convert one Obsidian image embed to CommonMark image syntax if safe."""
+    raw = match.group(1).strip()
+    target = raw.split("|", 1)[0].strip()
+    media_url = _web_media_url(target)
+    if media_url is None:
+        return match.group(0)
+    alt = html.escape(Path(target).name, quote=False)
+    return f"![{alt}]({media_url})"
+
+
+def _rewrite_obsidian_image_embeds(markdown: str) -> str:
+    """Convert generated Obsidian image embeds so the web viewer can render them."""
+    return re.sub(r"!\[\[([^\]]+)\]\]", _obsidian_image_embed_to_markdown, markdown)
+
+
+def _render_note_markdown(markdown: str) -> str:
+    """Render markdown for the web note viewer without allowing raw HTML."""
+    markdown = _rewrite_obsidian_image_embeds(markdown)
+    parser = MarkdownIt(
+        "commonmark",
+        {
+            "html": False,
+            "linkify": False,
+            "typographer": False,
+        },
+    )
+    return parser.render(markdown).replace("<a ", '<a target="_blank" rel="noopener" ')
+
+
+def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
+    """Render a generated markdown note as a safe, mobile-readable HTML page."""
+    markdown = note_path.read_text(encoding="utf-8")
+    display_markdown = _note_view_markdown(markdown)
+    root = output_dir.resolve()
+    rel = note_path.resolve().relative_to(root)
+    title = _note_title(markdown, note_path)
+    escaped_title = html.escape(title)
+    escaped_rel = html.escape(str(rel))
+    body_html = _render_note_markdown(display_markdown)
+    obsidian_href = "obsidian://open?path=" + quote(str(note_path.resolve()))
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="content-security-policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline';">
+<title>{escaped_title}</title>
+<style>
+:root {{
+  color-scheme: dark;
+  --bg:#0E0C08; --surface:#17130D; --surface-2:#211B12; --ink:#ECE6DA;
+  --muted:#BEB4A3; --faint:#8F8373; --hair:rgba(236,230,218,.13); --accent:#E0A233;
+}}
+* {{ box-sizing:border-box; }}
+body {{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+.wrap {{ max-width:920px; margin:0 auto; padding:22px 16px 46px; }}
+.top {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }}
+a.btn {{
+  color:var(--ink); text-decoration:none; border:1px solid var(--hair);
+  background:var(--surface-2); border-radius:7px; padding:9px 11px; font-size:13px;
+}}
+a.btn.primary {{ border-color:rgba(224,162,51,.38); color:var(--accent); }}
+article {{
+  background:var(--surface); border:1px solid var(--hair); border-radius:10px;
+  padding:22px; overflow:hidden;
+}}
+.eyebrow {{
+  color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.12em;
+  margin:0 0 8px;
+}}
+h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-weight:650; }}
+.path {{ color:var(--faint); font-size:12px; word-break:break-word; margin-bottom:22px; }}
+.note-body {{ color:var(--muted); font-size:15.5px; line-height:1.68; overflow-wrap:anywhere; }}
+.note-body > *:first-child {{ margin-top:0; }}
+.note-body > *:last-child {{ margin-bottom:0; }}
+.note-body h1,.note-body h2,.note-body h3,.note-body h4 {{
+  color:var(--ink); line-height:1.18; margin:1.35em 0 .55em; font-weight:650;
+}}
+.note-body h1 {{ font-size:30px; }}
+.note-body h2 {{ font-size:24px; border-top:1px solid var(--hair); padding-top:20px; }}
+.note-body h3 {{ font-size:19px; }}
+.note-body p {{ margin:.85em 0; }}
+.note-body a {{ color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px; }}
+.note-body ul,.note-body ol {{ padding-left:1.35em; margin:.85em 0; }}
+.note-body li {{ margin:.35em 0; }}
+.note-body blockquote {{
+  margin:1em 0; padding:.1em 0 .1em 1em; border-left:3px solid rgba(224,162,51,.55);
+  color:var(--ink);
+}}
+.note-body img {{
+  display:block; max-width:100%; height:auto; margin:1.15em auto; border-radius:8px;
+  border:1px solid var(--hair); background:#100E0A;
+}}
+.note-body code {{
+  font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em;
+  background:#100E0A; color:var(--ink); border:1px solid var(--hair); border-radius:5px;
+  padding:.08em .32em;
+}}
+.note-body pre {{
+  background:#100E0A; border:1px solid var(--hair); border-radius:8px; padding:13px;
+  overflow:auto; white-space:pre; margin:1em 0;
+}}
+.note-body pre code {{ border:0; padding:0; background:transparent; }}
+.note-body hr {{ border:0; border-top:1px solid var(--hair); margin:1.4em 0; }}
+@media (max-width:640px) {{
+  .wrap {{ padding:14px 10px 34px; }}
+  article {{ padding:16px 14px; border-radius:8px; }}
+  .top {{ position:sticky; top:0; z-index:2; background:rgba(14,12,8,.94); padding:8px 0; }}
+  a.btn {{ flex:1 1 auto; text-align:center; }}
+  .note-body {{ font-size:14.5px; line-height:1.64; }}
+  .note-body h1 {{ font-size:25px; }}
+  .note-body h2 {{ font-size:20px; }}
+}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <nav class="top">
+    <a class="btn primary" href="/#chat">Ask XBrain</a>
+    <a class="btn" href="/">Dashboard</a>
+    <a class="btn" href="{html.escape(obsidian_href)}">Obsidian</a>
+  </nav>
+  <article>
+    <p class="eyebrow">XBrain note</p>
+    <h1>{escaped_title}</h1>
+    <div class="path">{escaped_rel}</div>
+    <div class="note-body">{body_html}</div>
+  </article>
+</main>
+</body>
+</html>
+"""
+    return page.encode("utf-8")
+
+
 def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
     """Serve the generated dashboard and a localhost-only refresh endpoint."""
     run_state = DashboardRunState()
@@ -552,16 +917,20 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
         with lock:
             return {
                 "running": run_state.running,
+                "action": run_state.action,
+                "last_action": run_state.last_action,
                 "last_started": run_state.last_started,
                 "last_finished": run_state.last_finished,
                 "last_error": run_state.last_error,
             }
 
-    def start_refresh() -> bool:
+    def start_background(action: str, target: Callable[[], object]) -> bool:
         with lock:
             if run_state.running:
                 return False
             run_state.running = True
+            run_state.action = action
+            run_state.last_action = action
             run_state.last_started = datetime.now(timezone.utc).isoformat()
             run_state.last_finished = None
             run_state.last_error = None
@@ -569,18 +938,33 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
         def job() -> None:
             error: str | None = None
             try:
-                _run_refresh_all(cfg, source="bookmarks", headless=True, executor="api")
+                target()
             except Exception as exc:  # noqa: BLE001 - background job reports through status API
                 error = f"{exc}\n{traceback.format_exc(limit=4)}"
-                logging.getLogger(__name__).warning("dashboard refresh-all failed", exc_info=True)
+                logging.getLogger(__name__).warning("dashboard %s failed", action, exc_info=True)
             finally:
                 with lock:
                     run_state.running = False
+                    run_state.action = None
                     run_state.last_finished = datetime.now(timezone.utc).isoformat()
                     run_state.last_error = error
 
-        threading.Thread(target=job, daemon=True, name="xbrain-refresh-all").start()
+        threading.Thread(target=job, daemon=True, name=f"xbrain-{action}").start()
         return True
+
+    def start_refresh() -> bool:
+        return start_background(
+            "refresh-all",
+            lambda: _run_refresh_all(cfg, source="bookmarks", headless=True, executor="api"),
+        )
+
+    def start_retry_failed() -> bool:
+        return start_background(
+            "retry-failed",
+            lambda: _run_retry_failed_articles(
+                cfg, source="bookmarks", headless=True, regenerate=True
+            ),
+        )
 
     def dashboard_bytes() -> bytes:
         dashboard = cfg.output_dir / "dashboard.html"
@@ -631,7 +1015,8 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             return payload
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib API name
-            path = self.path.split("?", 1)[0]
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/api/status":
                 self._send_json(200, state_payload())
                 return
@@ -639,6 +1024,44 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                 try:
                     self._send(200, dashboard_bytes(), "text/html; charset=utf-8")
                 except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    self._send_json(500, {"error": str(exc)})
+                return
+            if path == "/notes":
+                raw_path = parse_qs(parsed.query).get("path", [""])[0]
+                try:
+                    note_path = _resolve_served_note(cfg.output_dir, raw_path)
+                    self._send(
+                        200,
+                        _render_note_page(note_path, cfg.output_dir),
+                        "text/html; charset=utf-8",
+                    )
+                except FileNotFoundError as exc:
+                    self._send_json(404, {"error": str(exc)})
+                except PermissionError as exc:
+                    self._send_json(403, {"error": str(exc)})
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    logging.getLogger(__name__).warning("dashboard note failed", exc_info=True)
+                    self._send_json(500, {"error": str(exc)})
+                return
+            if path == "/media":
+                raw_path = parse_qs(parsed.query).get("path", [""])[0]
+                try:
+                    media_path = _resolve_served_media(cfg.output_dir, raw_path)
+                    self._send(
+                        200,
+                        media_path.read_bytes(),
+                        _WEB_IMAGE_SUFFIXES[media_path.suffix.lower()],
+                    )
+                except FileNotFoundError as exc:
+                    self._send_json(404, {"error": str(exc)})
+                except PermissionError as exc:
+                    self._send_json(403, {"error": str(exc)})
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    logging.getLogger(__name__).warning("dashboard media failed", exc_info=True)
                     self._send_json(500, {"error": str(exc)})
                 return
             self._send_json(404, {"error": "not found"})
@@ -671,11 +1094,19 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                     return
                 self._send_json(202, state_payload())
                 return
+            if path == "/api/retry-failed":
+                if not start_retry_failed():
+                    self._send_json(409, {**state_payload(), "error": "job already running"})
+                    return
+                self._send_json(202, state_payload())
+                return
             self._send_json(404, {"error": "not found"})
 
     server = ThreadingHTTPServer((host, port), Handler)
     typer.echo(f"Dashboard local: http://{host}:{server.server_port}/")
-    typer.echo("POST /api/refresh-all ejecuta `xbrain refresh-all` solo en este servidor local.")
+    typer.echo(
+        "POST /api/refresh-all y /api/retry-failed ejecutan tareas solo en este servidor local."
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -694,12 +1125,12 @@ def login() -> None:
 @app.command()
 @_handle_cli_errors
 def extract(
-    source: Source = typer.Option(Source.all, help="bookmarks | tweets | all"),
+    source: Source = typer.Option(Source.bookmarks, help="bookmarks | tweets | all"),
     since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
     until: str = typer.Option(None, help="ISO date; whole day inclusive, e.g. 2025-12-31"),
     headless: bool = typer.Option(False, "--headless/--no-headless", help=_HEADLESS_HELP),
 ) -> None:
-    """Extrae bookmarks y/o tweets propios desde X."""
+    """Extrae bookmarks de X; tweets propios y posts simples se descartan."""
     _run_extract(
         _config(),
         source.value,
@@ -736,6 +1167,16 @@ def fetch(
     _run_fetch(
         _config(), _parse_date(since), _parse_date(until, end_of_day=True), force, headless=headless
     )
+
+
+@app.command(name="retry-failed")
+@_handle_cli_errors
+def retry_failed(
+    source: Source = typer.Option(Source.bookmarks, help="bookmarks | tweets | all"),
+    headless: bool = typer.Option(True, "--headless/--no-headless", help=_HEADLESS_HELP),
+) -> None:
+    """Relanza solo los items cuyos artículos enlazados fallaron y regenera el vault."""
+    _run_retry_failed_articles(_config(), source.value, headless=headless, regenerate=True)
 
 
 def _run_media(
@@ -1096,7 +1537,8 @@ def _run_download_videos(
     unknown-size) writes nothing, so it skips both the confirm and the snapshot —
     but still emits the `SUMMARY:` line for monitor parity with `media`.
 
-    `--source` scopes the run to bookmark / own-tweet items; `scoped` shares the
+    `--source` scopes the run to retained bookmark items (`tweets` is an empty
+    backwards-compatible scope); `scoped` shares the
     same `Item` objects as `store`, so the in-place transitions are persisted by
     saving the full `store`. mp4 ONLY: HLS entries are reported as deferred to
     the ffmpeg follow-up, never downloaded here. `max_size_bytes` caps the
@@ -1107,8 +1549,8 @@ def _run_download_videos(
     store = load_store(cfg.items_path)
     source_sets: dict[str, list[SourceName]] = {
         "bookmarks": ["bookmark"],
-        "tweets": ["own_tweet"],
-        "all": ["bookmark", "own_tweet"],
+        "tweets": [],
+        "all": ["bookmark"],
     }
     chosen = set(source_sets[source])
     scoped = {item_id: item for item_id, item in store.items() if item.source in chosen}
@@ -1563,6 +2005,14 @@ def enrich(
     ),
     since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
     until: str = typer.Option(None, help="ISO date; whole day inclusive, e.g. 2025-12-31"),
+    taxonomy_risk: bool = typer.Option(
+        False,
+        "--taxonomy-risk",
+        help=(
+            "Re-enriquecer items con riesgo taxonómico: misc, baja/desconocida "
+            "confianza, suggested_new_topics o contenido stale."
+        ),
+    ),
 ) -> None:
     """Enriquece los items con resumen + topics."""
     cfg = _config()
@@ -1582,11 +2032,19 @@ def enrich(
     chosen = executor or cfg.enrich_executor
 
     if chosen in ("manual", "claude-code"):
-        pending = items_pending_enrichment(
-            store, _parse_date(since), _parse_date(until, end_of_day=True)
+        since_dt = _parse_date(since)
+        until_dt = _parse_date(until, end_of_day=True)
+        pending = (
+            items_for_taxonomy_reenrichment(store, since_dt, until_dt)
+            if taxonomy_risk
+            else items_pending_enrichment(store, since_dt, until_dt)
         )
         if not pending:
-            typer.echo("No hay items pendientes de enriquecer.")
+            typer.echo(
+                "No hay items con riesgo taxonómico para re-enriquecer."
+                if taxonomy_risk
+                else "No hay items pendientes de enriquecer."
+            )
             return
         worksheet = cfg.data_dir / "enrich-worksheet.json"
         export_worksheet(pending, vocab_topics, worksheet, chosen, cfg.output_language)
@@ -1600,7 +2058,12 @@ def enrich(
     if chosen != "api":
         raise ValueError(f"Ejecutor desconocido: {chosen!r}")
 
-    _run_enrich_api(cfg, _parse_date(since), _parse_date(until, end_of_day=True))
+    _run_enrich_api(
+        cfg,
+        _parse_date(since),
+        _parse_date(until, end_of_day=True),
+        taxonomy_risk=taxonomy_risk,
+    )
 
 
 def _mark_for_regenerate(store: dict, cfg: Config, regenerate: bool) -> None:
@@ -1815,6 +2278,107 @@ def serve_dashboard(
 ) -> None:
     """Sirve el dashboard HTML y permite lanzar refresh-all desde localhost."""
     _serve_dashboard(_config(), host, port)
+
+
+def _pct(part: int, total: int) -> str:
+    if total <= 0:
+        return "0.0%"
+    return f"{part / total * 100:.1f}%"
+
+
+def _taxonomy_health_lines(
+    store: dict[str, Item], vocab: list[Topic], *, top: int = 10
+) -> list[str]:
+    """Read-only diagnostics for taxonomy drift and weak assignments."""
+    vocab_slugs = {topic.slug for topic in vocab}
+    enriched_items = [item for item in store.values() if item.enriched is not None]
+    enriched_total = len(enriched_items)
+    topic_counts: Counter[str] = Counter()
+    primary_counts: Counter[str] = Counter()
+    confidence_counts: Counter[str] = Counter()
+    suggested_counts: Counter[str] = Counter()
+    unknown_topics: Counter[str] = Counter()
+    misc_count = 0
+    single_topic_count = 0
+
+    for item in enriched_items:
+        assert item.enriched is not None
+        enrichment = item.enriched
+        topics = [topic for topic in enrichment.topics if topic]
+        topic_counts.update(topics)
+        if enrichment.primary_topic:
+            primary_counts.update([enrichment.primary_topic])
+        confidence_counts.update([enrichment.topic_confidence or "unknown"])
+        suggested_counts.update(enrichment.suggested_new_topics)
+        if enrichment.primary_topic == "misc" or "misc" in topics:
+            misc_count += 1
+        if len(topics) <= 1:
+            single_topic_count += 1
+        for topic in topics:
+            if topic not in vocab_slugs:
+                unknown_topics.update([topic])
+        if enrichment.primary_topic and enrichment.primary_topic not in vocab_slugs:
+            unknown_topics.update([enrichment.primary_topic])
+
+    unused_topics = sorted(slug for slug in vocab_slugs if topic_counts[slug] == 0)
+    lines = [
+        "Taxonomy health",
+        f"Items: {len(store)} total · {enriched_total} enriched · {len(store) - enriched_total} pending",
+        f"Vocabulary: {len(vocab)} topics",
+        "",
+        "Assignment signals",
+        f"- misc: {misc_count} ({_pct(misc_count, enriched_total)})",
+        f"- single-topic items: {single_topic_count} ({_pct(single_topic_count, enriched_total)})",
+        f"- confidence high/medium/low/unknown: "
+        f"{confidence_counts['high']}/{confidence_counts['medium']}/"
+        f"{confidence_counts['low']}/{confidence_counts['unknown']}",
+        f"- unused topics: {len(unused_topics)}",
+    ]
+
+    if unknown_topics:
+        lines += ["", "Unknown assigned topics"]
+        lines += [f"- {slug}: {count}" for slug, count in unknown_topics.most_common(top)]
+
+    lines += ["", "Top assigned topics"]
+    if topic_counts:
+        lines += [f"- {slug}: {count}" for slug, count in topic_counts.most_common(top)]
+    else:
+        lines.append("- none")
+
+    lines += ["", "Suggested new topics"]
+    if suggested_counts:
+        lines += [f"- {slug}: {count}" for slug, count in suggested_counts.most_common(top)]
+    else:
+        lines.append("- none")
+
+    lines += ["", "Recommendation"]
+    if suggested_counts or confidence_counts["low"] or misc_count > max(3, enriched_total // 10):
+        lines.append(
+            "- Review high `misc`, low confidence and repeated `suggested_new_topics`. "
+            "First run `xbrain enrich --taxonomy-risk`, then `xbrain topics --resynth` "
+            "and `xbrain generate`. If the same suggestions repeat, run "
+            "`xbrain vocab --regenerate`."
+        )
+    else:
+        lines.append("- Taxonomy looks stable enough; keep using `refresh-all` normally.")
+    if unused_topics:
+        sample = ", ".join(unused_topics[: min(5, len(unused_topics))])
+        lines.append(f"- Consider merging/removing unused topics: {sample}")
+    return lines
+
+
+@app.command(name="taxonomy-health")
+@_handle_cli_errors
+def taxonomy_health(
+    top: int = typer.Option(10, "--top", min=1, help="Número de filas por ranking."),
+) -> None:
+    """Diagnóstico de misc, baja confianza y topics sugeridos."""
+    cfg = _config()
+    store = retained_store(load_store(cfg.items_path))
+    vocab = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    typer.echo("\n".join(_taxonomy_health_lines(store, vocab, top=top)))
 
 
 @app.command()

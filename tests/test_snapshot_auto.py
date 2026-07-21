@@ -320,7 +320,7 @@ def test_digest_video_snapshot_failure_aborts_before_write(tmp_path: Path, monke
     assert snapshot_list(tmp_path / "data") == []
 
 
-def test_fetch_without_force_creates_no_snapshot(tmp_path: Path, monkeypatch):
+def test_fetch_without_force_snapshots_before_policy_prune(tmp_path: Path, monkeypatch):
     _setup_repo(tmp_path, monkeypatch)
     item = _linked_item("1")
     item.links = []
@@ -329,7 +329,9 @@ def test_fetch_without_force_creates_no_snapshot(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["fetch"])
 
     assert result.exit_code == 0, result.stdout
-    assert snapshot_list(tmp_path / "data") == []
+    snapshots = snapshot_list(tmp_path / "data")
+    assert len(snapshots) == 1
+    assert snapshots[0][1].command == "prune-content-policy"
 
 
 def test_snapshot_create_cli_writes_manifest(tmp_path: Path, monkeypatch):

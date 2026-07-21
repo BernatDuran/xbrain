@@ -212,8 +212,8 @@ def test_filter_by_source():
         "t": _item("t", media=[_pending()], source="own_tweet"),
     }
     assert [r.id for r in list_video_entries(store, source="bookmarks")] == ["b"]
-    assert [r.id for r in list_video_entries(store, source="tweets")] == ["t"]
-    assert {r.id for r in list_video_entries(store, source="all")} == {"b", "t"}
+    assert list_video_entries(store, source="tweets") == []
+    assert [r.id for r in list_video_entries(store, source="all")] == ["b"]
 
 
 def test_invalid_source_raises():
