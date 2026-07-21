@@ -31,6 +31,7 @@ from xbrain.models import (
     VideoFrame,
 )
 from xbrain.notes_io import DEFAULT_TAIL, note_filename, slugify, title_of, user_tail, wrap
+from xbrain.video_content import video_content_text
 
 logger = logging.getLogger(__name__)
 
@@ -456,13 +457,14 @@ def _video_digest_lines(source: ContentSourceSuccess, strings: Strings) -> list[
     slide deck (no speech, but with frames) still renders the heading + the slides,
     since that is exactly where a screen-only video carries its content.
     """
-    has_text = source.has_speech is not False and bool(source.text)
+    content_text = video_content_text(source)
+    has_text = bool(content_text)
     if not has_text and not source.frames:
         return [f"> {strings.silent_video}", ""]
     heading = source.title or source.url
     lines = [f"## {strings.video_digest_header}: {heading}", ""]
     if has_text:
-        lines += [source.text, ""]
+        lines += [content_text or "", ""]
     lines += _slide_embed_lines(source.frames)
     return lines
 

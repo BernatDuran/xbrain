@@ -60,9 +60,11 @@ def test_load_config_round_trips_transcribe_command_and_model(tmp_path: Path):
 
 
 def test_load_config_defaults_vision_command_to_unset(tmp_path: Path):
-    """No [vision] section → the external vision command is unset (`""`) and the
-    model is None. `digest-video --frames` errors clearly until it is configured —
-    there is NO bundled default vision model (#44 PR4)."""
+    """No [vision] section → the external command is unset.
+
+    `digest-video --frames` then uses `[llm].provider` + `[llm].vision_model`
+    directly.
+    """
     _write_repo(tmp_path)
     cfg = load_config(tmp_path)
     assert cfg.vision_command == ""

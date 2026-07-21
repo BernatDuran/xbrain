@@ -18,8 +18,8 @@ from xbrain.rubrics import (
     ARTICLE_CHAR_LIMIT,
     TRANSCRIPT_CHAR_LIMIT,
     load_rubric,
-    truncate_transcript,
 )
+from xbrain.video_content import video_content_text
 
 
 def _article_text(item: Item) -> str | None:
@@ -41,22 +41,19 @@ def _article_text(item: Item) -> str | None:
 
 
 def _video_transcript(item: Item) -> str | None:
-    """First with-speech `x_video` transcript body, truncated, or None (#44).
+    """First usable `x_video` text signal, truncated, or None (#44).
 
-    A no-speech source (`has_speech=False`, empty text) yields None — no
-    transcript to enrich from. Truncated to `TRANSCRIPT_CHAR_LIMIT`, matching
-    the `api` executor prompt so both tracks see identical input.
+    A no-speech source with no frames yields None. A visual-only source with
+    described key frames contributes those descriptions, so slide/screen videos
+    can be enriched even when no ASR transcriber is configured.
     """
     if not item.content:
         return None
     for src in item.content.sources:
-        if (
-            isinstance(src, ContentSourceSuccess)
-            and src.kind == "x_video"
-            and src.has_speech
-            and src.text
-        ):
-            return truncate_transcript(src.text, TRANSCRIPT_CHAR_LIMIT)
+        if isinstance(src, ContentSourceSuccess):
+            text = video_content_text(src, TRANSCRIPT_CHAR_LIMIT)
+            if text:
+                return text
     return None
 
 

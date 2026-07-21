@@ -2815,6 +2815,23 @@ def test_digest_video_limit_caps_items(tmp_path: Path, monkeypatch):
     assert len(digested) == 1  # exactly one, not both
 
 
+def test_digest_video_max_size_skips_over_cap(tmp_path: Path, monkeypatch):
+    """`digest-video --max-size` must not fetch a known-over-cap video."""
+    from xbrain.store import load_store
+
+    _setup_repo(tmp_path, monkeypatch)
+    items_path = tmp_path / "data" / "items.json"
+    save_store({"42": _video_item("42", url=_AMPLIFY_URL_1)}, items_path)
+    calls: list = []
+    _wire_digest(monkeypatch, _speech_transcript(), calls=calls)
+
+    result = runner.invoke(app, ["digest-video", "--ids", "42", "--max-size", "1MB"])
+    assert result.exit_code == 0, result.output
+    assert "> --max-size 1" in result.stdout
+    assert calls == []
+    assert load_store(items_path)["42"].content is None
+
+
 def test_digest_video_topic_selects_only_matching(tmp_path: Path, monkeypatch):
     """`--topic ai` digests only the ai-topic video, honoring the catalog filter."""
     from xbrain.store import load_store
@@ -2902,20 +2919,31 @@ def _wire_frames(monkeypatch, *, describe_calls: list | None = None, writer=_wri
     monkeypatch.setattr("xbrain.cli.describe_image", _fake_describe)
 
 
-def test_digest_video_frames_requires_vision_command(tmp_path: Path, monkeypatch):
-    """`--frames` with no `[vision].command` configured is a clear operator error
-    (exit 1) — there is no bundled default — and nothing is persisted."""
+def test_digest_video_frames_without_vision_command_uses_cloud_llm(tmp_path: Path, monkeypatch):
+    """`--frames` with no `[vision].command` uses the configured API vision model.
+
+    This is the VPS/NanoGPT path: no local VLM wrapper is required, but ffmpeg
+    frame extraction still runs.
+    """
     from xbrain.store import load_store
 
     _setup_repo(tmp_path, monkeypatch)  # no [vision] section
     items_path = tmp_path / "data" / "items.json"
     save_store({"42": _video_item("42", url=_AMPLIFY_URL_1)}, items_path)
     _wire_digest(monkeypatch, _speech_transcript())
+    _wire_frames(monkeypatch)
+    seen: list[tuple[str, str, str]] = []
 
+    def _cloud_capture(path, *, provider, model, output_language, base_url):
+        seen.append((provider, model, output_language))
+        return f"cloud slide {Path(path).stem}"
+
+    monkeypatch.setattr("xbrain.cli.describe_image_with_llm", _cloud_capture)
     result = runner.invoke(app, ["digest-video", "--ids", "42", "--frames"])
-    assert result.exit_code == 1
-    assert "vision" in result.output.lower()
-    assert load_store(items_path)["42"].content is None  # nothing persisted
+    assert result.exit_code == 0, result.output
+    assert seen and set(seen) == {("nanogpt", "minimax/minimax-m3", "English")}
+    frames = load_store(items_path)["42"].content.sources[0].frames
+    assert frames[0].description == "cloud slide frame-00000"
 
 
 def test_digest_video_frames_describes_and_persists_slides(tmp_path: Path, monkeypatch):

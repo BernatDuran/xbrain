@@ -548,9 +548,9 @@ class VideoFrame(BaseModel):
     The visual layer of a slide-heavy talk: a scene-change key frame's
     `timestamp` (seconds into the video, `ge=0`), the relative `local_path` of
     its downscaled image under `data/media/` (`<item-id>/frames/<n>.<ext>`), and
-    the `description` produced by the EXTERNAL vision step. `generate` mirrors the
-    image into the vault's `_media/` tree and embeds it exactly like a downloaded
-    photo, with the description as a caption. It is carried on the `x_video`
+    the `description` produced by the configured vision step. `generate` mirrors
+    the image into the vault's `_media/` tree and embeds it exactly like a
+    downloaded photo, with the description as a caption. It is carried on the `x_video`
     `ContentSourceSuccess.frames` list (additive — see there).
 
     `local_path` reuses the shared `_reject_local_path_traversal` validator (no

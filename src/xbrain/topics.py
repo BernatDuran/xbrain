@@ -21,8 +21,9 @@ from xbrain.models import (
     Topic,
     TopicPage,
 )
-from xbrain.rubrics import TOPIC_TRANSCRIPT_CHAR_LIMIT, truncate_transcript
+from xbrain.rubrics import TOPIC_TRANSCRIPT_CHAR_LIMIT
 from xbrain.topic_synth import OverviewJudgment, TopicInput
+from xbrain.video_content import video_content_text
 
 
 @dataclass
@@ -217,25 +218,21 @@ def _described_photo_text(entry: object) -> str:
 
 
 def _collect_video_transcripts(item_pool: list[Item]) -> list[str]:
-    """Bounded per-video transcript excerpts across a pool of items (#44).
+    """Bounded per-video content excerpts across a pool of items (#44).
 
-    Each with-speech `x_video` source contributes its transcript trimmed to
-    `TOPIC_TRANSCRIPT_CHAR_LIMIT`, so a topic with many long talks stays within
-    the synthesis prompt's token budget. No-speech sources (`has_speech=False`,
-    empty text) contribute nothing — same skip the enrich prompt applies.
+    Each `x_video` source contributes its transcript and/or visual key-frame
+    descriptions trimmed to `TOPIC_TRANSCRIPT_CHAR_LIMIT`, so a topic with many
+    long talks stays within the synthesis prompt's token budget.
     """
     transcripts: list[str] = []
     for item in item_pool:
         if item.content is None:
             continue
         for src in item.content.sources:
-            if (
-                isinstance(src, ContentSourceSuccess)
-                and src.kind == "x_video"
-                and src.has_speech
-                and src.text
-            ):
-                transcripts.append(truncate_transcript(src.text, TOPIC_TRANSCRIPT_CHAR_LIMIT))
+            if isinstance(src, ContentSourceSuccess):
+                text = video_content_text(src, TOPIC_TRANSCRIPT_CHAR_LIMIT)
+                if text:
+                    transcripts.append(text)
     return transcripts
 
 

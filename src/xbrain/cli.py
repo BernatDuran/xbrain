@@ -99,7 +99,7 @@ from xbrain.video_media import (
 )
 from xbrain.video_media import download_videos as run_download_videos
 from xbrain.video_select import format_video_table, list_video_entries, row_to_json
-from xbrain.vision import describe_image
+from xbrain.vision import describe_image, describe_image_with_llm
 from xbrain.vocab import (
     apply_vocab_worksheet,
     export_vocab_worksheet,
@@ -1830,23 +1830,19 @@ def _resolve_digest_ids(
 
 
 def _build_visual_config(cfg: Config, vision_model: str | None = None) -> VisualConfig:
-    """Build the `--frames` visual-layer config from `[vision]` (#44 PR4).
+    """Build the `--frames` visual-layer config (#44 PR4).
 
     Binds `extract_key_frames` (ffmpeg, threshold/max-frames defaults) and
-    `describe_image` (the EXTERNAL `[vision].command` / model) so `digest_videos`
-    calls them with just a path. An unconfigured `[vision].command` is a clear
-    operator error BEFORE any work — there is no bundled default vision model.
+    either the EXTERNAL `[vision].command` or the configured cloud/API vision LLM
+    so `digest_videos` calls them with just a path. An unset `[vision].command`
+    now falls back to `[llm].provider` + `[llm].vision_model`, which is the useful
+    VPS path when NanoGPT is configured.
 
     `vision_model` overrides `[vision].model` for this run (the `--vision-model`
     flag). The global LLM provider/model is also passed in the subprocess
     environment so a multi-backend wrapper cannot silently choose a different
     API provider than the main app.
     """
-    if not cfg.vision_command.strip():
-        raise ValueError(
-            "digest-video --frames requires an external vision model: set "
-            "[vision].command in config.toml (there is no bundled default)."
-        )
     model = vision_model or cfg.vision_model or cfg.llm_vision_model
     env = {
         **os.environ,
@@ -1871,9 +1867,22 @@ def _build_visual_config(cfg: Config, vision_model: str | None = None) -> Visual
         )
 
     def _describe(path: Path) -> str:
-        return describe_image(path, command=cfg.vision_command, model=model, env=env)
+        if cfg.vision_command.strip():
+            return describe_image(path, command=cfg.vision_command, model=model, env=env)
+        return describe_image_with_llm(
+            path,
+            provider=cfg.llm_provider,
+            model=model,
+            output_language=cfg.output_language,
+            base_url=cfg.llm_base_url or None,
+        )
 
-    return VisualConfig(media_root=cfg.media_dir, extract_fn=_extract, describe_fn=_describe)
+    return VisualConfig(
+        media_root=cfg.media_dir,
+        extract_fn=_extract,
+        describe_fn=_describe,
+        allow_visual_only=True,
+    )
 
 
 def _run_digest_video(
@@ -1888,6 +1897,7 @@ def _run_digest_video(
     language: str | None,
     frames: bool,
     vision_model: str | None = None,
+    max_size_bytes: int | None = None,
 ) -> None:
     """Digest selected videos into `x_video` transcript sources; persist + summarise.
 
@@ -1895,11 +1905,12 @@ def _run_digest_video(
     attach (dedup by video identity, in memory) → snapshot → persist. The
     transcriber is invoked via `transcribe_media` bound to the `[transcribe]`
     config (command / model) + `--language`. `--frames` (opt-in, #44 PR4) also
-    extracts slide key frames and describes them via the EXTERNAL `[vision]`
-    command, attaching them to slide-heavy videos. It is destructive (rewrites
-    `items.json`), so it auto-snapshots BEFORE the save — but only when something
-    was attached (a pure already-digested / no-video run writes nothing, so it
-    takes no snapshot). A snapshot failure propagates and aborts before any write.
+    extracts slide key frames and describes them via optional `[vision].command`
+    or the configured API vision model, attaching them to slide-heavy videos. It
+    is destructive (rewrites `items.json`), so it auto-snapshots BEFORE the save
+    — but only when something was attached (a pure already-digested / no-video
+    run writes nothing, so it takes no snapshot). A snapshot failure propagates
+    and aborts before any write.
     """
     store = load_store(cfg.items_path)
     id_list = _resolve_digest_ids(store, ids, topic, all_pending, source, limit)
@@ -1913,7 +1924,19 @@ def _run_digest_video(
             language=language,
         )
 
-    report = digest_videos(store, id_list, force=force, transcribe_fn=_transcribe, visual=visual)
+    def _fetch(
+        selected_store: dict[str, Item], selected_ids: list[str], dest_dir: Path
+    ) -> FetchReport:
+        return fetch_videos(selected_store, selected_ids, dest_dir, max_size_bytes=max_size_bytes)
+
+    report = digest_videos(
+        store,
+        id_list,
+        force=force,
+        fetch_fn=_fetch,
+        transcribe_fn=_transcribe,
+        visual=visual,
+    )
     if report.changed > 0:
         _auto_snapshot(cfg, "digest-video")
         save_store(store, cfg.items_path)
@@ -1947,14 +1970,20 @@ def digest_video(
         False,
         "--frames",
         help="Capa visual (opt-in): extrae key-frames de slides, los describe con "
-        "el modelo de visión EXTERNO (`\\[vision].command`) y los embebe en la nota. "
+        "`[vision].command` si está configurado o `[llm].vision_model` vía API si no, "
+        "y los embebe en la nota. "
         "Solo para vídeos slide-heavy; los talking-head se saltan (se registra).",
     ),
     vision_model: str | None = typer.Option(
         None,
         "--vision-model",
-        help="Sobrescribe `[vision].model` para este run y se propaga como "
-        "XBRAIN_LLM_VISION_MODEL al comando de visión. Requiere --frames.",
+        help="Sobrescribe `[vision].model` / `[llm].vision_model` para este run. "
+        "Requiere --frames.",
+    ),
+    max_size: str | None = typer.Option(
+        None,
+        "--max-size",
+        help="Saltar vídeos cuyo tamaño estimado supere este cap (500MB / 2GB; sin unidad = MB).",
     ),
 ) -> None:
     """Transcribe vídeos guardados y adjunta el transcript como source `x_video`.
@@ -1972,14 +2001,16 @@ def digest_video(
     disco a la vez (efímero). Selecciona con `--ids`, `--topic` o `--all-pending`.
 
     `--frames` (opt-in, capa visual PR4): para vídeos slide-heavy extrae
-    key-frames con ffmpeg (EXTERNO), los describe con el modelo de visión EXTERNO
-    (`\\[vision].command`), adjunta las descripciones al source `x_video` y embebe
-    las slides en la nota como fotos. Los vídeos talking-head se saltan y se
-    registra el motivo. Sin `--frames` el flujo es idéntico al de PR2/PR3.
+    key-frames con ffmpeg (EXTERNO), los describe con `[vision].command` si está
+    configurado, o con el LLM de visión API (`[llm].provider` +
+    `[llm].vision_model`) si no. Adjunta las descripciones al source `x_video` y
+    embebe las slides en la nota como fotos. Los vídeos talking-head se saltan y
+    se registra el motivo. Sin `--frames` el flujo es idéntico al de PR2/PR3.
     """
     cfg = _config()
     if vision_model and not frames:
         raise typer.BadParameter("--vision-model requires --frames (the visual layer is off)")
+    max_size_bytes = parse_size_to_bytes(max_size) if max_size else None
     _run_digest_video(
         cfg,
         ids=ids,
@@ -1991,6 +2022,7 @@ def digest_video(
         language=language,
         frames=frames,
         vision_model=vision_model,
+        max_size_bytes=max_size_bytes,
     )
 
 

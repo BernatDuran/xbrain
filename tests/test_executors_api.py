@@ -11,6 +11,7 @@ from xbrain.models import (
     Item,
     Link,
     Topic,
+    VideoFrame,
 )
 
 from tests.conftest import FakeLLMClient
@@ -349,6 +350,38 @@ def test_user_prompt_omits_video_transcript_when_no_speech():
     """A no-speech (has_speech=False, empty) transcript adds nothing — no section."""
     prompt = _user_prompt(_video_item("1", text="", has_speech=False), VOCAB)
     assert "Video transcript:" not in prompt
+
+
+def test_user_prompt_includes_visual_only_video_content_section():
+    """A no-speech slide/screen video can still contribute described key frames."""
+    from xbrain.models import Content, ContentSourceSuccess
+
+    item = _item(
+        "1",
+        content=Content(
+            fetched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+            sources=[
+                ContentSourceSuccess(
+                    kind="x_video",
+                    url="https://x.com/a/status/1/video/1",
+                    title="Visual digest",
+                    text="",
+                    has_speech=False,
+                    frames=[
+                        VideoFrame(
+                            timestamp=3.0,
+                            local_path="1/frames/0.png",
+                            description="A workflow builder canvas.",
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+    prompt = _user_prompt(item, VOCAB)
+    assert "Video content:" in prompt
+    assert "Video transcript:" not in prompt
+    assert "0:03: A workflow builder canvas." in prompt
 
 
 def test_user_prompt_video_transcript_not_relabelled_as_article():

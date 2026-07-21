@@ -18,8 +18,8 @@ from xbrain.rubrics import (
     ARTICLE_CHAR_LIMIT,
     TRANSCRIPT_CHAR_LIMIT,
     load_rubric,
-    truncate_transcript,
 )
+from xbrain.video_content import video_content_text
 
 _MAX_TOKENS = 600
 
@@ -160,24 +160,21 @@ def _article_sections(item: Item) -> list[str]:
 
 
 def _video_transcript_section(item: Item) -> list[str]:
-    """Build the `Video transcript:` block(s) for `x_video` sources with speech.
+    """Build the video-content block(s) for usable `x_video` sources.
 
-    A no-speech source (`has_speech=False`, empty text) contributes nothing —
-    it carries no topic signal and would only add noise. Long transcripts are
-    truncated to `TRANSCRIPT_CHAR_LIMIT` so one 72-min talk can't blow the
-    per-item prompt (#44).
+    Audio transcripts are included. Visual-only slide/screen videos contribute
+    described key frames, so the API executor can still classify them when no ASR
+    transcript exists. Empty no-speech sources continue to contribute nothing.
     """
     if item.content is None:
         return []
     lines: list[str] = []
     for src in item.content.sources:
-        if (
-            isinstance(src, ContentSourceSuccess)
-            and src.kind == "x_video"
-            and src.has_speech
-            and src.text
-        ):
-            lines += ["", "Video transcript:", truncate_transcript(src.text, TRANSCRIPT_CHAR_LIMIT)]
+        if isinstance(src, ContentSourceSuccess):
+            text = video_content_text(src, TRANSCRIPT_CHAR_LIMIT)
+            if text:
+                label = "Video content:" if src.frames else "Video transcript:"
+                lines += ["", label, text]
     return lines
 
 
