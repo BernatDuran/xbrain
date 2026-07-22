@@ -1,121 +1,69 @@
-# `digest-video` — turn bookmarked talks into readable notes
+# `digest-video` - videos without storing video bytes
 
-`digest-video` manufactures **text** from a video so it flows through the normal
-enrich → topics → generate pipeline like any other post. For each selected video
-it does an **ephemeral** fetch, transcribes the audio with an external local
-transcriber when one is configured, attaches the result as an `x_video` content
-source, and **discards the bytes** (the corpus never lands on disk). `--frames`
-adds a visual layer: it extracts the slide key-frames and describes each with
-the configured API vision model or an optional local wrapper.
+`digest-video` turns bookmarked X videos into text for the normal
+`enrich -> topics -> generate` pipeline without downloading or storing MP4,
+audio, frames or thumbnails as local video artifacts.
 
-## Prerequisites
+The only supported input is a caption/text-track URL already exposed by X and
+captured in `items.json`. If X does not expose captions for a video, XBrain marks
+that item as `sin transcript` and stops. There is no MP4 fallback.
 
-The heavy lifting is **external** — xbrain core carries no ffmpeg/ASR dependency.
-Install once (see [Local models for `digest-video`](../README.md#local-models-for-digest-video-apple-silicon)):
+## What It Stores
 
-```bash
-brew install ffmpeg                # frame extraction
-uv tool install parakeet-mlx       # optional ASR (Apple Silicon)
-uv tool install mlx-vlm            # optional local vision override
-```
+For each video with captions:
 
-and point `config.toml` at the wrappers when you want local tools:
+1. XBrain fetches only the small caption/text file, usually VTT/SRT/JSON.
+2. It parses that file into the original-language raw transcript.
+3. It asks the configured text LLM for a medium-depth executive summary.
+4. It stores the executive summary as the `x_video` content source used by
+   `enrich`, `topics`, the dashboard and Ask XBrain.
+5. It renders two nearby vault files under `videos/<video>/`:
+   - `summary.md`: dashboard-ready executive summary.
+   - `transcript.md`: raw transcript reference, marked `xbrain_exclude: true`.
 
-```toml
-[transcribe]
-command = "/abs/path/to/xbrain/scripts/xbrain-transcribe"   # wraps parakeet-mlx
+The raw transcript is retained for audit/reading, but it is not indexed by the
+dashboard or Ask XBrain and is not fed into topic synthesis.
 
-[vision]
-command = "/abs/path/to/xbrain/scripts/xbrain-vision"       # optional local + cloud selector
-model   = "qwen-7b"
-```
-
-On a VPS with NanoGPT, leave `[vision].command` unset and set
-`[llm].vision_model`; `digest-video --frames` will use the API directly.
-
-## Run it
+## Run It
 
 ```bash
-# Transcript only (no vision, no ffmpeg-frames) — fast:
 uv run xbrain digest-video --all-pending
-
-# → Vídeos: transcritos 6, sin voz 2, ya digeridos 0, fallidos 0, sin vídeo 1, ...
-#   Dedup: 9 items ← 9 vídeos (6 procesados este run).
-```
-
-Read the summary: **transcritos** = had speech, **sin voz** = silent (no audio
-track — GIFs, muted clips; attached as `has_speech=false`, not a failure),
-**fallidos** = a real transcribe failure, **sin vídeo** = the video couldn't be
-fetched (deleted / unavailable). Videos are **deduped by identity** — N bookmarks
-of the same clip are fetched + transcribed once.
-
-Add `--frames` for slide-heavy talks:
-
-```bash
-uv run xbrain digest-video --all-pending --frames
-# → ... Visual: 5 con slides, 4 talking-head (saltados).
-```
-
-`--frames` extracts key frames (ffmpeg scene-detection + interval sampling),
-classifies the video as **slides** vs **talking-head** (talking-heads are skipped
-— no vision calls wasted), and describes each slide of a slide video. The slide
-images are embedded in the note like downloaded photos. If the transcriber is
-missing but slides are kept, xbrain still attaches a visual-only digest; if the
-video is talking-head and there is no ASR, it remains failed because the useful
-signal is audio.
-
-Then render:
-
-```bash
 uv run xbrain generate
 ```
 
-## What you get
-
-The item's note gains a `## Video digest` section:
-
-```markdown
-## Video digest: Elon Musk on the first thing to do when starting a company
-
-> Uh, the goal with Tesla was really to try to show what electric cars can do,
-> because people had the wrong impression… (full transcript)
-
-![[_media/1874.../frames/0.png]]
-> Slide: a line chart of Model S range vs. price, 2012–2015.
-```
-
-The transcript + slide descriptions are plain note text, so they feed `enrich`
-(summary + topics) and are **searchable** in Obsidian. A silent video with no
-slides degrades gracefully to a one-line "silent video" note.
-
-## Choosing the model, per run
-
-`config.toml` `[llm].vision_model` is the default; `[vision].model` or
-`--vision-model` overrides it. With `[vision].command` unset, the model is sent
-directly to `[llm].provider`. With the `scripts/xbrain-vision` selector, the
-name is routed by the wrapper:
-
-| `--vision-model` | Backend | Notes |
-|------------------|---------|-------|
-| `qwen-3b` / `qwen-7b` / `qwen-32b` / `<hf/repo>` | local (mlx-vlm) | free, offline; `qwen-32b` needs ~20 GB RAM |
-| `xiaomi/mimo-v2.5` or another NanoGPT vision model id | cloud (NanoGPT) | default VPS path; needs `NANOGPT_API_KEY`; frames leave the machine |
-| `opus` / `sonnet` / `haiku` / `claude-<id>` | cloud (Claude) | best quality; needs `ANTHROPIC_API_KEY`; frames leave the machine |
+Useful selectors:
 
 ```bash
-uv run xbrain digest-video --ids <slide-heavy-id> --frames --vision-model opus
-uv run xbrain digest-video --topic ai-coding      --frames --vision-model qwen-7b
+uv run xbrain digest-video --ids 123,456
+uv run xbrain digest-video --topic ai-coding
+uv run xbrain digest-video --all-pending --limit 10
+uv run xbrain digest-video --ids 123 --force
 ```
 
-## Selecting which videos
+Output example:
+
+```text
+Videos: resumidos 6, ya digeridos 2, sin transcript 4, fallidos 0, ...
+Dedup: 12 items <- 9 videos (6 procesados este run).
+```
+
+## Disabled Paths
+
+These commands/options are intentionally disabled by storage policy:
 
 ```bash
---ids a,b,c        # specific item ids
---topic ai-coding  # every video whose post is in that topic
---all-pending      # every not-yet-digested video (idempotent; re-runs skip done ones)
---source bookmarks|tweets|all   --limit N   --language en   --max-size 750MB
+uv run xbrain download-videos
+uv run xbrain fetch-video
+uv run xbrain digest-video --frames
+uv run xbrain digest-video --vision-model xiaomi/mimo-v2.5
 ```
 
-`digest-video` is destructive (rewrites `items.json`) → it auto-snapshots first.
-Re-running skips videos already carrying an `x_video` source unless `--force`.
+They do not write MP4, audio or frame files. `--max-size` on `digest-video` is
+accepted for compatibility but ignored, because no video bytes are downloaded.
 
-Slow? See [Troubleshooting → digest-video](troubleshooting.md#digest-video-is-slow-or-times-out).
+## Limitations
+
+This only works when X exposes a caption/text-track URL in the video payload.
+Many X videos do not include captions. For those, XBrain keeps the bookmark and
+video metadata but does not manufacture a transcript from audio, because doing so
+would require downloading media bytes.

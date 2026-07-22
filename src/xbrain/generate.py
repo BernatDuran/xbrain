@@ -15,7 +15,6 @@ from xbrain.models import (
     ARTICLE_PARAGRAPH_SEP,
     ArticleImageBlock,
     ArticleTextBlock,
-    Content,
     ContentSourceFailure,
     ContentSourceSuccess,
     FailureReason,
@@ -28,7 +27,6 @@ from xbrain.models import (
     MediaVideoFailed,
     MediaVideoPending,
     TopicPage,
-    VideoFrame,
 )
 from xbrain.notes_io import DEFAULT_TAIL, note_filename, slugify, title_of, user_tail, wrap
 from xbrain.video_content import video_content_text
@@ -130,9 +128,9 @@ def generate(
             if media_root is not None:
                 vault_media_dir = output_dir / _VAULT_MEDIA_SUBDIR
                 _mirror_item_media(item, media_root, vault_media_dir)
-                _mirror_item_frames(item, media_root, vault_media_dir)
                 _mirror_item_article_images(item, media_root, vault_media_dir)
             _write_note(items_dir, item, strings, topic_style)
+    _write_video_artifacts(items, output_dir / "videos", strings)
     try:
         _write_dashboard(items, output_dir, items_dir, topic_pages or {}, media_root)
     except Exception:  # noqa: BLE001 - the dashboard is a best-effort secondary artifact
@@ -219,6 +217,101 @@ def _write_note(items_dir: Path, item: Item, strings: Strings, topic_style: str)
     path.write_text(block + tail, encoding="utf-8")
 
 
+def _video_sources(item: Item) -> list[ContentSourceSuccess]:
+    if item.content is None:
+        return []
+    return [
+        source
+        for source in item.content.sources
+        if isinstance(source, ContentSourceSuccess) and source.kind == "x_video"
+    ]
+
+
+def _write_text_artifact(path: Path, body: str) -> None:
+    """Write a fully generated text artifact, preserving any user tail."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_tail = user_tail(path.read_text(encoding="utf-8"), "\n") if path.exists() else "\n"
+    path.write_text(wrap(body) + existing_tail, encoding="utf-8")
+
+
+def _write_video_artifacts(items: list[Item], videos_dir: Path, strings: Strings) -> None:
+    """Write per-video summary/transcript markdown under `videos/`.
+
+    The dashboard chat indexes only `items/` and `topics/`, so the raw transcript
+    files are available for reading/audit without entering retrieval context.
+    """
+    for item in items:
+        for source in _video_sources(item):
+            if not source.raw_transcript:
+                continue
+            folder = videos_dir / _video_folder_name(item, source)
+            _write_text_artifact(folder / "summary.md", _render_video_summary_artifact(item, source))
+            _write_text_artifact(
+                folder / "transcript.md",
+                _render_video_transcript_artifact(item, source, strings),
+            )
+
+
+def _video_artifact_frontmatter(
+    item: Item, source: ContentSourceSuccess, *, kind: str, exclude: bool = False
+) -> str:
+    tags = ["x-knowledge", "video"]
+    if item.enriched:
+        tags += item.enriched.topics
+    fields = [
+        "---",
+        f'id: "{item.id}"',
+        f"kind: {kind}",
+        f"url: {item.url}",
+        f"video_source: {source.url}",
+        f"created: {item.created_at.date().isoformat()}",
+        f"author: {item.author.handle}",
+        f"tags: [{', '.join(dict.fromkeys(tags))}]",
+    ]
+    if source.language:
+        fields.append(f"language: {source.language}")
+    if exclude:
+        fields.append("xbrain_exclude: true")
+    fields.append("---")
+    return "\n".join(fields)
+
+
+def _render_video_summary_artifact(item: Item, source: ContentSourceSuccess) -> str:
+    title = source.title or title_of(item)
+    transcript_link = "transcript.md" if source.raw_transcript else ""
+    lines = [
+        _video_artifact_frontmatter(item, source, kind="video_summary"),
+        "",
+        f"# {title}",
+        "",
+        f"[Tweet original]({item.url})",
+    ]
+    if transcript_link:
+        lines.append(f"[Transcripción original]({transcript_link})")
+    lines += ["", source.text]
+    return "\n".join(lines).rstrip()
+
+
+def _render_video_transcript_artifact(
+    item: Item, source: ContentSourceSuccess, strings: Strings
+) -> str:
+    title = source.title or title_of(item)
+    summary_link = "summary.md"
+    lines = [
+        _video_artifact_frontmatter(item, source, kind="video_transcript", exclude=True),
+        "",
+        f"# Original Transcript: {title}",
+        "",
+        "> Referencia raw. Este documento no se usa para dashboard, topics ni Ask XBrain.",
+        "",
+        f"[{strings.video_digest_header}]({summary_link}) · [Tweet original]({item.url})",
+    ]
+    if source.raw_transcript_url:
+        lines += ["", f"Transcript source: <{source.raw_transcript_url}>"]
+    lines += ["", "## Transcript", "", source.raw_transcript or ""]
+    return "\n".join(lines).rstrip()
+
+
 def _stale_note(items_dir: Path, item: Item, current: Path) -> Path | None:
     """Find this item's previous note when a filename component changed.
 
@@ -263,14 +356,12 @@ def _render_media_lines(item: Item) -> list[str]:
     """One line per `Item.media` entry, ready to splice into the Tweet section.
 
     Variant handling:
-    - `MediaPhotoDownloaded` / `MediaPhotoDescribed` / `MediaVideoDownloaded`
+    - `MediaPhotoDownloaded` / `MediaPhotoDescribed`
       → Obsidian embed `![[_media/<id>/<n>.<ext>]]`. The vault is
       self-contained: `generate()` mirrors the file from `data/media/` into
       `<output_dir>/_media/` before rendering, so the embed resolves
-      with no user configuration. A downloaded video embeds its local
-      mp4 exactly like a photo (Obsidian renders an inline player). The
-      described variant inherits the same on-disk file — the description
-      is consumed by the LLM prompts in `executors/api.py` /
+      with no user configuration. The described variant inherits the same
+      on-disk file — the description is consumed by the LLM prompts in `executors/api.py` /
       `topic_synth.py`, NOT shown as alt-text in this phase. Decorative
       photos are still embedded; the `is_decorative` flag only filters
       them out of the LLM prompts, never out of the visual rendering.
@@ -279,17 +370,16 @@ def _render_media_lines(item: Item) -> list[str]:
       silent drop.
     - `MediaPhotoPending`     → silent. Not an error, just "the next
       `xbrain media` run will pick it up".
-    - `MediaVideoPending`     → a clickable "Ver vídeo" link to the playable
-      stream (the mp4/HLS URL from `video_info.variants`, not the poster),
-      flagged as pending local download until `xbrain download-videos`
-      fetches the bytes (mp4) — HLS stays a link pending the ffmpeg follow-up.
+    - `MediaVideoPending` / `MediaVideoDownloaded`
+      → a clickable "Ver vídeo" external link only. XBrain never embeds or
+      mirrors video bytes in the vault.
 
     The output is intentionally plain markdown; the caller (`_render_note`)
     wraps it in a blank line on either side for readability.
     """
     lines: list[str] = []
     for entry in item.media:
-        if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed, MediaVideoDownloaded)):
+        if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed)):
             lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{entry.local_path}]]")
             # A described (non-decorative) photo carries a short vision caption
             # under the embed. Full OCR/transcribed text stays in the JSON store;
@@ -309,10 +399,10 @@ def _render_media_lines(item: Item) -> list[str]:
         elif isinstance(entry, MediaPhotoPending):
             # Silent: a future `xbrain media` run will advance this entry.
             continue
-        elif isinstance(entry, MediaVideoPending):
+        elif isinstance(entry, (MediaVideoPending, MediaVideoDownloaded)):
             # `entry.url` is the playable stream (mp4 or HLS), not the poster,
-            # so surface it as a clickable link; bytes are not saved yet.
-            lines.append(f"> 🎥 [Ver vídeo]({entry.url}) (pendiente de descarga)")
+            # so surface it as a clickable link; bytes are never embedded.
+            lines.append(f"> 🎥 [Ver vídeo externo]({entry.url}) (no se descarga)")
         else:
             assert_never(entry)
     return lines
@@ -361,7 +451,7 @@ def _mirror_file(item_id: str, source: Path, destination: Path) -> None:
 
 
 def _mirror_item_media(item: Item, media_root: Path, vault_media_dir: Path) -> None:
-    """Copy every downloaded photo/video on `item` into the vault's `_media/` tree.
+    """Copy every downloaded photo on `item` into the vault's `_media/` tree.
 
     The canonical store is `data/media/<id>/<n>.<ext>` (under `media_root`);
     the vault mirror is `<output_dir>/_media/<id>/<n>.<ext>`. Mirroring
@@ -370,9 +460,8 @@ def _mirror_item_media(item: Item, media_root: Path, vault_media_dir: Path) -> N
     """
     for entry in item.media:
         # The described variant inherits the on-disk bytes from the prior
-        # downloaded state; a downloaded video carries its mp4 the same way —
-        # all three shapes hit the same mirror path.
-        if not isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed, MediaVideoDownloaded)):
+        # downloaded state. Video bytes are intentionally excluded.
+        if not isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed)):
             continue
         _mirror_file(item.id, media_root / entry.local_path, vault_media_dir / entry.local_path)
 
@@ -425,47 +514,35 @@ def _mirror_item_article_images(item: Item, media_root: Path, vault_media_dir: P
                 )
 
 
-def _slide_embed_lines(frames: list[VideoFrame]) -> list[str]:
-    """Embed each kept key-frame slide + its vision description caption (#44 PR4).
-
-    A slide embeds exactly like a downloaded photo — an Obsidian
-    ``![[_media/<id>/frames/<n>.ext]]`` wikilink resolved by the `_media/` mirror
-    (`_mirror_item_frames`) — with the description on the following blockquote
-    line as a caption. Same self-contained-vault convention as the photo block.
-    """
-    lines: list[str] = []
-    for frame in frames:
-        lines.append(f"![[{_VAULT_MEDIA_SUBDIR}/{frame.local_path}]]")
-        if frame.description:
-            # Collapse internal newlines to a space: a multi-line vision description
-            # must stay ONE `> ...` line, else the tail spills out of the blockquote.
-            caption = " ".join(frame.description.splitlines())
-            lines.append(f"> {caption}")
-        lines.append("")
-    return lines
+def _video_folder_name(item: Item, source: ContentSourceSuccess) -> str:
+    """Stable generated folder for one video's text artifacts."""
+    title = source.title or title_of(item)
+    return f"{item.created_at.date().isoformat()}-{slugify(title)}-{item.id}"
 
 
-def _video_digest_lines(source: ContentSourceSuccess, strings: Strings) -> list[str]:
-    """Render an `x_video` source as a `Video digest` section (#44 PR3 + PR4).
+def _video_digest_lines(
+    item: Item, source: ContentSourceSuccess, strings: Strings
+) -> list[str]:
+    """Render an `x_video` source as an executive-summary section.
 
-    A with-speech transcript renders under a ``## Video digest: <title>`` heading
-    carrying the transcript text — the manufactured content that turns a
-    never-watched video into a readable, searchable note. Key-frame slides
-    (`--frames`, PR4) are embedded beneath it, each with its vision description as
-    a caption. A source with NEITHER speech NOR frames (a plain silent video)
-    renders a single silent-video line instead of an empty digest block; a SILENT
-    slide deck (no speech, but with frames) still renders the heading + the slides,
-    since that is exactly where a screen-only video carries its content.
+    `source.text` is the summary used by dashboard/enrich/topics. The raw
+    transcript is linked as a generated artifact under `videos/`, but its text is
+    deliberately not included here so Ask XBrain cannot retrieve it from item
+    notes.
     """
     content_text = video_content_text(source)
-    has_text = bool(content_text)
-    if not has_text and not source.frames:
+    if not content_text:
         return [f"> {strings.silent_video}", ""]
     heading = source.title or source.url
     lines = [f"## {strings.video_digest_header}: {heading}", ""]
-    if has_text:
-        lines += [content_text or "", ""]
-    lines += _slide_embed_lines(source.frames)
+    if source.raw_transcript:
+        folder = _video_folder_name(item, source)
+        lines += [
+            f"[Resumen ejecutivo](../videos/{folder}/summary.md) · "
+            f"[Transcripción original](../videos/{folder}/transcript.md)",
+            "",
+        ]
+    lines += [content_text, ""]
     return lines
 
 
@@ -552,7 +629,7 @@ def _article_blocks_lines(source: ContentSourceSuccess, strings: Strings) -> lis
     return [f"## {strings.content_header}: {heading}", "", *body]
 
 
-def _content_lines(content: Content, strings: Strings) -> list[str]:
+def _content_lines(item: Item, strings: Strings) -> list[str]:
     """Rendered article bodies + broken-link evidence for a fetched item.
 
     Switches on the `ContentSource` variant: the success variant is
@@ -568,10 +645,13 @@ def _content_lines(content: Content, strings: Strings) -> list[str]:
     block — byte-unchanged.
     """
     lines: list[str] = []
+    content = item.content
+    if content is None:
+        return lines
     for source in content.sources:
         if isinstance(source, ContentSourceSuccess):
             if source.kind == "x_video":
-                lines += _video_digest_lines(source, strings)
+                lines += _video_digest_lines(item, source, strings)
             elif source.kind == "x_article" and source.blocks:
                 # Structured Article (#39): render the ordered text+image blocks
                 # as a blogpost. An `x_article` with EMPTY blocks (trafilatura
@@ -606,7 +686,7 @@ def _render_note(item: Item, strings: Strings, topic_style: str) -> str:
         lines.append("")
     lines += [f"[Ver tweet original]({item.url})", ""]
     if item.content:
-        lines += _content_lines(item.content, strings)
+        lines += _content_lines(item, strings)
     return "\n".join(lines).rstrip()
 
 

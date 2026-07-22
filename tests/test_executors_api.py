@@ -340,20 +340,20 @@ def _video_item(item_id: str, *, text: str = "a talk about scaling laws", has_sp
 
 
 def test_user_prompt_includes_video_transcript_section():
-    """An `x_video` transcript surfaces under a labelled `Video transcript:` block."""
+    """An `x_video` executive summary surfaces under a labelled block."""
     prompt = _user_prompt(_video_item("1"), VOCAB)
-    assert "Video transcript:" in prompt
+    assert "Video summary:" in prompt
     assert "a talk about scaling laws" in prompt
 
 
 def test_user_prompt_omits_video_transcript_when_no_speech():
     """A no-speech (has_speech=False, empty) transcript adds nothing — no section."""
     prompt = _user_prompt(_video_item("1", text="", has_speech=False), VOCAB)
-    assert "Video transcript:" not in prompt
+    assert "Video summary:" not in prompt
 
 
 def test_user_prompt_includes_visual_only_video_content_section():
-    """A no-speech slide/screen video can still contribute described key frames."""
+    """Legacy frames alone do not contribute to the analysis prompt."""
     from xbrain.models import Content, ContentSourceSuccess
 
     item = _item(
@@ -379,30 +379,31 @@ def test_user_prompt_includes_visual_only_video_content_section():
         ),
     )
     prompt = _user_prompt(item, VOCAB)
-    assert "Video content:" in prompt
+    assert "Video summary:" not in prompt
     assert "Video transcript:" not in prompt
-    assert "0:03: A workflow builder canvas." in prompt
+    assert "workflow builder" not in prompt
 
 
 def test_user_prompt_video_transcript_not_relabelled_as_article():
-    """The transcript must render as `Video transcript:`, never mislabelled as a
+    """The summary must render as `Video summary:`, never mislabelled as a
     `Linked article` (would tell the LLM the wrong content type)."""
     prompt = _user_prompt(_video_item("1"), VOCAB)
     assert "Linked article" not in prompt
+    assert "Video summary:" in prompt
 
 
 def test_user_prompt_truncates_a_long_video_transcript():
-    """A 72-min-talk-scale transcript is capped so one item can't blow the prompt."""
+    """A long video executive summary is capped so one item can't blow the prompt."""
     from xbrain.rubrics import TRANSCRIPT_CHAR_LIMIT
 
     long_text = "word " * (TRANSCRIPT_CHAR_LIMIT)  # >> the cap
     prompt = _user_prompt(_video_item("1", text=long_text), VOCAB)
-    assert "transcript truncated" in prompt
+    assert "video content truncated" in prompt
     assert len(prompt) < len(long_text)
 
 
 def test_user_prompt_video_transcript_sits_between_images_and_links_and_article():
-    """The `Video transcript:` block is spliced AFTER the image descriptions and
+    """The `Video summary:` block is spliced AFTER the image descriptions and
     BEFORE the links/article — mirroring the image-ordering guard so an accidental
     reorder in `_user_prompt` is caught (the transcript is post content, read in the
     same natural order as images: post body → images → transcript → links → article)."""
@@ -433,7 +434,7 @@ def test_user_prompt_video_transcript_sits_between_images_and_links_and_article(
     )
     prompt = _user_prompt(item, VOCAB)
     image_idx = prompt.index("Images in this post:")
-    transcript_idx = prompt.index("Video transcript:")
+    transcript_idx = prompt.index("Video summary:")
     links_idx = prompt.index("Links in the post")
     article_idx = prompt.index("Linked article")
     assert image_idx < transcript_idx < links_idx

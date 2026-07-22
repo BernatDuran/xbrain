@@ -19,7 +19,7 @@ provider = "nanogpt"
 base_url = "https://nano-gpt.com/api/v1"
 # API LLM model used by text stages: enrich, vocab and topics.
 model = "zai-org/glm-5.2"
-# Separate API LLM model for image/vision tasks (`describe` and digest-video frames).
+# Separate API LLM model for image/vision tasks (`describe`).
 # With NanoGPT, default is xiaomi/mimo-v2.5 because text-only models may not process images.
 vision_model = "xiaomi/mimo-v2.5"
 
@@ -58,42 +58,9 @@ topic_style = "wikilink"
 # you change the describe-image rubric or expectations.
 version = "v1"
 
-[transcribe]
-# External transcriber that `xbrain digest-video` shells out to. The heavy ASR
-# (Parakeet TDT 0.6b via `parakeet-mlx` on Apple Silicon; `whisper` /
-# `faster-whisper` is the portable fallback) lives OUTSIDE xbrain core — the CLI
-# carries no MLX/CoreML dependency and only invokes this command as a subprocess.
-# May be a multi-token wrapper (split with shlex, run without a shell). xbrain
-# invokes:  <command> [--model M] --output-format json --output-dir <TMPDIR> <mediapath>
-# and reads the JSON transcript from the FILE parakeet-mlx writes at
-# <TMPDIR>/<stem>.json ({"text", "language", "segments":[{start,end,text}]}).
-# Note: --language is NOT passed (parakeet auto-detects and rejects it). A wrapper
-# that emits JSON on stdout instead of a file is also supported.
-#
-# The bundled `scripts/xbrain-transcribe` wraps parakeet-mlx so videos with NO
-# audio track (silent clips, GIFs) attach as has_speech=false instead of failing
-# (parakeet writes no file for them). Point at the wrapper, or straight at
-# `parakeet-mlx` if you don't need silent-video handling.
-command = "parakeet-mlx"
-# command = "/absolute/path/to/scripts/xbrain-transcribe"
-# Optional model id passed through to the transcriber. Omit for the tool default.
-# model = "parakeet-tdt-0.6b-v2"
-
-[vision]
-# Optional external vision model that `xbrain digest-video --frames` shells out
-# to (#44 PR4) to describe key-frame slides. Leave it unset on a VPS/NanoGPT
-# setup: xbrain will call [llm].provider + [llm].vision_model directly. Set it
-# only when you want a local/custom VLM subprocess. xbrain invokes:
-#   <command> [--model M] <image-path>
-# and reads the frame's text description from stdout. May be a multi-token wrapper
-# (split with shlex, run without a shell). `--frames` is fully opt-in: a normal
-# `digest-video` run never touches ffmpeg or this command.
-#
-# The bundled `scripts/xbrain-vision` wrapper routes local aliases to mlx-vlm and
-# every cloud call through `[llm].provider` (NanoGPT by default). Pick per run
-# with `digest-video --vision-model NAME`, or set the default here:
-#   local (Apple Silicon, free/offline): qwen-3b | qwen-7b | qwen-32b | local:<hf/repo>
-#   cloud via NanoGPT:                    any NanoGPT vision model id, e.g. xiaomi/mimo-v2.5
-#   cloud via Anthropic:                  set [llm].provider="anthropic", then opus|sonnet|haiku
-# command = "/absolute/path/to/scripts/xbrain-vision"
-# model = "qwen-3b"                       # omit → [llm].vision_model
+# Video policy:
+# `xbrain digest-video` does not download/store MP4, audio or frames. It uses
+# caption/text-track URLs captured from X when available, stores the raw
+# transcript as a reference artifact, and sends only an executive summary through
+# enrich/topics/dashboard/Ask. Legacy `[transcribe]` / `[vision]` settings are
+# intentionally omitted from the normal configuration.

@@ -291,9 +291,9 @@ def _video_item_in_topic(item_id: str, primary: str, *, text: str, has_speech: b
     return item
 
 
-def test_build_topic_inputs_collects_bounded_video_transcripts():
-    """With-speech video transcripts are collected per member and truncated to the
-    topic-synth cap; no-speech videos contribute nothing."""
+def test_build_topic_inputs_collects_bounded_video_summaries():
+    """Video executive summaries are collected per member and truncated to the
+    topic-synth cap; empty video summaries contribute nothing."""
     from xbrain.rubrics import TOPIC_TRANSCRIPT_CHAR_LIMIT
     from xbrain.topics import build_topic_inputs
 
@@ -303,7 +303,7 @@ def test_build_topic_inputs_collects_bounded_video_transcripts():
     posts["ai-coding"].primary.extend([talker, silent])
     inputs = build_topic_inputs(["ai-coding"], _VOCAB, posts)
     assert len(inputs[0].video_transcripts) == 1  # only the with-speech one
-    assert "transcript truncated" in inputs[0].video_transcripts[0]
+    assert "video content truncated" in inputs[0].video_transcripts[0]
 
 
 def test_build_topic_inputs_empty_video_list_without_transcripts():

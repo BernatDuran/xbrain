@@ -133,7 +133,7 @@ def _article_sections(item: Item) -> list[str]:
     """Build one block per successfully-fetched article. Empty if no content.
 
     `x_video` sources are excluded here — a video transcript is manufactured
-    text, not a linked article, and gets its own labelled `Video transcript:`
+    text, not a linked article, and gets its own labelled `Video summary:`
     block (`_video_transcript_section`). Rendering it as a "Linked article"
     would mislabel the content type to the LLM.
     """
@@ -173,8 +173,7 @@ def _video_transcript_section(item: Item) -> list[str]:
         if isinstance(src, ContentSourceSuccess):
             text = video_content_text(src, TRANSCRIPT_CHAR_LIMIT)
             if text:
-                label = "Video content:" if src.frames else "Video transcript:"
-                lines += ["", label, text]
+                lines += ["", "Video summary:", text]
     return lines
 
 

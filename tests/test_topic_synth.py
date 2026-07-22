@@ -353,8 +353,8 @@ def test_user_prompt_omits_image_section_when_empty():
     assert "Images across" not in prompt
 
 
-def test_user_prompt_includes_video_transcripts_when_provided():
-    """When `video_transcripts` is non-empty, the topic prompt carries a video block."""
+def test_user_prompt_includes_video_summaries_when_provided():
+    """When `video_transcripts` is non-empty, the topic prompt carries video summaries."""
     from xbrain.topic_synth import _user_prompt
 
     topic_input = TopicInput(
@@ -364,7 +364,7 @@ def test_user_prompt_includes_video_transcripts_when_provided():
         video_transcripts=["A talk on retrieval-augmented agents.", "A live coding demo."],
     )
     prompt = _user_prompt(topic_input)
-    assert "Video transcripts across the 2 videos" in prompt
+    assert "Video summaries across the 2 videos" in prompt
     assert "A talk on retrieval-augmented agents." in prompt
     assert "A live coding demo." in prompt
 
@@ -374,4 +374,4 @@ def test_user_prompt_omits_video_section_when_empty():
     from xbrain.topic_synth import _user_prompt
 
     prompt = _user_prompt(TopicInput(slug="x", description="d", summaries=["s"]))
-    assert "Video transcripts across" not in prompt
+    assert "Video summaries across" not in prompt

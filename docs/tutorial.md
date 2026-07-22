@@ -61,11 +61,10 @@ each stage exports a worksheet you fill in a Claude Code session, then
 Now your vault has three layers: `items/` (posts), `topics/` (thematic pages),
 and `_index.md` (the map). Open `_index.md` in Obsidian and click into a topic.
 
-## 4. Download the media
+## 4. Download photo media
 
 ```bash
 uv run xbrain media                 # download bookmarked photos + inline Article images
-uv run xbrain download-videos --yes # download videos (prints a size gate first)
 ```
 
 Photos embed under each post note; inline X Article images render inside the
@@ -84,19 +83,15 @@ pricing".
 
 ## 5. Digest a bookmarked video
 
-This turns a saved talk into a readable, topic-linked note. It needs the local
-tooling from [Local models for `digest-video`](../README.md#local-models-for-digest-video-apple-silicon)
-(ffmpeg + parakeet-mlx, plus mlx-vlm for `--frames`). See the worked example in
-[digest-video.md](digest-video.md).
+This turns a saved video into a readable, topic-linked note without storing MP4,
+audio or frame files. It only works when X exposes a caption/text-track URL for
+that video. See the worked example in [digest-video.md](digest-video.md).
 
 ```bash
-# Transcript only (fast): every bookmarked video → an x_video transcript source
+# Caption-only: every bookmarked video with captions -> an x_video executive summary
 uv run xbrain digest-video --all-pending
-
-# With the visual layer: also describe the slides of slide-heavy talks
-uv run xbrain digest-video --all-pending --frames
 uv run xbrain generate
-# → the video's note now has a "## Video digest" section: transcript + slides
+# -> the video's note now has a "## Video digest" section and videos/<video>/ artifacts
 ```
 
 ## 6. See the whole corpus at a glance

@@ -87,6 +87,7 @@ MediaFailureReason = Literal[
 ]
 
 ExtractedTextConfidence = Literal["high", "medium", "low"]
+TranscriptFormat = Literal["vtt", "srt", "text", "json", "unknown"]
 
 
 class _MediaPhotoBase(BaseModel):
@@ -355,6 +356,13 @@ class MediaVideoPending(BaseModel):
     thumbnail_url: str | None = None
     bitrate: int | None = None
     duration_millis: int | None = None
+    # Optional text-track/caption sidecar exposed by X or an upstream video
+    # provider. XBrain may fetch this small text file to build a video summary,
+    # but it must never fetch/store the mp4 bytes as part of the normal library
+    # pipeline.
+    transcript_url: str | None = None
+    transcript_language: str | None = None
+    transcript_format: TranscriptFormat | None = None
 
 
 class MediaVideoDownloaded(BaseModel):
@@ -395,6 +403,9 @@ class MediaVideoDownloaded(BaseModel):
     thumbnail_url: str | None = None
     bitrate: int | None = None
     duration_millis: int | None = None
+    transcript_url: str | None = None
+    transcript_language: str | None = None
+    transcript_format: TranscriptFormat | None = None
     local_path: str
     bytes_size: int = Field(gt=0)
     downloaded_at: datetime
@@ -433,6 +444,9 @@ class MediaVideoFailed(BaseModel):
     thumbnail_url: str | None = None
     bitrate: int | None = None
     duration_millis: int | None = None
+    transcript_url: str | None = None
+    transcript_language: str | None = None
+    transcript_format: TranscriptFormat | None = None
     failure_reason: MediaFailureReason
     error: str | None = None
     attempts: int = Field(ge=1)
@@ -666,6 +680,14 @@ class ContentSourceSuccess(BaseModel):
     # never a failure), and `language` is the detected transcript language.
     has_speech: bool | None = None
     language: str | None = None
+    # For `kind="x_video"`, `text` is the executive summary that downstream
+    # enrich/topics/dashboard/Ask consume. The original transcript is retained
+    # separately for audit/reading and rendered into generated `videos/...`
+    # transcript files, but no analysis path reads it.
+    raw_transcript: str | None = None
+    raw_transcript_url: str | None = None
+    raw_transcript_format: TranscriptFormat | None = None
+    executive_summary_version: str | None = None
     # Key-frame slides for `kind="x_video"` sources when `digest-video --frames`
     # ran (#44 PR4). Optional + additive (defaults to `[]`), so every EXISTING
     # record LOADS unchanged — a pre-PR4 `x_video` source (and every article

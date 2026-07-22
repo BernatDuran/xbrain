@@ -151,7 +151,7 @@ def test_generate_skips_pending_photo_silently(tmp_path: Path):
 
 def test_generate_renders_video_pending_as_clickable_play_link(tmp_path: Path):
     """The video URL is now the playable mp4 (not the poster), so render it as a
-    labelled clickable link, flagged as pending local download."""
+    labelled external link, explicitly not a local download."""
     from xbrain.models import MediaVideoPending
 
     item = _item("1", with_link=True)
@@ -160,14 +160,12 @@ def test_generate_renders_video_pending_as_clickable_play_link(tmp_path: Path):
     generate({"1": item}, tmp_path)
     note = next((tmp_path / "items").glob("*.md"))
     body = note.read_text(encoding="utf-8")
-    assert "[Ver vídeo](https://video.twimg.com/high.mp4?tag=12)" in body
-    assert "pendiente de descarga" in body
+    assert "[Ver vídeo externo](https://video.twimg.com/high.mp4?tag=12)" in body
+    assert "no se descarga" in body
 
 
-def test_generate_renders_downloaded_video_as_obsidian_embed(tmp_path: Path):
-    """A `MediaVideoDownloaded` becomes a `![[_media/<id>/<n>.mp4]]` embed and the
-    mp4 bytes are mirrored into the vault's `_media/` tree (self-contained vault),
-    exactly like a downloaded photo."""
+def test_generate_never_embeds_downloaded_video_bytes(tmp_path: Path):
+    """Even a legacy `MediaVideoDownloaded` is rendered as an external link only."""
     from xbrain.models import MediaVideoDownloaded
 
     media_root = tmp_path / "media"
@@ -191,8 +189,9 @@ def test_generate_renders_downloaded_video_as_obsidian_embed(tmp_path: Path):
     output_dir = tmp_path / "vault"
     generate({"1": item}, output_dir, media_root=media_root)
     body = next((output_dir / "items").glob("*.md")).read_text(encoding="utf-8")
-    assert "![[_media/1/0.mp4]]" in body
-    assert (output_dir / "_media" / "1" / "0.mp4").exists()
+    assert "![[_media/1/0.mp4]]" not in body
+    assert "[Ver vídeo externo](https://video.twimg.com/x.mp4)" in body
+    assert not (output_dir / "_media" / "1" / "0.mp4").exists()
 
 
 def test_generate_renders_failed_video_as_warning(tmp_path: Path):
@@ -668,7 +667,7 @@ def test_generate_video_digest_spanish_header(tmp_path: Path):
     assert "Cuerpo de la transcripción." in note
 
 
-# ----------------------------------------------------------- x_video slide frames (#44 PR4)
+# ----------------------------------------------------------- x_video text artifacts
 
 
 def _frames():
@@ -680,11 +679,8 @@ def _frames():
     ]
 
 
-def test_generate_embeds_and_mirrors_slide_frames(tmp_path: Path):
-    """A slide-heavy `x_video` source (#44 PR4) embeds each kept slide into the
-    digest section the SAME way downloaded photos are embedded — `![[_media/...]]`
-    — with its vision description as a caption, and the image is mirrored from
-    `media_root` into the vault's `_media/` tree so the embed resolves."""
+def test_generate_ignores_legacy_slide_frames(tmp_path: Path):
+    """Legacy frame metadata must not render or mirror visual video artifacts."""
     media_root = tmp_path / "media"
     (media_root / "7" / "frames").mkdir(parents=True)
     (media_root / "7" / "frames" / "0.png").write_bytes(b"\x89PNG slide0")
@@ -696,12 +692,9 @@ def test_generate_embeds_and_mirrors_slide_frames(tmp_path: Path):
 
     assert "## Video digest: The Talk" in note
     assert "The talk transcript." in note
-    assert "![[_media/7/frames/0.png]]" in note  # embedded like a photo
-    assert "![[_media/7/frames/1.png]]" in note
-    assert "A title slide." in note  # the vision description as caption
-    # mirrored into the self-contained vault _media/ tree
-    assert (tmp_path / "_media" / "7" / "frames" / "0.png").exists()
-    assert (tmp_path / "_media" / "7" / "frames" / "1.png").exists()
+    assert "_media/7/frames" not in note
+    assert "A title slide." not in note
+    assert not (tmp_path / "_media" / "7" / "frames").exists()
 
 
 def test_generate_no_frames_note_is_unchanged(tmp_path: Path):
@@ -718,63 +711,36 @@ def test_generate_no_frames_note_is_unchanged(tmp_path: Path):
     assert "_media" not in note_a  # no embed lines when there are no frames
 
 
-def test_generate_silent_slide_deck_embeds_frames(tmp_path: Path):
-    """A SILENT slide deck (no speech but with frames) renders the digest heading +
-    the slide embeds — the visual layer is where a screen-only video's content
-    lives — instead of the bare silent-video line."""
-    media_root = tmp_path / "media"
-    (media_root / "7" / "frames").mkdir(parents=True)
-    (media_root / "7" / "frames" / "0.png").write_bytes(b"\x89PNG s0")
-    (media_root / "7" / "frames" / "1.png").write_bytes(b"\x89PNG s1")
-
-    store = {"7": _video_item(text="", has_speech=False, frames=_frames())}
-    generate(store, tmp_path, media_root=media_root)
-    note = next((tmp_path / "items").glob("*.md")).read_text(encoding="utf-8")
-    assert "## Video digest: The Talk" in note
-    assert "![[_media/7/frames/0.png]]" in note
-    assert "silent video" not in note.lower()
-
-
-def test_generate_frames_embed_without_media_root(tmp_path: Path):
-    """Like photos, the frame embed lines render even without `media_root` (the URL
-    is in the data; only the mirrored bytes are missing) — a missing mirror renders
-    a broken embed, not a crash."""
-    store = {"7": _video_item(text="body", frames=_frames())}
-    generate(store, tmp_path)  # no media_root
-    note = next((tmp_path / "items").glob("*.md")).read_text(encoding="utf-8")
-    assert "![[_media/7/frames/0.png]]" in note
-
-
-def test_slide_caption_collapses_internal_newlines(tmp_path: Path):
-    """A multi-line vision description must render as ONE valid `> ...` blockquote
-    caption: internal newlines are collapsed to spaces so the second line can't
-    spill OUT of the blockquote (an Obsidian caption is a single line)."""
-    from xbrain.generate import _slide_embed_lines
-    from xbrain.models import VideoFrame
-
-    frames = [
-        VideoFrame(
-            timestamp=1.0,
-            local_path="7/frames/0.png",
-            description="First line of the slide.\nSecond line of the slide.",
-        )
-    ]
-    lines = _slide_embed_lines(frames)
-    # Every emitted line is truly a single line — none carries an internal newline
-    # that would break the blockquote when the note is joined with "\n".
-    assert all("\n" not in line for line in lines)
-    assert "> First line of the slide. Second line of the slide." in lines
-
-
-def test_generate_silent_line_wins_over_stale_text_when_no_speech(tmp_path: Path):
-    """Defensive: a malformed third-party transcriber that reports `has_speech=False`
-    yet leaves non-empty `text` must still render the SILENT line — the tweet-signal
-    truth — not the stale/contradictory transcript text (and no digest heading)."""
-    generate({"7": _video_item(text="stale", has_speech=False, frames=[])}, tmp_path)
+def test_generate_silent_line_when_video_has_no_summary(tmp_path: Path):
+    """No summary means no analyzable video content, even if legacy flags exist."""
+    generate({"7": _video_item(text="", has_speech=False, frames=_frames())}, tmp_path)
     note = next((tmp_path / "items").glob("*.md")).read_text(encoding="utf-8")
     assert "silent video" in note.lower() or "sin voz" in note.lower()
-    assert "stale" not in note
     assert "## Video digest" not in note
+
+
+def test_generate_writes_video_summary_and_transcript_artifacts(tmp_path: Path):
+    """Raw transcript is stored near the summary, but item note includes only summary."""
+    item = _video_item(text="### Executive Summary\n\nUseful summary.")
+    source = item.content.sources[0]
+    source.raw_transcript = "Full original transcript."
+    source.raw_transcript_url = "https://video.example/captions.vtt"
+    source.raw_transcript_format = "vtt"
+    source.language = "en"
+
+    generate({"7": item}, tmp_path)
+
+    item_note = next((tmp_path / "items").glob("*.md")).read_text(encoding="utf-8")
+    assert "Useful summary." in item_note
+    assert "Full original transcript." not in item_note
+    assert "../videos/" in item_note
+
+    folder = next((tmp_path / "videos").iterdir())
+    summary = (folder / "summary.md").read_text(encoding="utf-8")
+    transcript = (folder / "transcript.md").read_text(encoding="utf-8")
+    assert "Useful summary." in summary
+    assert "Full original transcript." in transcript
+    assert "xbrain_exclude: true" in transcript
 
 
 # --------------------------------------------------------------- topic_style

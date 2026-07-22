@@ -37,53 +37,33 @@ bookmarks vanished. It aborts rather than overwrite good data. Re-authenticate
 itself, and backs off on `429`. If you still hit limits, wait and re-run — the
 store is incremental, so you lose nothing. Don't run many extracts back-to-back.
 
-## `parakeet-mlx` / `ffmpeg` not found (digest-video)
+## `digest-video` reports `sin transcript`
 
-```
-transcriber '.../xbrain-transcribe' exited 1: FileNotFoundError: 'parakeet-mlx'
-```
-
-The external tools aren't on `PATH`. Two cases:
-
-- **Interactive shell:** install them (`brew install ffmpeg`,
-  `uv tool install parakeet-mlx mlx-vlm`) and make sure `~/.local/bin` +
-  `/opt/homebrew/bin` are on your `PATH`.
-- **cron / launchd / a scheduled job:** these run with a **minimal PATH** that
-  excludes `~/.local/bin` and `/opt/homebrew/bin`. Set the job's environment
-  explicitly — e.g. in a launchd plist:
-
-  ```xml
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>/Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
-  </dict>
-  ```
-
-  When testing a job, reproduce its env (`env -i HOME=$HOME PATH=... your-cmd`),
-  not your shell — your shell's full PATH hides the bug.
+XBrain found a video bookmark, but X did not expose a caption/text-track URL in
+the captured payload. This is expected for many X videos. XBrain intentionally
+does not download MP4/audio to manufacture a transcript, so the item is skipped
+for video digest until captions are available from X.
 
 ## `digest-video` is slow or times out
 
-Local vision (`--frames`) is the bottleneck: a slide-heavy talk can have up to
-40 key-frames, and a local VLM reloads the model per frame. On a 16 GB Mac,
-`qwen-7b` is ~2 min/frame → a long talk takes over an hour.
+The expensive step is the text LLM executive summary, not video download. If the
+run is slow, process fewer videos with `--limit`, or run by topic/ids:
 
-- **First run of a large model** can exceed the 300 s per-frame timeout while it
-  *downloads* — pre-pull once: `~/.local/share/uv/tools/mlx-vlm/bin/python -c
-  "from mlx_vlm import load; load('mlx-community/Qwen2.5-VL-7B-Instruct-4bit')"`.
-- **Too slow overall?** Use a smaller model (`--vision-model qwen-3b`), or
-  transcript-only (drop `--frames`), or cloud (`--vision-model opus`, needs
-  `ANTHROPIC_API_KEY`).
-- Frame extraction never hangs the run — ffmpeg is bounded by its own timeout.
+```bash
+uv run xbrain digest-video --all-pending --limit 5
+uv run xbrain digest-video --topic ai-coding
+```
 
-## Every video comes back `fallidos` / `sin voz`
+## Every video comes back `fallidos`
 
-- `sin voz` (silent): the video has **no audio track** at the source (GIFs,
-  muted screencasts). This is expected — it attaches as `has_speech=false`
-  ("silent video"), not an error. Verify with `yt-dlp -f bestaudio <tweet-url>`
-  (errors = no audio exists).
-- `fallidos` (real failures): usually `parakeet-mlx` not found (see the PATH
-  section above) — the fix is almost always the environment, not the video.
+`fallidos` means the caption URL existed but could not be fetched/parsed, or the
+configured text LLM failed to produce a valid summary. Re-run once; signed text
+track URLs can expire. If it repeats, refresh X metadata first:
+
+```bash
+uv run xbrain refresh-media --source bookmarks --headless
+uv run xbrain digest-video --all-pending
+```
 
 ## `generate` hangs or takes very long
 
@@ -98,7 +78,7 @@ loses data — just re-run it.
 
 No. The default execution mode (`vocab`/`enrich`/`topics`/`describe`) uses a
 **Claude Code session** — no key, no cost. `ANTHROPIC_API_KEY` is only for
-`--executor api` (unattended LLM runs) and cloud vision (`--vision-model opus`).
+`--executor api` when `[llm].provider = "anthropic"` for unattended LLM runs.
 `FIRECRAWL_API_KEY` is an optional fallback fetcher for JavaScript-heavy pages.
 
 ## Where's the source of truth? Can I delete the vault notes?

@@ -217,14 +217,14 @@ def _described_photo_text(entry: object) -> str:
     return ""
 
 
-def _collect_video_transcripts(item_pool: list[Item]) -> list[str]:
-    """Bounded per-video content excerpts across a pool of items (#44).
+def _collect_video_summaries(item_pool: list[Item]) -> list[str]:
+    """Bounded per-video executive summaries across a pool of items.
 
-    Each `x_video` source contributes its transcript and/or visual key-frame
-    descriptions trimmed to `TOPIC_TRANSCRIPT_CHAR_LIMIT`, so a topic with many
-    long talks stays within the synthesis prompt's token budget.
+    Each `x_video` source contributes only `source.text`, which is the executive
+    summary produced from a raw transcript. Raw transcripts and legacy key-frame
+    descriptions are intentionally ignored by `video_content_text`.
     """
-    transcripts: list[str] = []
+    summaries: list[str] = []
     for item in item_pool:
         if item.content is None:
             continue
@@ -232,15 +232,15 @@ def _collect_video_transcripts(item_pool: list[Item]) -> list[str]:
             if isinstance(src, ContentSourceSuccess):
                 text = video_content_text(src, TOPIC_TRANSCRIPT_CHAR_LIMIT)
                 if text:
-                    transcripts.append(text)
-    return transcripts
+                    summaries.append(text)
+    return summaries
 
 
 def build_topic_inputs(
     slugs: list[str], vocab: list[Topic], all_posts: dict[str, TopicPosts]
 ) -> list[TopicInput]:
     """Build the synthesis input for each slug — description + summaries + image
-    descriptions + bounded video transcripts (#44)."""
+    descriptions + bounded video executive summaries."""
     by_slug = {topic.slug: topic for topic in vocab}
     inputs: list[TopicInput] = []
     for slug in slugs:
@@ -255,7 +255,7 @@ def build_topic_inputs(
                 description=topic.description,
                 summaries=_collect_summaries(item_pool),
                 image_descriptions=_collect_image_descriptions(item_pool),
-                video_transcripts=_collect_video_transcripts(item_pool),
+                video_transcripts=_collect_video_summaries(item_pool),
             )
         )
     return inputs

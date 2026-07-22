@@ -48,10 +48,9 @@ class TopicInput:
     reflects visual evidence that the per-post enrichment may have
     only partially captured. Decorative photos are excluded at the
     seam (mirrors `xbrain.executors.api._content_image_descriptions`).
-    `video_transcripts` is the bounded per-video transcript excerpt for
-    every with-speech `x_video` source in the topic's posts (#44) — richer
-    evidence than the one-line summary alone, trimmed per video so a topic
-    full of long talks stays within the prompt's token budget.
+    `video_transcripts` is a legacy field name: it now carries bounded
+    per-video executive summaries from `x_video` sources. Raw transcripts are
+    retained only as vault reference artifacts and never enter this prompt.
     """
 
     slug: str
@@ -92,15 +91,15 @@ def _user_prompt(topic: TopicInput) -> str:
         ]
         lines += [f"- {description}" for description in topic.image_descriptions]
     if topic.video_transcripts:
-        # Transcript evidence supplements the summaries the same way images
-        # do: a talk's transcript carries detail a one-line summary drops.
-        # Each excerpt is already bounded by the caller (`build_topic_inputs`)
-        # so a topic full of long talks stays within the token budget (#44).
+        # Video executive summaries supplement the per-post summaries the same
+        # way image descriptions do. Each excerpt is already bounded by the
+        # caller (`build_topic_inputs`) so a topic full of videos stays within
+        # the token budget.
         lines += [
             "",
-            f"Video transcripts across the {len(topic.video_transcripts)} videos in this topic (truncated):",
+            f"Video summaries across the {len(topic.video_transcripts)} videos in this topic (truncated):",
         ]
-        lines += [f"- {transcript}" for transcript in topic.video_transcripts]
+        lines += [f"- {summary}" for summary in topic.video_transcripts]
     return "\n".join(lines)
 
 
@@ -206,8 +205,9 @@ def export_topic_worksheet(inputs: list[TopicInput], path: Path, output_language
             f"keys {{slug, overview, notes}}. `overview` is plain prose in "
             f"{output_language}; `notes` is a list of plain-prose strings in "
             f"{output_language}. A topic may also carry `image_descriptions` "
-            f"(content-bearing photos) and `video_transcripts` (bounded excerpts) "
-            f"— weigh them as visual/transcript evidence alongside the summaries. "
+            f"(content-bearing photos) and `video_transcripts` (legacy field name "
+            f"for bounded video executive summaries) — weigh them as evidence "
+            f"alongside the summaries. "
             f"No wikilinks, no filenames. Then run: "
             f"xbrain topics --apply <this file>."
         ),
@@ -223,10 +223,10 @@ def export_topic_worksheet(inputs: list[TopicInput], path: Path, output_language
                 # into `TopicInput.image_descriptions`; empty list when the topic has
                 # none. No truncation — the api path doesn't bound these either.
                 "image_descriptions": t.image_descriptions,
-                # Bounded video-transcript excerpts (#56 transcript-to-topics half):
-                # mirrors the `api` track's topic block ("Video transcripts across
-                # the N videos in this topic"). Already collected + per-video bounded
-                # (`TOPIC_TRANSCRIPT_CHAR_LIMIT`) by `build_topic_inputs` into
+                # Bounded video executive summaries: mirrors the `api` track's
+                # topic block ("Video summaries across the N videos in this topic").
+                # Already collected + per-video bounded (`TOPIC_TRANSCRIPT_CHAR_LIMIT`)
+                # by `build_topic_inputs` into the legacy field
                 # `TopicInput.video_transcripts`; empty list when the topic has none.
                 "video_transcripts": t.video_transcripts,
             }
