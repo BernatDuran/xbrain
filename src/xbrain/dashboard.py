@@ -140,11 +140,17 @@ def _recent(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: r["date"], reverse=True)[:n]
 
 
-def _row(item: Item, id2note: dict[str, str], slug2label: dict[str, str]) -> dict[str, Any]:
+def _row(
+    item: Item,
+    id2note: dict[str, str],
+    slug2label: dict[str, str],
+    item_storage: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     """A drill-down post row: who/when/what plus deep links to X and the vault."""
     topic = _primary(item)
     suggestions = _suggested_topics(item)
     return {
+        "id": item.id,
         "handle": item.author.handle,
         "name": item.author.name,
         "source": item.source,
@@ -157,6 +163,7 @@ def _row(item: Item, id2note: dict[str, str], slug2label: dict[str, str]) -> dic
         "summary": _summary(item),
         "url": item.url,
         "note": id2note.get(item.id),
+        "storage": item_storage.get(item.id),
     }
 
 
@@ -184,6 +191,22 @@ def _failed_article_sources(item: Item) -> list[ContentSourceFailure]:
     ]
 
 
+def _has_processed_content(item: Item) -> bool:
+    """True when an item already has useful generated content for the note."""
+    if item.enriched is not None:
+        return True
+    if item.content is None:
+        return False
+    return any(isinstance(source, ContentSourceSuccess) for source in item.content.sources)
+
+
+def _blocking_article_failures(item: Item) -> list[ContentSourceFailure]:
+    """Article failures that still leave the item without useful processing."""
+    if _has_processed_content(item):
+        return []
+    return _failed_article_sources(item)
+
+
 def _content_type(item: Item) -> str:
     """Dashboard content bucket: article, video, article_failed or post_only."""
     if _saved_article_sources(item):
@@ -193,7 +216,7 @@ def _content_type(item: Item) -> str:
         for source in (item.content.sources if item.content else [])
     ) or has_video(item):
         return "video"
-    if _failed_article_sources(item):
+    if _blocking_article_failures(item):
         return "article_failed"
     return "post_only"
 
@@ -276,7 +299,9 @@ def _growth(items: list[Item]) -> dict[str, Any]:
     }
 
 
-def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
+def _longform(
+    items: list[Item], id2note: dict[str, str], item_storage: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     """Captured long-form counts (external vs X) plus a recent article list."""
     counts = {"ext_saved": 0, "ext_failed": 0, "x_saved": 0, "x_failed": 0}
     articles: list[dict[str, Any]] = []
@@ -288,6 +313,7 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
                 articles.append(
                     {
                         "title": source.title or source.url[:80],
+                        "id": item.id,
                         "url": source.url,
                         "source": "External" if source.kind == "external_article" else "X Article",
                         "handle": item.author.handle,
@@ -298,6 +324,7 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
                         "suggested_topics": _suggested_topics(item),
                         "post": item.url,
                         "note": id2note.get(item.id),
+                        "storage": item_storage.get(item.id),
                     }
                 )
             else:
@@ -314,20 +341,14 @@ def _longform(items: list[Item], id2note: dict[str, str]) -> dict[str, Any]:
 
 
 def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
-    """Recent failed article fetches with enough context to retry/debug."""
+    """Recent article failures that block useful note processing."""
     rows: list[dict[str, Any]] = []
     for item in items:
-        if not item.content:
-            continue
-        for source in item.content.sources:
-            if not (
-                isinstance(source, ContentSourceFailure)
-                and source.kind in ("external_article", "x_article")
-            ):
-                continue
+        for source in _blocking_article_failures(item):
             rows.append(
                 {
                     "handle": item.author.handle,
+                    "id": item.id,
                     "date": _date(item),
                     "kind": source.kind,
                     "reason": source.failure_reason,
@@ -341,29 +362,17 @@ def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[s
 
 
 def _article_failure_count(items: list[Item]) -> int:
-    """Total failed linked article sources across the corpus."""
-    return sum(
-        1
-        for item in items
-        if item.content is not None
-        for source in item.content.sources
-        if isinstance(source, ContentSourceFailure)
-        and source.kind in ("external_article", "x_article")
-    )
+    """Total linked article failures that block useful note processing."""
+    return sum(len(_blocking_article_failures(item)) for item in items)
 
 
 def _failed_bookmark_count(items: list[Item]) -> int:
-    """Bookmarks with at least one failed linked article source."""
+    """Bookmarks with article failures that still block useful processing."""
     return sum(
         1
         for item in items
         if item.source == "bookmark"
-        and item.content is not None
-        and any(
-            isinstance(source, ContentSourceFailure)
-            and source.kind in ("external_article", "x_article")
-            for source in item.content.sources
-        )
+        and _blocking_article_failures(item)
     )
 
 
@@ -410,7 +419,7 @@ def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, A
     failed_bookmarks = _failed_bookmark_count(items)
     recent_bookmarks = _recent(rows([item for item in items if item.source == "bookmark"]), 8)
     return {
-        "command": "uv run xbrain refresh-all --headless",
+        "command": "uv run xbrain refresh-all --headless --video-max-size 4GB",
         "retry_failed_command": "uv run xbrain retry-failed --source bookmarks --headless",
         "serve_command": "uv run xbrain serve-dashboard --host 127.0.0.1 --port 8765",
         "retry_failed_bookmarks": failed_bookmarks,
@@ -429,7 +438,9 @@ def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, A
     }
 
 
-def _videos(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
+def _videos(
+    items: list[Item], id2note: dict[str, str], item_storage: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     """A recent sample of video posts with poster, duration and deep links."""
     rows: list[dict[str, Any]] = []
     for item in items:
@@ -439,6 +450,7 @@ def _videos(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
             dur = entry.duration_millis
             rows.append(
                 {
+                    "id": item.id,
                     "handle": item.author.handle,
                     "date": _date(item),
                     "summary": _summary(item),
@@ -446,6 +458,7 @@ def _videos(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
                     "poster": entry.thumbnail_url,
                     "url": item.url,
                     "note": id2note.get(item.id),
+                    "storage": item_storage.get(item.id),
                 }
             )
             break
@@ -595,6 +608,7 @@ def _meta(
     updated: str,
     bookmarks: int,
     own: int,
+    storage: dict[str, Any],
 ) -> dict[str, Any]:
     """The KPI header block (totals, enrichment, long-form, media, timestamp)."""
     return {
@@ -607,6 +621,7 @@ def _meta(
         "media": media,
         "library": library,
         "taxonomy": taxonomy,
+        "storage": storage,
         "updated": updated,
     }
 
@@ -617,6 +632,8 @@ def compute_dashboard_data(
     id2note: dict[str, str],
     thumbs: list[dict[str, Any]],
     updated: str,
+    storage: dict[str, Any] | None = None,
+    item_storage: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the full JSON blob the dashboard template consumes.
 
@@ -628,15 +645,17 @@ def compute_dashboard_data(
     per_month: dict[str, list[Item]] = growth.pop("_per_month")
     topic_freq: "Counter[str]" = Counter(_primaries(items))
     slug2label = {s: humanize_topic(s) for s in topic_freq}
+    storage = storage or {}
+    item_storage = item_storage or {}
 
     def rows(group: list[Item]) -> list[dict[str, Any]]:
-        return [_row(i, id2note, slug2label) for i in group]
+        return [_row(i, id2note, slug2label, item_storage) for i in group]
 
     topics_sorted, topic_data = _topics_section(items, topic_freq, topic_pages, rows)
     authors, author_data = _authors_section(items, rows)
     domains, domain_data = _domains_section(items, rows)
     months_data = _months_section(per_month, rows)
-    longform = _longform(items, id2note)
+    longform = _longform(items, id2note, item_storage)
     media = _media_counts(items)
     library = _library_section(items)
     taxonomy = _taxonomy_section(items, rows)
@@ -655,6 +674,7 @@ def compute_dashboard_data(
             updated,
             len(bookmark_items),
             len(own_items),
+            storage,
         ),
         **growth,
         "topics_sorted": topics_sorted,
@@ -674,12 +694,13 @@ def compute_dashboard_data(
             "thumbs": thumbs,
             "samples": _recent(rows(photo_posts), 6),
         },
-        "videos": {"count": media["videos"], "items": _videos(items, id2note)},
+        "videos": {"count": media["videos"], "items": _videos(items, id2note, item_storage)},
         "sources": {
             "bookmark": {"count": len(bookmark_items), "samples": _recent(rows(bookmark_items), 6)},
             "own_tweet": {"count": len(own_items), "samples": _recent(rows(own_items), 6)},
         },
         "ops": _ops(items, id2note, rows),
+        "storage": storage,
     }
 
 

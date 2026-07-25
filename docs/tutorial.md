@@ -84,11 +84,12 @@ pricing".
 ## 5. Digest a bookmarked video
 
 This turns a saved video into a readable, topic-linked note without storing MP4,
-audio or frame files. It only works when X exposes a caption/text-track URL for
-that video. See the worked example in [digest-video.md](digest-video.md).
+audio or frame files. It prefers X captions; when captions are absent it can
+stream the MP4 only inside a temporary directory, transcribe it, and delete the
+media bytes. See the worked example in [digest-video.md](digest-video.md).
 
 ```bash
-# Caption-only: every bookmarked video with captions -> an x_video executive summary
+# Every pending bookmarked video -> an x_video executive summary when transcript is available
 uv run xbrain digest-video --all-pending
 uv run xbrain generate
 # -> the video's note now has a "## Video digest" section and videos/<video>/ artifacts

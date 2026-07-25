@@ -28,7 +28,7 @@ from xbrain.models import (
     MediaVideoPending,
     TopicPage,
 )
-from xbrain.notes_io import DEFAULT_TAIL, note_filename, slugify, title_of, user_tail, wrap
+from xbrain.notes_io import DEFAULT_TAIL, GEN_END, note_filename, slugify, title_of, user_tail, wrap
 from xbrain.video_content import video_content_text
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ def generate(
     topic_style: str = "wikilink",
     media_root: Path | None = None,
     topic_pages: dict[str, TopicPage] | None = None,
+    data_dir: Path | None = None,
 ) -> None:
     """Write _index.md, log.md and one note per noted item.
 
@@ -123,16 +124,32 @@ def generate(
         _render_index(items, strings, dashboard_href), encoding="utf-8"
     )
     (output_dir / "log.md").write_text(_render_log(items), encoding="utf-8")
-    for item in items:
-        if _has_note(item) and _in_range(item, since, until):
-            if media_root is not None:
-                vault_media_dir = output_dir / _VAULT_MEDIA_SUBDIR
-                _mirror_item_media(item, media_root, vault_media_dir)
-                _mirror_item_article_images(item, media_root, vault_media_dir)
-            _write_note(items_dir, item, strings, topic_style)
+    item_storage: dict[str, dict[str, int | str]] = {}
+    for _ in range(3):
+        for item in items:
+            if _has_note(item) and _in_range(item, since, until):
+                if media_root is not None:
+                    vault_media_dir = output_dir / _VAULT_MEDIA_SUBDIR
+                    _mirror_item_media(item, media_root, vault_media_dir)
+                    _mirror_item_article_images(item, media_root, vault_media_dir)
+                _write_note(items_dir, item, strings, topic_style, item_storage.get(item.id))
+        next_storage = _item_storage_map(items, items_dir, media_root)
+        if _storage_labels(next_storage) == _storage_labels(item_storage):
+            item_storage = next_storage
+            break
+        item_storage = next_storage
     _write_video_artifacts(items, output_dir / "videos", strings)
+    item_storage = _item_storage_map(items, items_dir, media_root, output_dir / "videos")
     try:
-        _write_dashboard(items, output_dir, items_dir, topic_pages or {}, media_root)
+        _write_dashboard(
+            items,
+            output_dir,
+            items_dir,
+            topic_pages or {},
+            media_root,
+            data_dir=data_dir,
+            item_storage=item_storage,
+        )
     except Exception:  # noqa: BLE001 - the dashboard is a best-effort secondary artifact
         logger.warning("Dashboard generation failed; item notes were written.", exc_info=True)
 
@@ -143,6 +160,9 @@ def _write_dashboard(
     items_dir: Path,
     topic_pages: dict[str, TopicPage],
     media_root: Path | None,
+    *,
+    data_dir: Path | None = None,
+    item_storage: dict[str, dict[str, int | str]] | None = None,
 ) -> None:
     """Write the self-contained interactive `dashboard.html` from the store.
 
@@ -161,8 +181,28 @@ def _write_dashboard(
     thumbs = collect_thumbnails(items, media_root, id2note)
     now = datetime.now(timezone.utc)
     updated = f"{now:%b} {now.day}, {now.year}".upper()
-    data = compute_dashboard_data(items, topic_pages, id2note, thumbs, updated)
+    storage = _storage_summary(data_dir, output_dir)
+    data = compute_dashboard_data(
+        items,
+        topic_pages,
+        id2note,
+        thumbs,
+        updated,
+        storage=storage,
+        item_storage=item_storage,
+    )
     (output_dir / "dashboard.html").write_text(render_dashboard_html(data), encoding="utf-8")
+
+
+def _storage_labels(storage: dict[str, dict[str, int | str]]) -> dict[str, tuple[str, ...]]:
+    return {
+        item_id: (
+            str(row.get("record_label", "")),
+            str(row.get("stored_files_label", "")),
+            str(row.get("note_label", "")),
+        )
+        for item_id, row in storage.items()
+    }
 
 
 def _remove_stale_item_notes(items_dir: Path, items: list[Item]) -> int:
@@ -195,7 +235,13 @@ def _in_range(item: Item, since: datetime | None, until: datetime | None) -> boo
     return True
 
 
-def _write_note(items_dir: Path, item: Item, strings: Strings, topic_style: str) -> None:
+def _write_note(
+    items_dir: Path,
+    item: Item,
+    strings: Strings,
+    topic_style: str,
+    storage: dict[str, int | str] | None = None,
+) -> None:
     """Write an item's note, replacing only the generated region.
 
     The filename ends with the item's globally unique ``id``. That makes
@@ -205,7 +251,7 @@ def _write_note(items_dir: Path, item: Item, strings: Strings, topic_style: str)
     orphaned.
     """
     path = items_dir / note_filename(item)
-    block = wrap(_render_note(item, strings, topic_style))
+    block = wrap(_render_note(item, strings, topic_style, storage))
     source = path if path.exists() else _stale_note(items_dir, item, path)
     if source is not None:
         tail = user_tail(source.read_text(encoding="utf-8"), DEFAULT_TAIL)
@@ -215,6 +261,199 @@ def _write_note(items_dir: Path, item: Item, strings: Strings, topic_style: str)
     else:
         tail = DEFAULT_TAIL
     path.write_text(block + tail, encoding="utf-8")
+
+
+def _human_bytes(size: int) -> str:
+    """Compact byte label for generated notes and dashboard storage payloads."""
+    value = float(max(size, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} B"
+            if value < 10:
+                return f"{value:.1f} {unit}"
+            return f"{value:.0f} {unit}"
+        value /= 1024
+    return f"{value:.0f} GB"
+
+
+def _local_media_size(media_root: Path | None, local_path: str) -> int:
+    if media_root is None:
+        return 0
+    path = media_root / local_path
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _item_media_file_bytes(item: Item, media_root: Path | None) -> int:
+    total = 0
+    for entry in item.media:
+        if isinstance(entry, (MediaPhotoDownloaded, MediaPhotoDescribed)):
+            total += _local_media_size(media_root, entry.local_path)
+    if item.content is None:
+        return total
+    for source in item.content.sources:
+        if not (isinstance(source, ContentSourceSuccess) and source.kind == "x_article"):
+            continue
+        for block in source.blocks:
+            if isinstance(block, ArticleImageBlock) and isinstance(
+                block.media, (MediaPhotoDownloaded, MediaPhotoDescribed)
+            ):
+                total += _local_media_size(media_root, block.media.local_path)
+    return total
+
+
+def _item_record_bytes(item: Item) -> int:
+    return len(item.model_dump_json().encode("utf-8"))
+
+
+def _path_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _generated_markdown_bytes(path: Path) -> int:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    end = text.find(GEN_END)
+    if end == -1:
+        return len(text.encode("utf-8"))
+    return len(text[: end + len(GEN_END)].encode("utf-8"))
+
+
+def _item_video_artifact_bytes(item: Item, videos_dir: Path | None) -> tuple[int, int]:
+    if videos_dir is None:
+        return 0, 0
+    summary = transcript = 0
+    for source in _video_sources(item):
+        if not source.raw_transcript:
+            continue
+        folder = videos_dir / _video_folder_name(item, source)
+        summary += _path_size(folder / "summary.md")
+        transcript += _path_size(folder / "transcript.md")
+    return summary, transcript
+
+
+def _item_storage_map(
+    items: list[Item],
+    items_dir: Path,
+    media_root: Path | None,
+    videos_dir: Path | None = None,
+) -> dict[str, dict[str, int | str]]:
+    out: dict[str, dict[str, int | str]] = {}
+    for item in items:
+        if not _has_note(item):
+            continue
+        note_bytes = _generated_markdown_bytes(items_dir / note_filename(item))
+        record_bytes = _item_record_bytes(item)
+        stored_files_bytes = _item_media_file_bytes(item, media_root)
+        video_summary_bytes, video_transcript_bytes = _item_video_artifact_bytes(item, videos_dir)
+        total_bytes = (
+            note_bytes
+            + record_bytes
+            + stored_files_bytes
+            + video_summary_bytes
+            + video_transcript_bytes
+        )
+        out[item.id] = {
+            "record_bytes": record_bytes,
+            "stored_files_bytes": stored_files_bytes,
+            "note_bytes": note_bytes,
+            "video_summary_bytes": video_summary_bytes,
+            "video_transcript_bytes": video_transcript_bytes,
+            "total_bytes": total_bytes,
+            "record_label": _human_bytes(record_bytes),
+            "stored_files_label": _human_bytes(stored_files_bytes),
+            "note_label": _human_bytes(note_bytes),
+            "video_summary_label": _human_bytes(video_summary_bytes),
+            "video_transcript_label": _human_bytes(video_transcript_bytes),
+            "total_label": _human_bytes(total_bytes),
+        }
+    return out
+
+
+def _iter_regular_files(root: Path | None) -> list[Path]:
+    if root is None or not root.exists():
+        return []
+    return [path for path in root.rglob("*") if path.is_file()]
+
+
+def _sum_files(paths: list[Path]) -> int:
+    return sum(_path_size(path) for path in paths)
+
+
+def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int | str | list[dict[str, int | str]]]:
+    """Global storage footprint shown in the dashboard.
+
+    `data_dir` is the XBrain source of truth: JSON/YAML records, downloaded media
+    and snapshots. The generated vault is derived, but its markdown/dashboard
+    size is useful operational context, so it is reported separately.
+    """
+    data_files = _iter_regular_files(data_dir)
+    media_files: list[Path] = []
+    snapshot_files: list[Path] = []
+    store_files: list[Path] = []
+    other_data_files: list[Path] = []
+    if data_dir is not None and data_dir.exists():
+        for path in data_files:
+            rel = path.relative_to(data_dir)
+            first = rel.parts[0] if rel.parts else ""
+            if first == "media":
+                media_files.append(path)
+            elif first == "snapshots":
+                snapshot_files.append(path)
+            elif path.suffix in {".json", ".yaml", ".yml"}:
+                store_files.append(path)
+            else:
+                other_data_files.append(path)
+    output_files = _iter_regular_files(output_dir)
+    note_files = [path for path in output_files if path.suffix == ".md"]
+    dashboard_files = [path for path in output_files if path.name == "dashboard.html"]
+    store_bytes = _sum_files(store_files)
+    media_bytes = _sum_files(media_files)
+    snapshot_bytes = _sum_files(snapshot_files)
+    other_data_bytes = _sum_files(other_data_files)
+    note_bytes = _sum_files(note_files)
+    dashboard_bytes = _sum_files(dashboard_files)
+    data_bytes = store_bytes + media_bytes + snapshot_bytes + other_data_bytes
+    vault_bytes = note_bytes + dashboard_bytes
+    total_bytes = data_bytes + vault_bytes
+    categories = [
+        {"label": "Store JSON/YAML", "bytes": store_bytes, "value": _human_bytes(store_bytes)},
+        {"label": "Stored media", "bytes": media_bytes, "value": _human_bytes(media_bytes)},
+        {"label": "Snapshots", "bytes": snapshot_bytes, "value": _human_bytes(snapshot_bytes)},
+        {"label": "Generated notes", "bytes": note_bytes, "value": _human_bytes(note_bytes)},
+        {"label": "Dashboard HTML", "bytes": dashboard_bytes, "value": _human_bytes(dashboard_bytes)},
+    ]
+    if other_data_bytes:
+        categories.append(
+            {"label": "Other data", "bytes": other_data_bytes, "value": _human_bytes(other_data_bytes)}
+        )
+    return {
+        "total_bytes": total_bytes,
+        "data_bytes": data_bytes,
+        "vault_bytes": vault_bytes,
+        "store_bytes": store_bytes,
+        "media_bytes": media_bytes,
+        "snapshot_bytes": snapshot_bytes,
+        "note_bytes": note_bytes,
+        "dashboard_bytes": dashboard_bytes,
+        "total_label": _human_bytes(total_bytes),
+        "data_label": _human_bytes(data_bytes),
+        "vault_label": _human_bytes(vault_bytes),
+        "store_label": _human_bytes(store_bytes),
+        "media_label": _human_bytes(media_bytes),
+        "snapshot_label": _human_bytes(snapshot_bytes),
+        "note_label": _human_bytes(note_bytes),
+        "dashboard_label": _human_bytes(dashboard_bytes),
+        "categories": categories,
+    }
 
 
 def _video_sources(item: Item) -> list[ContentSourceSuccess]:
@@ -666,7 +905,26 @@ def _content_lines(item: Item, strings: Strings) -> list[str]:
     return lines
 
 
-def _render_note(item: Item, strings: Strings, topic_style: str) -> str:
+def _storage_note_lines(storage: dict[str, int | str] | None) -> list[str]:
+    if not storage:
+        return []
+    return [
+        (
+            "> XBrain storage: "
+            f"DB record {storage['record_label']} · "
+            f"files {storage['stored_files_label']} · "
+            f"note {storage['note_label']}"
+        ),
+        "",
+    ]
+
+
+def _render_note(
+    item: Item,
+    strings: Strings,
+    topic_style: str,
+    storage: dict[str, int | str] | None = None,
+) -> str:
     """Render the wiki-side note for one item.
 
     The media block lives between the tweet text and the `## Enlaces`
@@ -685,6 +943,7 @@ def _render_note(item: Item, strings: Strings, topic_style: str) -> str:
         lines += [f"- <{link.url}>" for link in item.links]
         lines.append("")
     lines += [f"[Ver tweet original]({item.url})", ""]
+    lines += _storage_note_lines(storage)
     if item.content:
         lines += _content_lines(item, strings)
     return "\n".join(lines).rstrip()

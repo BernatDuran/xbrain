@@ -178,11 +178,12 @@ a blogpost** — the body prose with its inline images embedded in the author's
 order (the text-only fallback still renders the article text).
 
 A **bookmarked video** gets the same treatment: run [`digest-video`](#commands)
-and, when X exposes captions/text tracks, XBrain stores the raw transcript as a
-separate reference artifact and attaches only an executive summary to the item.
-That summary flows through the *same* `enrich -> topics -> generate` pipeline as
-an article. XBrain never downloads or stores MP4, audio, frames or video-derived
-image files; videos without captions are reported as `sin transcript`.
+and XBrain stores the raw transcript as a separate reference artifact and
+attaches only an executive summary to the item. It prefers captions/text tracks
+from X; when they are absent it can stream the MP4 only inside a private temp
+directory, transcribe it, and delete the media bytes. That summary flows through
+the *same* `enrich -> topics -> generate` pipeline as an article. XBrain never
+stores MP4, audio, frames or video-derived image files.
 
 *Example:*
 
@@ -443,15 +444,31 @@ repo. For NanoGPT, copy `.env.example` to `.env` and set `NANOGPT_API_KEY`.
 
 ### Video digest policy
 
-`digest-video` is caption-only. It never downloads MP4/audio, never extracts
-frames, and never writes video-derived image files. It uses caption/text-track
-URLs captured from X when available, keeps the raw transcript as a vault
-reference artifact, and sends only an executive summary through
-`enrich`, `topics`, the dashboard and Ask XBrain.
+`digest-video` never stores MP4/audio, never extracts frames, and never writes
+video-derived image files. It uses caption/text-track URLs captured from X when
+available. If captions are absent, it may stream the MP4 into a private
+temporary directory, optionally extract mono 16k audio there for ASR, keep only
+the transcript text, and delete the temporary media bytes. The raw transcript is
+a vault reference artifact; only the executive summary flows through `enrich`,
+`topics`, the dashboard and Ask XBrain.
 
-Legacy local ASR/vision helpers remain in the repository for historical tests
-and experiments, but the normal CLI path disables `download-videos`,
-`fetch-video`, `digest-video --frames` and `--vision-model`.
+Local ASR is used only through the temporary fallback. The normal CLI path still
+disables manual MP4 persistence (`download-videos`, `fetch-video`) and visual
+video artifacts (`digest-video --frames`, `--vision-model`).
+
+On a Linux VPS, use the bundled faster-whisper wrapper from a separate ASR venv:
+
+```toml
+[transcribe]
+command = "env XBRAIN_WHISPER_CACHE=/opt/xbrain-asr/models XBRAIN_WHISPER_CPU_THREADS=6 XBRAIN_WHISPER_BEAM_SIZE=1 XBRAIN_WHISPER_DELETE_SOURCE_AFTER_AUDIO=1 /opt/xbrain-asr/bin/python /workspace/projects/xbrain/scripts/xbrain-transcribe-faster-whisper"
+model = "small"
+timeout_seconds = 7200
+```
+
+`digest-video --max-size` is still recommended for long videos. The cap is
+enforced from `Content-Length` when present and while streaming bytes to disk.
+The `list-videos` size column remains an estimate from X's
+`bitrate × duration_millis`, so it can be conservative.
 
 ---
 
@@ -579,10 +596,10 @@ uv run xbrain <command> [options]
 | `media` | Download X-post photos referenced in `Item.media` **and the inline images of a bookmarked X Article** (stored under `data/media/<id>/article/<n>`, separate from the item's own photos), reusing the one photo-download engine for both. `--limit` is a combined budget; the SUMMARY reports article images separately. Item photos and the downloaded Article images both render inline in the wiki — `generate` embeds each Article image in the author's order (see the blogpost render). `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Local media storage](#local-media-storage). |
 | `describe` | Describe downloaded X-post photos and inline X Article images with `[llm].provider` + `[llm].vision_model`, then feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described images unless `[describe].version` is bumped in `config.toml`. |
 | `refresh-media` | Re-capture X and backfill playable video URL + metadata onto poster-era records. It still does not download video bytes. Re-seeing 0 known items on a non-empty store aborts unless `--force`. `--source bookmarks\|tweets\|all`, `--force`. |
-| `download-videos` | Disabled by storage policy. XBrain does not download or store MP4. |
-| `list-videos` | Read-only catalog of every video referenced in `items.json`. Useful for inspecting what XBrain knows about video bookmarks. Writes nothing. |
-| `fetch-video` | Disabled by storage policy. XBrain does not write MP4 even to a temporary `--to` directory. |
-| `digest-video` | Caption-only video processing: fetch a captured caption/text-track URL, store the raw transcript as a reference artifact, create an executive summary with the configured text LLM, and attach that summary as `x_video`. No MP4/audio/frames are downloaded or stored. Videos without caption URLs are reported as `sin transcript`. `--frames` and `--vision-model` are disabled; `--max-size` is ignored. |
+| `download-videos` | Disabled by storage policy. XBrain does not persist MP4. |
+| `list-videos` | Read-only catalog of every video referenced in `items.json`, showing both media `STATE` and analysis `DIGEST`. Useful for inspecting what XBrain knows about video bookmarks. Writes nothing. |
+| `fetch-video` | Disabled by storage policy. XBrain does not expose a manual MP4 write path. |
+| `digest-video` | Video processing without persistent media: use a captured caption/text-track URL when available, otherwise stream MP4 only to a private temp dir, transcribe with `[transcribe].command` (the faster-whisper wrapper extracts temp audio first), delete temp media, store the raw transcript as a reference artifact, create an executive summary with the configured text LLM, and attach that summary as `x_video`. `--frames` and `--vision-model` are disabled; `--max-size` caps only the temporary MP4 fallback; `[transcribe].timeout_seconds` caps the external ASR process. |
 | `vocab` | Induce the topic taxonomy. `--executor`, `--apply <file>`, `--regenerate`. |
 | `enrich` | Enrich items with a summary + topics. `--executor`, `--apply <file>`, `--taxonomy-risk` to re-enrich only items flagged by taxonomy diagnostics (`misc`, low/unknown confidence, suggested missing topics, or stale content). |
 | `taxonomy-health` | Read-only diagnostics for taxonomy drift: `misc` usage, confidence counts, single-topic assignments, unused topics and repeated `suggested_new_topics`. |
@@ -706,7 +723,8 @@ automatically without `--force`.
 A video entry carries the external stream URL, poster `thumbnail_url`, optional
 bitrate/duration metadata, and, when X exposes it, caption/text-track metadata.
 The normal XBrain library policy is: **never store MP4, audio, frames or
-video-derived image files**.
+video-derived image files**. Temporary MP4/audio bytes are allowed only inside
+`digest-video`'s ASR fallback and are removed before the store/vault is written.
 
 Videos captured before caption metadata landed may need `refresh-media` so XBrain
 can re-read the X payload and discover newer video/caption fields. It does not
@@ -718,19 +736,22 @@ xbrain refresh-media --source bookmarks   # bookmarks only
 xbrain refresh-media --force              # save even if 0 known items re-seen
 ```
 
-**`digest-video` - the built-in caption path.** It fetches only captured
-caption/text-track URLs, stores the raw transcript as a reference artifact, and
-attaches an executive summary as `x_video`:
+**`digest-video` - the built-in video transcript path.** It fetches captured
+caption/text-track URLs when available. If not, it streams MP4 into a temp dir,
+transcribes it with the external ASR command, deletes the media bytes, stores the
+raw transcript as a reference artifact, and attaches an executive summary as
+`x_video`:
 
 ```bash
 xbrain digest-video --ids 2068,2069        # dedup handles repeated videos
 xbrain digest-video --topic ai             # every ai-topic video
-xbrain digest-video --all-pending          # every pending video with captions
+xbrain digest-video --all-pending          # every pending video
+xbrain digest-video --all-pending --max-size 500MB  # cap ASR fallback downloads
 ```
 
 `download-videos`, `fetch-video`, `digest-video --frames` and `--vision-model`
-are disabled. `--max-size` is accepted on `digest-video` for old scripts but
-ignored, because no video bytes are downloaded.
+are disabled. `--max-size` applies only to the temporary ASR fallback; caption
+tracks do not download video bytes.
 
 ---
 
@@ -986,11 +1007,11 @@ xbrain/
 │   ├── models.py         # pydantic data models (Item, Enrichment, Topic, ...)
 │   ├── store.py          # JSON load/save for items + topic pages
 │   ├── refresh.py        # refresh-media backfill: video media swap + size estimate
-│   ├── video_digest.py   # digest-video: caption transcript -> executive summary
-│   ├── video_transcript.py # caption/text-track fetch + parser + LLM summary prompt
+│   ├── video_digest.py   # digest-video: captions/temporary ASR -> executive summary
+│   ├── video_transcript.py # captions parser + temporary ASR fallback + LLM prompt
 │   ├── video_select.py   # list-videos: read-only video catalog (VideoRow)
-│   ├── video_media.py    # legacy mp4 downloader internals; CLI path disabled
-│   ├── video_fetch.py    # legacy mp4 fetch internals; CLI path disabled
+│   ├── video_media.py    # legacy mp4 downloader internals; manual CLI path disabled
+│   ├── video_fetch.py    # ephemeral mp4 fetch internals for ASR fallback
 │   ├── extract/          # X extraction (Playwright + GraphQL interception)
 │   │   ├── browser.py    #   session / browser context
 │   │   ├── graphql.py    #   parse X's internal GraphQL responses

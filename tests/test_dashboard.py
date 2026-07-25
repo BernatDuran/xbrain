@@ -130,6 +130,7 @@ def test_compute_counts_topics_authors_and_deep_links():
     assert data["taxonomy"]["suggested"][0] == {"slug": "ai-systems", "count": 1}
 
     row = data["topic_data"]["ai-coding"]["samples"][0]
+    assert row["id"] in {"100", "101"}
     assert row["url"].startswith("https://x.com/")
     assert row["note"].endswith(".md")
     assert row["confidence"] in {"high", "low"}
@@ -207,8 +208,8 @@ def test_long_form_and_media_counts():
     assert data["meta"]["library"] == {
         "articles": 2,
         "videos": 1,
-        "article_failed": 1,
-        "post_only": 1,
+        "article_failed": 0,
+        "post_only": 2,
     }
 
     md = data["meta"]["media"]
@@ -234,6 +235,26 @@ def test_ops_section_counts_pending_work_and_article_failures():
                     url="https://x.com/i/article/1",
                     failure_reason="js_required",
                 )
+            ],
+        ),
+    )
+    failed.enriched = None
+    processed_with_broken_link = _item(
+        "4",
+        media=[MediaVideoPending(url="https://v")],
+        content=Content(
+            fetched_at=DT,
+            sources=[
+                ContentSourceSuccess(
+                    kind="x_video",
+                    url="https://x.com/alice/status/4",
+                    text="video digest",
+                ),
+                ContentSourceFailure(
+                    kind="external_article",
+                    url="https://example.com/moved",
+                    failure_reason="not_found",
+                ),
             ],
         ),
     )
@@ -276,22 +297,29 @@ def test_ops_section_counts_pending_work_and_article_failures():
         ),
     )
 
-    data = compute_dashboard_data([pending, failed, media_item], {}, {"2": "/v/2.md"}, [], "x")
+    data = compute_dashboard_data(
+        [pending, failed, media_item, processed_with_broken_link],
+        {},
+        {"2": "/v/2.md", "4": "/v/4.md"},
+        [],
+        "x",
+    )
 
     ops = data["ops"]
-    assert ops["command"] == "uv run xbrain refresh-all --headless"
+    assert ops["command"] == "uv run xbrain refresh-all --headless --video-max-size 4GB"
     assert ops["retry_failed_command"] == "uv run xbrain retry-failed --source bookmarks --headless"
     assert ops["retry_failed_bookmarks"] == 1
     assert ops["pending"] == {
         "fetch": 1,
         "media": 2,
         "describe": 2,
-        "enrich": 1,
+        "enrich": 2,
         "article_failures": 1,
     }
     assert ops["article_failures"][0]["reason"] == "js_required"
     assert ops["article_failures"][0]["note"] == "/v/2.md"
-    assert len(ops["recent_bookmarks"]) == 3
+    assert {row["id"] for row in ops["article_failures"]} == {"2"}
+    assert len(ops["recent_bookmarks"]) == 4
 
 
 def test_render_dashboard_includes_ops_controls():
@@ -300,7 +328,30 @@ def test_render_dashboard_includes_ops_controls():
     assert 'id="ops-retry-failed"' in html
     assert "/api/refresh-all" in html
     assert "/api/retry-failed" in html
+    assert "/api/reprocess-note" not in html
+    assert "data-reprocess" not in html
     assert "Daily refresh" in html
+
+
+def test_render_dashboard_declares_escape_before_storage_strip_use():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert html.index("const esc=") < html.index("document.getElementById('storage-strip')")
+
+
+def test_compute_dashboard_includes_storage_payload():
+    item = _item("1", "bookmark", "ai-coding", "alice", confidence="high")
+    data = compute_dashboard_data(
+        [item],
+        {},
+        {"1": "/v/items/1.md"},
+        [],
+        "JUN 1, 2026",
+        storage={"total_bytes": 1234, "total_label": "1.2 KB", "categories": []},
+        item_storage={"1": {"record_bytes": 10, "record_label": "10 B"}},
+    )
+
+    assert data["meta"]["storage"]["total_label"] == "1.2 KB"
+    assert data["topic_data"]["ai-coding"]["samples"][0]["storage"]["record_bytes"] == 10
 
 
 def test_render_dashboard_includes_library_chat():

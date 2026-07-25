@@ -59,9 +59,11 @@ class Config:
     # a subprocess located via PATH/config. Defaults to `parakeet-mlx`; may be a
     # multi-token wrapper command (split with shlex, no shell). `transcribe_model`
     # is the optional model id passed through (`None` → the transcriber's own
-    # default).
+    # default). `transcribe_timeout_seconds` caps the external ASR subprocess so
+    # long videos can be allowed explicitly without changing code.
     transcribe_command: str
     transcribe_model: str | None
+    transcribe_timeout_seconds: int
     # `vision_command` is an optional external/custom vision command for
     # `xbrain digest-video --frames` (#44 PR4). When unset, the CLI describes
     # frames directly through `[llm].provider` + `[llm].vision_model`; when set,
@@ -258,6 +260,9 @@ def load_config(repo_root: Path) -> Config:
         )
     describe = settings.get("describe", {})
     transcribe = settings.get("transcribe", {})
+    transcribe_timeout_seconds = int(transcribe.get("timeout_seconds", 1800))
+    if transcribe_timeout_seconds < 1:
+        raise ValueError("config.toml: [transcribe].timeout_seconds must be >= 1")
     vision = settings.get("vision", {})
     llm = settings.get("llm", {})
     llm_provider = normalize_llm_provider(
@@ -286,6 +291,7 @@ def load_config(repo_root: Path) -> Config:
         describe_version=describe.get("version", "v1"),
         transcribe_command=transcribe.get("command", "parakeet-mlx"),
         transcribe_model=transcribe.get("model"),
+        transcribe_timeout_seconds=transcribe_timeout_seconds,
         vision_command=vision.get("command", ""),
         vision_model=vision.get("model"),
     )

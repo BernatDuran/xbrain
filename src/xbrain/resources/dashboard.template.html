@@ -61,6 +61,11 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 	.kpi .num.accent{color:var(--accent)}
 	.kpi .ctx{font-size:12.5px;color:var(--ink-muted);margin-top:9px}
 	.kpi .ctx b{color:var(--sage);font-weight:600}
+	.storage-strip{margin-top:10px;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--ink-faint);
+	  display:flex;gap:10px;flex-wrap:wrap;align-items:center;opacity:.86}
+	.storage-strip span{border:1px solid var(--hairline);border-radius:5px;padding:5px 8px;background:rgba(255,255,255,.012)}
+	.storage-strip b{color:var(--ink-muted);font-weight:500}
+	.storage-mini{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.04em;margin-top:7px}
 
 	/* mobile ops */
 	.ops{margin-top:20px;display:grid;grid-template-columns:1.1fr .9fr;gap:20px}
@@ -234,6 +239,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
 
   <section class="view on" id="dashboard-view">
 	  <section class="kpis" id="kpis"></section>
+	  <section class="storage-strip" id="storage-strip"></section>
 
 	  <section class="ops" id="ops">
 	    <div class="ops-main">
@@ -307,6 +313,11 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
       <div class="phead"><div><span class="kick">08 · Sources</span><h3>Top linked domains</h3></div><div class="sub">external · x.com excluded</div></div>
       <div class="chart" id="c-domains" style="height:340px"></div>
     </div>
+
+    <div class="panel span2">
+      <div class="phead"><div><span class="kick">09 · Storage</span><h3>XBrain storage footprint</h3></div><div class="sub">stored files · generated notes</div></div>
+      <div class="chart" id="c-storage" style="height:300px"></div>
+    </div>
   </section>
   </section>
 
@@ -358,6 +369,8 @@ const C = {accent:'#E0A233',sage:'#7C9A8E',sienna:'#C4643B',mauve:'#9B8FB0',slat
 const UI="'Hanken Grotesk',sans-serif", MONO="'Spline Sans Mono',monospace", DISP="'Fraunces',serif";
 const nf=n=>n.toLocaleString('en-US');
 const pct=(n,d)=>d?Math.round(n/d*100):0;
+const fmtBytes=b=>{b=Number(b||0);const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<u.length-1){b/=1024;i++;}return i===0?Math.round(b)+' B':(b<10?b.toFixed(1):Math.round(b))+' '+u[i]};
+const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mlabel=m=>{const [y,mm]=m.split('-');return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mm-1]+" '"+y.slice(2)};
 
 /* header + kpis */
@@ -366,6 +379,7 @@ document.getElementById('stamp').innerHTML='UPDATED '+DATA.meta.updated+' · <b>
 const M=DATA.meta;
 const LIB=M.library||{articles:M.longform.saved||0,videos:M.media.videos||0,article_failed:M.longform.total-M.longform.saved,post_only:0};
 const TAX=M.taxonomy||{confidence:{high:0,medium:0,low:0,unknown:0},misc:0,low:0,suggested:[],review_items:[]};
+const ST=M.storage||DATA.storage||{total_bytes:0,data_bytes:0,vault_bytes:0,categories:[]};
 const kpis=[
  ['Library items',nf(M.total),'articles/videos retained',false],
  ['Articles saved',nf(LIB.articles),'<b>'+M.longform.saved_pct+'%</b> of '+M.longform.total+' article fetches',true],
@@ -378,6 +392,12 @@ const kpis=[
 ];
 document.getElementById('kpis').innerHTML=kpis.map(k=>
  `<div class="kpi"><div class="lab">${k[0]}</div><div class="num${k[3]?' accent':''}">${k[1]}</div><div class="ctx">${k[2]}</div></div>`).join('');
+document.getElementById('storage-strip').innerHTML=[
+ ['XBrain DB',ST.data_label||fmtBytes(ST.data_bytes)],
+ ['Stored media',ST.media_label||fmtBytes(ST.media_bytes)],
+ ['Generated vault',ST.vault_label||fmtBytes(ST.vault_bytes)],
+ ['Total footprint',ST.total_label||fmtBytes(ST.total_bytes)]
+].map(([k,v])=>`<span>${esc(k)} · <b>${esc(v)}</b></span>`).join('');
 
 /* echarts theme helpers */
 const axisX=(rot=0)=>({axisLine:{lineStyle:{color:'rgba(236,230,218,.14)'}},axisTick:{show:false},
@@ -392,12 +412,11 @@ const TIP={backgroundColor:C.surface2,borderColor:'rgba(236,230,218,.12)',border
 const area=(hex)=>({color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:hex+'44'},{offset:1,color:hex+'02'}]}});
 const mk=id=>echarts.init(document.getElementById(id),null,{renderer:'canvas',devicePixelRatio:2.5});
 
-const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mlabelFull=m=>{const[y,mm]=m.split('-');return['January','February','March','April','May','June','July','August','September','October','November','December'][+mm-1]+' '+y};
 const WEB_NOTES=location.protocol==='http:'||location.protocol==='https:';
 const noteHref=n=>WEB_NOTES?'/notes?path='+encodeURIComponent(n):'obsidian://open?path='+encodeURIComponent(n);
 const noteAnchor=(n,label='note ↗',cls='lk',title='Open note')=>n?`<a class="${cls}" href="${esc(noteHref(n))}"${WEB_NOTES?' target="_blank" rel="noopener"':''} title="${esc(title)}">${esc(label)}</a>`:'';
-const chartIds=['c-growth','c-activity','c-sources','c-topics','c-longform','c-media','c-authors','c-domains'];
+const chartIds=['c-growth','c-activity','c-sources','c-topics','c-longform','c-media','c-authors','c-domains','c-storage'];
 function resizeCharts(){chartIds.forEach(id=>{const el=document.getElementById(id);if(el&&echarts.getInstanceByDom(el))echarts.getInstanceByDom(el).resize();});}
 function setView(view,{updateHash=true}={}){
  const chat=view==='chat';
@@ -425,7 +444,8 @@ const opsLk=(u,label)=>u?`<a class="lk" href="${esc(u)}" target="_blank">${label
 const opsNoteLk=n=>noteAnchor(n);
 const badge=(text,cls='')=>text?`<span class="badge ${esc(cls)}">${esc(text)}</span>`:'';
 const itemBadges=r=>`<div class="badges">${badge(r.content_type||'', 'kind')}${badge(r.confidence||'', r.confidence||'')}${(r.suggested_topics||[]).slice(0,2).map(s=>badge(s)).join('')}</div>`;
-function opsRow(r,fail=false){return `<div class="ops-item"><div class="m">${fail?esc(r.reason||'failure')+' · ':''}@${esc(r.handle||'—')} · ${esc(r.date||'')}</div><div class="s">${esc(r.summary||r.url||'')}</div>${itemBadges(r)}${r.url?`<div class="sm-links">${opsLk(r.url,fail?'article ↗':'post ↗')}${r.post?opsLk(r.post,'post ↗'):''}${opsNoteLk(r.note)}</div>`:''}</div>`}
+const storageMini=r=>r&&r.storage?`<div class="storage-mini">DB ${esc(r.storage.record_label||fmtBytes(r.storage.record_bytes))} · files ${esc(r.storage.stored_files_label||fmtBytes(r.storage.stored_files_bytes))} · note ${esc(r.storage.note_label||fmtBytes(r.storage.note_bytes))}</div>`:'';
+function opsRow(r,fail=false){return `<div class="ops-item"><div class="m">${fail?esc(r.reason||'failure')+' · ':''}@${esc(r.handle||'—')} · ${esc(r.date||'')}</div><div class="s">${esc(r.summary||r.url||'')}</div>${storageMini(r)}${itemBadges(r)}${r.url?`<div class="sm-links">${opsLk(r.url,fail?'article ↗':'post ↗')}${r.post?opsLk(r.post,'post ↗'):''}${opsNoteLk(r.note)}</div>`:''}</div>`}
 const taxRows=(DATA.taxonomy&&DATA.taxonomy.review_items?DATA.taxonomy.review_items:[]).slice(0,3).map(x=>opsRow(x,false));
 const sig=[...(OPS.article_failures||[]).slice(0,3).map(x=>opsRow(x,true)),...taxRows];
 document.getElementById('ops-list').innerHTML=sig.length?sig.join(''):'<div class="ops-item"><div class="s">No pending operational signals.</div></div>';
@@ -620,6 +640,18 @@ chDom.setOption({
   label:{show:true,position:'right',color:C.faint,fontFamily:MONO,fontSize:11,formatter:p=>nf(p.value)}}]});
 chDom.on('click',p=>{if(p.data&&p.data.domain)openDomain(p.data.domain);});
 
+/* 09 storage */
+const storageRows=(ST.categories||[]).filter(x=>(x.bytes||0)>0);
+const chStorage=mk('c-storage');
+chStorage.setOption({
+ grid:{left:150,right:48,top:10,bottom:26},tooltip:{...TIP,trigger:'item',formatter:p=>p.name+' · '+fmtBytes(p.value)},
+ xAxis:{type:'value',axisLabel:{formatter:v=>fmtBytes(v)},...axisY()},
+ yAxis:{type:'category',data:storageRows.map(x=>x.label).reverse(),axisLine:{show:false},axisTick:{show:false},
+   axisLabel:{color:C.muted,fontFamily:UI,fontSize:12}},
+ series:[{type:'bar',barWidth:'56%',data:storageRows.map((x,i)=>({value:x.bytes,name:x.label,
+   itemStyle:{color:[C.accent,C.mauve,C.sand,C.sage,C.slate,C.faint][i%6],borderRadius:[0,4,4,0]}})).reverse(),
+   label:{show:true,position:'right',color:C.faint,fontFamily:MONO,fontSize:11,formatter:p=>fmtBytes(p.value)}}]});
+
 /* ===== unified drill-down drawer ===== */
 const drawer=document.getElementById('drawer'),scrim=document.getElementById('scrim');
 function openDrawer(kick,title,meta,html){
@@ -633,7 +665,7 @@ function closeDrawer(){drawer.classList.remove('open');scrim.classList.remove('o
 const lk=(u,label)=>u?`<a class="lk" href="${esc(u)}" target="_blank">${label}</a>`:'';
 const noteLk=n=>noteAnchor(n);
 function links(r){const l=lk(r.url,'post ↗')+noteLk(r.note);return l?`<div class="sm-links">${l}</div>`:''}
-function srow(r){return `<div class="sample"><div class="sm-meta"><span class="h">@${esc(r.handle)}</span> · ${esc(r.content_type||'item')} · ${esc(r.date)}${r.topic?' · '+esc(r.topic):''}</div><div class="sm-sum">${esc(r.summary)}</div>${itemBadges(r)}${links(r)}</div>`}
+function srow(r){return `<div class="sample"><div class="sm-meta"><span class="h">@${esc(r.handle)}</span> · ${esc(r.content_type||'item')} · ${esc(r.date)}${r.topic?' · '+esc(r.topic):''}</div><div class="sm-sum">${esc(r.summary)}</div>${storageMini(r)}${itemBadges(r)}${links(r)}</div>`}
 function sampleSec(rows,label){return `<div class="dwsec">${esc(label||'Sample posts')}</div>`+((rows&&rows.length)?rows.map(srow).join(''):'<div class="sample"><div class="sm-sum" style="color:var(--ink-faint)">No posts.</div></div>')}
 function miniBars(list,pre){const mx=Math.max(1,...list.map(x=>x.count));return `<div class="mini">`+list.map(x=>`<div class="row"><span class="nm">${pre||''}${esc(x.label||x.handle)}</span><span class="bar" style="width:${16+78*x.count/mx}px"></span><span class="ct">${x.count}</span></div>`).join('')+`</div>`}
 
@@ -648,7 +680,7 @@ function openAuthor(h){const a=DATA.author_data[h];if(!a)return;
 function openDomain(d){const x=DATA.domain_data[d];if(!x)return;
  openDrawer('Domain',d,nf(x.count)+' LINKED POSTS',sampleSec(x.samples,'Posts linking '+d));}
 function openLongform(){const L=DATA.longform_full;
- const rows=L.items.map(i=>`<div class="lf-item"><a class="lft" href="${esc(i.url)}" target="_blank"><span class="t">${esc(i.title)}</span></a><div class="m"><span class="tag">${esc(i.source)}</span>@${esc(i.handle)} · ${esc(i.date)} · ${esc(i.topic||'—')}${lk(i.post,'post ↗')}${noteLk(i.note)}</div><div class="badges">${badge(i.confidence||'',i.confidence||'')}${(i.suggested_topics||[]).slice(0,2).map(s=>badge(s)).join('')}</div></div>`).join('');
+ const rows=L.items.map(i=>`<div class="lf-item"><a class="lft" href="${esc(i.url)}" target="_blank"><span class="t">${esc(i.title)}</span></a><div class="m"><span class="tag">${esc(i.source)}</span>@${esc(i.handle)} · ${esc(i.date)} · ${esc(i.topic||'—')}${lk(i.post,'post ↗')}${noteLk(i.note)}</div>${storageMini(i)}<div class="badges">${badge(i.confidence||'',i.confidence||'')}${(i.suggested_topics||[]).slice(0,2).map(s=>badge(s)).join('')}</div></div>`).join('');
  openDrawer('Articles','Captured articles',nf(L.saved)+' SAVED · '+L.ext_saved+' external · '+L.x_saved+' X',
   `<p class="ov">Full article text fetched and stored. Showing the ${L.items.length} most recent. Title → article; post → the X post; note → the vault.</p><div class="dwsec">Articles</div><div class="lf">${rows}</div>`);}
 function openPhotos(){const p=DATA.photos;
@@ -657,7 +689,7 @@ function openPhotos(){const p=DATA.photos;
  openDrawer('Media · Images','Captured images',nf(total)+' DOWNLOADED · '+pending+' PENDING',
   `<p class="ov">${nf(p.downloaded||0)} post photos · ${nf(p.article_downloaded||0)} inline article images.</p><div class="dwsec">Sample thumbnails — click → the post · ◆ → the note</div><div class="thumbs">${th}</div>`+sampleSec(p.samples,'Posts with images'));}
 function openVideos(){const v=DATA.videos;
- const rows=v.items.map(i=>`<div class="vid">${i.poster?`<a href="${esc(i.url)}" target="_blank"><img src="${esc(i.poster)}" onerror="this.style.display='none'"></a>`:''}<div><div class="s">${esc(i.summary)}</div><div class="m">@${esc(i.handle)} · ${esc(i.date)}${i.dur?' · '+Math.floor(i.dur/60)+'m'+String(i.dur%60).padStart(2,'0')+'s':''}</div><div class="sm-links">${lk(i.url,'post ↗')}${noteLk(i.note)}</div></div></div>`).join('');
+ const rows=v.items.map(i=>`<div class="vid">${i.poster?`<a href="${esc(i.url)}" target="_blank"><img src="${esc(i.poster)}" onerror="this.style.display='none'"></a>`:''}<div><div class="s">${esc(i.summary)}</div><div class="m">@${esc(i.handle)} · ${esc(i.date)}${i.dur?' · '+Math.floor(i.dur/60)+'m'+String(i.dur%60).padStart(2,'0')+'s':''}</div>${storageMini(i)}<div class="sm-links">${lk(i.url,'post ↗')}${noteLk(i.note)}</div></div></div>`).join('');
  openDrawer('Media · Video','Captured videos',nf(v.count)+' CAPTURED',
   `<p class="ov">Video posts whose poster + metadata were captured (mp4 bytes not yet downloaded).</p><div class="dwsec">Sample videos</div>${rows}`);}
 function openSource(src){const s=DATA.sources[src];if(!s)return;

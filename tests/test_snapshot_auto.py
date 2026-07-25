@@ -210,7 +210,7 @@ def _wire_digest_mocks(monkeypatch) -> None:
     """Fake caption fetch + LLM summary so digest-video runs offline."""
     from xbrain.video_transcript import VideoExecutiveSummary, VideoTranscript
 
-    def _fetch(entry):
+    def _fetch(_item, entry, **_kwargs):
         return VideoTranscript(
             text="raw caption transcript",
             language=entry.transcript_language,
@@ -227,7 +227,7 @@ def _wire_digest_mocks(monkeypatch) -> None:
 
         return _summarize
 
-    monkeypatch.setattr("xbrain.cli.fetch_video_transcript", _fetch)
+    monkeypatch.setattr("xbrain.cli.fetch_or_transcribe_video_transcript", _fetch)
     monkeypatch.setattr("xbrain.cli.configured_summary_fn", _summary_fn)
 
 
@@ -246,13 +246,19 @@ def test_digest_video_creates_pre_snapshot(tmp_path: Path, monkeypatch):
 
 
 def test_digest_video_no_change_creates_no_snapshot(tmp_path: Path, monkeypatch):
-    """A run that attaches nothing (no transcript URL → nothing written) takes no
+    """A run that attaches nothing (transcript unavailable) takes no
     snapshot — digest-video only snapshots when it is about to rewrite the store."""
     _setup_repo(tmp_path, monkeypatch)
     item = _video_item_for_digest("42")
     item.media[0].transcript_url = None
     save_store({"42": item}, tmp_path / "data" / "items.json")
+    from xbrain.video_transcript import VideoTranscriptUnavailable
+
+    def _unavailable(_item, _entry, **_kwargs):
+        raise VideoTranscriptUnavailable("no captions and no ASR transcript")
+
     _wire_digest_mocks(monkeypatch)
+    monkeypatch.setattr("xbrain.cli.fetch_or_transcribe_video_transcript", _unavailable)
 
     result = runner.invoke(app, ["digest-video", "--ids", "42"])
 
@@ -272,8 +278,10 @@ def test_digest_video_all_failure_no_snapshot(tmp_path: Path, monkeypatch):
 
     _wire_digest_mocks(monkeypatch)
     monkeypatch.setattr(
-        "xbrain.cli.fetch_video_transcript",
-        lambda _entry: (_ for _ in ()).throw(VideoTranscriptFetchFailed("caption HTTP 500")),
+        "xbrain.cli.fetch_or_transcribe_video_transcript",
+        lambda _item, _entry, **_kwargs: (_ for _ in ()).throw(
+            VideoTranscriptFetchFailed("caption HTTP 500")
+        ),
     )
 
     result = runner.invoke(app, ["digest-video", "--ids", "42"])

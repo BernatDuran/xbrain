@@ -39,31 +39,38 @@ store is incremental, so you lose nothing. Don't run many extracts back-to-back.
 
 ## `digest-video` reports `sin transcript`
 
-XBrain found a video bookmark, but X did not expose a caption/text-track URL in
-the captured payload. This is expected for many X videos. XBrain intentionally
-does not download MP4/audio to manufacture a transcript, so the item is skipped
-for video digest until captions are available from X.
+XBrain found a video bookmark, but it could not obtain usable transcript text.
+Typical causes: X did not expose a caption/text-track URL, the video is not a
+progressive MP4 that the temporary fallback can fetch, or the external ASR
+transcriber returned no speech. The item stays in the library and can be retried
+later.
 
 ## `digest-video` is slow or times out
 
-The expensive step is the text LLM executive summary, not video download. If the
-run is slow, process fewer videos with `--limit`, or run by topic/ids:
+The expensive steps are temporary ASR fallback downloads/transcription and the
+text LLM executive summary. If the run is slow, process fewer videos with
+`--limit`, cap fallback size with `--max-size`, or run by topic/ids:
 
 ```bash
 uv run xbrain digest-video --all-pending --limit 5
+uv run xbrain digest-video --all-pending --max-size 500MB
 uv run xbrain digest-video --topic ai-coding
 ```
 
 ## Every video comes back `fallidos`
 
-`fallidos` means the caption URL existed but could not be fetched/parsed, or the
-configured text LLM failed to produce a valid summary. Re-run once; signed text
-track URLs can expire. If it repeats, refresh X metadata first:
+`fallidos` means the caption URL existed but could not be fetched/parsed, the
+temporary MP4 fallback or external transcriber failed, or the configured text LLM
+failed to produce a valid summary. Re-run once; signed text/video URLs can
+expire. If it repeats, refresh X metadata first:
 
 ```bash
 uv run xbrain refresh-media --source bookmarks --headless
 uv run xbrain digest-video --all-pending
 ```
+
+If the failures mention `transcriber`, install the configured ASR binary or set a
+working `[transcribe].command` in `config.toml`.
 
 ## `generate` hangs or takes very long
 

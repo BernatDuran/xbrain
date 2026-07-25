@@ -1,9 +1,10 @@
-"""Caption-only `digest-video` orchestration.
+"""`digest-video` orchestration.
 
-The normal XBrain video path must not download or persist MP4/audio/frame bytes.
-This module turns a captured video text-track into an `x_video` executive summary
-source and stores the raw transcript separately on that source for vault rendering
-only. Downstream analysis consumes only the summary (`ContentSourceSuccess.text`).
+The normal XBrain video path must not persist MP4/audio/frame bytes. This module
+turns a captured text-track, or a temporary ASR transcript fallback, into an
+`x_video` executive summary source and stores the raw transcript separately on
+that source for vault rendering only. Downstream analysis consumes only the
+summary (`ContentSourceSuccess.text`).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from xbrain.video_transcript import (
     VideoSummaryFailed,
     VideoTranscript,
     VideoTranscriptFetchFailed,
+    VideoTranscriptFetchSkipped,
     VideoTranscriptUnavailable,
     fetch_video_transcript,
     summarize_video_transcript,
@@ -41,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 VideoEntry = MediaVideoPending | MediaVideoDownloaded | MediaVideoFailed
 VideoKey = str
-TranscriptFn = Callable[[VideoEntry], VideoTranscript]
+TranscriptFn = Callable[[Item, VideoEntry], VideoTranscript]
 SummaryFn = Callable[[Item, VideoTranscript], VideoExecutiveSummary]
 
 _VIDEO_TYPES = (MediaVideoPending, MediaVideoDownloaded, MediaVideoFailed)
@@ -50,12 +52,14 @@ _VIDEO_CATEGORIES = ("amplify_video", "ext_tw_video", "tweet_video")
 
 @dataclass
 class VideoDigestReport:
-    """Structured outcome of a caption-only video digest run."""
+    """Structured outcome of a video digest run."""
 
     summarized: int = 0
     already: int = 0
     no_transcript: int = 0
     failed: int = 0
+    skipped_too_large: int = 0
+    skipped_size_unknown: int = 0
     skipped_no_video: int = 0
     skipped_unknown: int = 0
     videos_summarized: int = 0
@@ -80,6 +84,8 @@ class _GroupOutcome:
     already: int = 0
     no_transcript: int = 0
     failed: int = 0
+    skipped_too_large: int = 0
+    skipped_size_unknown: int = 0
     did_summarize: bool = False
 
 
@@ -131,13 +137,19 @@ def group_items_by_video(store: dict[str, Item], item_ids: list[str]) -> dict[Vi
     return groups
 
 
-def _representative_with_transcript(store: dict[str, Item], item_ids: list[str]) -> tuple[Item, VideoEntry] | None:
+def _representative_video(store: dict[str, Item], item_ids: list[str]) -> tuple[Item, VideoEntry] | None:
+    """Pick a needing video item, preferring one that already has captions."""
+    fallback: tuple[Item, VideoEntry] | None = None
     for item_id in item_ids:
         item = store[item_id]
         entry = _first_video_entry(item)
-        if entry is not None and entry.transcript_url:
+        if entry is None:
+            continue
+        if entry.transcript_url:
             return item, entry
-    return None
+        if fallback is None:
+            fallback = (item, entry)
+    return fallback
 
 
 def attach_video_summary(
@@ -188,14 +200,19 @@ def _process_group(
     already = len(ids) - len(needing)
     if not needing:
         return _GroupOutcome(already=already)
-    selected = _representative_with_transcript(store, needing)
+    selected = _representative_video(store, needing)
     if selected is None:
-        logger.info("digest-video: no caption/transcript URL for %s", ",".join(needing))
         return _GroupOutcome(already=already, no_transcript=len(needing))
     item, entry = selected
     try:
-        transcript = transcript_fn(entry)
+        transcript = transcript_fn(item, entry)
         summary = summary_fn(item, transcript)
+    except VideoTranscriptFetchSkipped as exc:
+        if exc.reason == "too_large":
+            return _GroupOutcome(already=already, skipped_too_large=len(needing))
+        if exc.reason == "size_unknown":
+            return _GroupOutcome(already=already, skipped_size_unknown=len(needing))
+        return _GroupOutcome(already=already, no_transcript=len(needing))
     except VideoTranscriptUnavailable:
         return _GroupOutcome(already=already, no_transcript=len(needing))
     except (VideoTranscriptFetchFailed, VideoSummaryFailed) as exc:
@@ -222,7 +239,13 @@ def _tally(report: VideoDigestReport, outcome: _GroupOutcome) -> None:
     report.already += outcome.already
     report.no_transcript += outcome.no_transcript
     report.failed += outcome.failed
+    report.skipped_too_large += outcome.skipped_too_large
+    report.skipped_size_unknown += outcome.skipped_size_unknown
     report.videos_summarized += int(outcome.did_summarize)
+
+
+def _caption_transcript_fn(_item: Item, entry: VideoEntry) -> VideoTranscript:
+    return fetch_video_transcript(entry)
 
 
 def digest_video_transcripts(
@@ -231,9 +254,9 @@ def digest_video_transcripts(
     *,
     force: bool = False,
     summary_fn: SummaryFn,
-    transcript_fn: TranscriptFn = fetch_video_transcript,
+    transcript_fn: TranscriptFn = _caption_transcript_fn,
 ) -> VideoDigestReport:
-    """Create x_video executive summaries from caption/text-track transcripts only."""
+    """Create x_video executive summaries from captions or temporary ASR fallback."""
     unique_ids = list(dict.fromkeys(item_ids))
     groups = group_items_by_video(store, unique_ids)
     grouped = {item_id for members in groups.values() for item_id in members}
@@ -254,10 +277,11 @@ def digest_video_transcripts(
 
 
 def format_video_digest_summary(report: VideoDigestReport) -> str:
-    """One-line human summary for caption-only video digest runs."""
+    """One-line human summary for video digest runs."""
     return (
         f"Vídeos: resumidos {report.summarized}, ya digeridos {report.already}, "
         f"sin transcript {report.no_transcript}, fallidos {report.failed}, "
+        f"> --max-size {report.skipped_too_large}, sin tamaño {report.skipped_size_unknown}, "
         f"sin vídeo {report.skipped_no_video}, desconocidos {report.skipped_unknown}. "
         f"Dedup: {report.total_items} items ← {report.video_count} vídeos "
         f"({report.videos_summarized} procesados este run)."

@@ -39,6 +39,7 @@ def test_load_config_defaults_transcribe_command_to_parakeet(tmp_path: Path):
     cfg = load_config(tmp_path)
     assert cfg.transcribe_command == "parakeet-mlx"
     assert cfg.transcribe_model is None
+    assert cfg.transcribe_timeout_seconds == 1800
 
 
 def test_load_config_round_trips_transcribe_command_and_model(tmp_path: Path):
@@ -57,6 +58,38 @@ def test_load_config_round_trips_transcribe_command_and_model(tmp_path: Path):
     cfg = load_config(tmp_path)
     assert cfg.transcribe_command == "my-asr --quiet"
     assert cfg.transcribe_model == "parakeet-tdt-0.6b-v2"
+
+
+def test_load_config_round_trips_transcribe_timeout(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "learnings/x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[transcribe]\n"
+        "timeout_seconds = 7200\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(tmp_path)
+    assert cfg.transcribe_timeout_seconds == 7200
+
+
+def test_load_config_rejects_invalid_transcribe_timeout(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "learnings/x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[transcribe]\n"
+        "timeout_seconds = 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        load_config(tmp_path)
 
 
 def test_load_config_defaults_vision_command_to_unset(tmp_path: Path):

@@ -2,11 +2,12 @@
 
 Pure selection/derivation over the in-memory item store: one `VideoRow` per
 video media entry, carrying a derived state (downloaded / failed / pending /
-poster-era), an estimated size (bitrate × duration; the exact on-disk size for a
-downloaded entry; `None` when unknown), the item's `primary_topic`, the resolved
-stream URL and a short text snippet. **Zero writes, no network, no snapshot** —
-`list_video_entries` is a function of the store alone. `fetch-video` (see
-`xbrain.video_fetch`) consumes the same selection surface.
+poster-era), an independent digest state (done / pending), an estimated size
+(bitrate × duration; the exact on-disk size for a downloaded entry; `None` when
+unknown), the item's `primary_topic`, the resolved stream URL and a short text
+snippet. **Zero writes, no network, no snapshot** — `list_video_entries` is a
+function of the store alone. `fetch-video` (see `xbrain.video_fetch`) consumes
+the same selection surface.
 
 The mp4/HLS/poster discriminator (`_video_class`) and the size estimator
 (`_estimated_bytes`) are REUSED from `xbrain.video_media` so the catalog's notion
@@ -31,6 +32,7 @@ from xbrain.video_media import _SIZE_UNITS, _estimated_bytes, _video_class
 # `poster-era` is an un-backfilled pending entry (`url == thumbnail_url`); run
 # `xbrain refresh-media` to resolve it into a real stream first.
 VideoState = Literal["downloaded", "failed", "pending", "poster-era"]
+VideoDigestState = Literal["done", "pending"]
 _VIDEO_STATES: tuple[VideoState, ...] = ("downloaded", "failed", "pending", "poster-era")
 
 # The video media variants — a photo entry is not a video row.
@@ -66,6 +68,7 @@ class VideoRow:
     id: str
     url: str
     state: VideoState
+    digest: VideoDigestState
     topic: str | None
     size_bytes: int | None
     mp4_url: str | None
@@ -123,12 +126,28 @@ def _primary_topic(item: Item) -> str | None:
     return item.enriched.primary_topic
 
 
+def _digest_state(item: Item) -> VideoDigestState:
+    """Whether `digest-video` has attached an `x_video` executive summary.
+
+    This is deliberately independent from the media `state`: under the no-MP4
+    storage policy a video can stay `state=pending` forever while still having a
+    finished text digest.
+    """
+    if item.content is None:
+        return "pending"
+    for source in item.content.sources:
+        if source.kind == "x_video" and source.outcome == "success":
+            return "done"
+    return "pending"
+
+
 def _build_row(item_id: str, item: Item, entry: _VideoEntry) -> VideoRow:
     """Assemble the `VideoRow` for one (item, video-entry) pair."""
     return VideoRow(
         id=item_id,
         url=item.url,
         state=_video_state(entry),
+        digest=_digest_state(item),
         topic=_primary_topic(item),
         size_bytes=_row_size(entry),
         mp4_url=_mp4_url(entry),
@@ -212,7 +231,7 @@ def list_video_entries(
 def row_to_json(row: VideoRow) -> dict[str, object]:
     """Serialise a `VideoRow` to the stable machine schema for `--json`.
 
-    Fields: `id, url, state, topic, size_bytes, mp4_url, text`. `topic`,
+    Fields: `id, url, state, digest, topic, size_bytes, mp4_url, text`. `topic`,
     `size_bytes` and `mp4_url` are JSON `null` when absent (no `primary_topic`,
     unknown size, poster-era). The human `—` sentinel lives only in
     `format_video_table` — the machine array PR2/PR3 lock onto stays null.
@@ -221,6 +240,7 @@ def row_to_json(row: VideoRow) -> dict[str, object]:
         "id": row.id,
         "url": row.url,
         "state": row.state,
+        "digest": row.digest,
         "topic": row.topic,
         "size_bytes": row.size_bytes,
         "mp4_url": row.mp4_url,
@@ -244,9 +264,9 @@ def format_video_table(rows: list[VideoRow]) -> str:
     """Render the catalog as an aligned human table (headers + one row each)."""
     if not rows:
         return "No hay vídeos."
-    headers = ("ID", "STATE", "SIZE", "TOPIC", "TEXT")
+    headers = ("ID", "STATE", "DIGEST", "SIZE", "TOPIC", "TEXT")
     display = [
-        (row.id, row.state, _format_size(row.size_bytes), row.topic or "—", row.text)
+        (row.id, row.state, row.digest, _format_size(row.size_bytes), row.topic or "—", row.text)
         for row in rows
     ]
     widths = [

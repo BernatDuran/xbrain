@@ -1,10 +1,11 @@
-"""Caption-only video transcript ingestion and executive summaries.
+"""Video transcript ingestion and executive summaries.
 
-This module deliberately never downloads video/audio bytes. It only fetches a
-small text-track/caption URL already captured on a `MediaVideo*` entry, parses it
-to plain transcript text, and asks the configured text LLM for an executive
-summary. If no text track is available, the caller gets an explicit unavailable
-result rather than silently falling back to MP4 download.
+The preferred path fetches a small caption/text-track URL already captured on a
+`MediaVideo*` entry. When X does not expose captions, the fallback may download a
+progressive MP4 into a private temporary directory, shell out to the configured
+external transcriber, convert the ASR output to plain transcript text, and delete
+the media bytes before returning. The persistent store/vault receives only the
+raw text transcript and the LLM executive summary.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from __future__ import annotations
 import html
 import json
 import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,7 +23,20 @@ import requests
 
 from xbrain.llm_client import LlmProvider, build_llm_client, recoverable_llm_errors
 from xbrain.llm_json import json_from_response
-from xbrain.models import MediaVideoDownloaded, MediaVideoFailed, MediaVideoPending, TranscriptFormat
+from xbrain.models import (
+    Item,
+    MediaVideoDownloaded,
+    MediaVideoFailed,
+    MediaVideoPending,
+    TranscriptFormat,
+)
+from xbrain.transcribe import (
+    DEFAULT_TRANSCRIBE_COMMAND,
+    Transcript,
+    TranscribeError,
+    transcribe_media,
+)
+from xbrain.video_fetch import FetchReport, fetch_videos
 
 _VIDEO_TYPES = (MediaVideoPending, MediaVideoDownloaded, MediaVideoFailed)
 _TIMESTAMP_RE = re.compile(
@@ -34,11 +50,19 @@ VIDEO_SUMMARY_VERSION = "v1"
 
 
 class VideoTranscriptUnavailable(RuntimeError):
-    """No caption/text-track URL is available for a video."""
+    """No usable transcript can be obtained for a video."""
+
+
+class VideoTranscriptFetchSkipped(VideoTranscriptUnavailable):
+    """Temporary video fallback was intentionally skipped before downloading."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class VideoTranscriptFetchFailed(RuntimeError):
-    """The caption/text-track URL was present but could not be fetched/parsed."""
+    """Caption fetch, temporary video fetch, or ASR failed."""
 
 
 class VideoSummaryFailed(RuntimeError):
@@ -47,7 +71,7 @@ class VideoSummaryFailed(RuntimeError):
 
 @dataclass(frozen=True)
 class VideoTranscript:
-    """Plain transcript text fetched from a text-track sidecar."""
+    """Plain transcript text from captions or temporary ASR."""
 
     text: str
     language: str | None
@@ -202,6 +226,132 @@ def fetch_video_transcript(
         source_url=entry.transcript_url,
         format=fmt,
     )
+
+
+def _with_language(transcript: VideoTranscript, language: str | None) -> VideoTranscript:
+    if language is None or transcript.language is not None:
+        return transcript
+    return VideoTranscript(
+        text=transcript.text,
+        language=language,
+        source_url=transcript.source_url,
+        format=transcript.format,
+    )
+
+
+def _fetched_path(report: FetchReport, item_id: str) -> Path:
+    result = next((entry for entry in report.results if entry.id == item_id), None)
+    if result is None:
+        raise VideoTranscriptFetchFailed("temporary video fetch produced no result")
+    if result.outcome == "skipped":
+        reason = result.reason or "skipped"
+        raise VideoTranscriptFetchSkipped(
+            reason, f"temporary video fetch skipped ({reason})"
+        )
+    if result.outcome == "failed":
+        detail = result.error or result.reason or "unknown error"
+        raise VideoTranscriptFetchFailed(f"temporary video fetch failed: {detail}")
+    if not result.path:
+        raise VideoTranscriptFetchFailed("temporary video fetch returned no path")
+    return Path(result.path)
+
+
+def _transcript_from_asr(
+    item: Item,
+    transcript: Transcript,
+    *,
+    language: str | None,
+) -> VideoTranscript:
+    text = transcript.text.strip()
+    if not transcript.has_speech or not text:
+        raise VideoTranscriptUnavailable("temporary transcription produced no speech")
+    return VideoTranscript(
+        text=text,
+        language=transcript.language or language,
+        source_url=item.url,
+        format="text",
+    )
+
+
+def transcribe_video_temporarily(
+    item: Item,
+    *,
+    transcribe_command: str = DEFAULT_TRANSCRIBE_COMMAND,
+    transcribe_model: str | None = None,
+    transcribe_timeout_seconds: int = 1800,
+    language: str | None = None,
+    max_size_bytes: int | None = None,
+    fetch_fn=fetch_videos,
+    transcribe_fn=transcribe_media,
+    session: requests.Session | None = None,
+    download_timeout_seconds: int = 30,
+) -> VideoTranscript:
+    """Download one video to a private temp dir, transcribe it, and remove bytes.
+
+    `fetch_fn` is expected to be `xbrain.video_fetch.fetch_videos` compatible and
+    store-non-mutating: it writes only under the supplied temporary directory.
+    The temp directory is always removed by `TemporaryDirectory`, including when
+    the fetch or ASR step fails.
+    """
+    with tempfile.TemporaryDirectory(prefix="xbrain-video-asr-") as tmp:
+        report = fetch_fn(
+            {item.id: item},
+            [item.id],
+            Path(tmp),
+            max_size_bytes=max_size_bytes,
+            limit=1,
+            throttle_seconds=0,
+            session=session,
+            timeout_seconds=download_timeout_seconds,
+        )
+        media_path = _fetched_path(report, item.id)
+        try:
+            transcript = transcribe_fn(
+            media_path,
+            command=transcribe_command,
+            model=transcribe_model,
+            language=language,
+            timeout_seconds=transcribe_timeout_seconds,
+        )
+        except TranscribeError as exc:
+            raise VideoTranscriptFetchFailed(f"temporary transcription failed: {exc}") from exc
+        return _transcript_from_asr(item, transcript, language=language)
+
+
+def fetch_or_transcribe_video_transcript(
+    item: Item,
+    entry: MediaVideoPending | MediaVideoDownloaded | MediaVideoFailed,
+    *,
+    language: str | None = None,
+    session: requests.Session | None = None,
+    caption_timeout_seconds: int = 30,
+    transcribe_command: str = DEFAULT_TRANSCRIBE_COMMAND,
+    transcribe_model: str | None = None,
+    transcribe_timeout_seconds: int = 1800,
+    max_size_bytes: int | None = None,
+    fetch_fn=fetch_videos,
+    transcribe_fn=transcribe_media,
+    download_timeout_seconds: int = 30,
+) -> VideoTranscript:
+    """Use X captions first; if absent, fall back to temporary MP4 transcription."""
+    try:
+        transcript = fetch_video_transcript(
+            entry, session=session, timeout_seconds=caption_timeout_seconds
+        )
+        return _with_language(transcript, language)
+    except VideoTranscriptUnavailable:
+        return transcribe_video_temporarily(
+            item,
+            transcribe_command=transcribe_command,
+            transcribe_model=transcribe_model,
+            transcribe_timeout_seconds=transcribe_timeout_seconds,
+            language=language,
+            max_size_bytes=max_size_bytes,
+            fetch_fn=fetch_fn,
+            transcribe_fn=transcribe_fn,
+            session=session,
+            download_timeout_seconds=download_timeout_seconds,
+        )
 
 
 def video_entry_with_transcript(item: object):

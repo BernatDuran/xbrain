@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import traceback
 from collections import Counter
@@ -50,7 +51,7 @@ from xbrain.llm_client import validate_llm_model
 from xbrain.media import download_all as run_media_download
 from xbrain.media import emit_summary_line as media_emit_summary_line
 from xbrain.models import ArchiveImport, Author, ContentSourceFailure, Item, SourceName, Topic
-from xbrain.notes_io import GEN_END, GEN_START
+from xbrain.notes_io import GEN_END, GEN_START, note_filename
 from xbrain.refresh import estimate_download_size, refresh_video_media
 from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import (
@@ -82,7 +83,7 @@ from xbrain.video_digest import (
     digest_video_transcripts,
     format_video_digest_summary,
 )
-from xbrain.video_transcript import VideoTranscript, fetch_video_transcript
+from xbrain.video_transcript import VideoTranscript, fetch_or_transcribe_video_transcript
 from xbrain.vocab import (
     apply_vocab_worksheet,
     export_vocab_worksheet,
@@ -99,6 +100,7 @@ _HEADLESS_HELP = (
     "Navegador oculto. Por defecto headful (visible) — más difícil de "
     "fingerprintear como bot. Usa --headless en runs desatendidos sin display."
 )
+_DEFAULT_REFRESH_VIDEO_MAX_SIZE = "4GB"
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,22 @@ class RetryFailedReport:
     candidates: int
     articles: int
     x_articles: int
+
+
+@dataclass(frozen=True)
+class ReprocessNoteReport:
+    item_id: str
+    articles: int
+    x_articles: int
+
+
+@dataclass(frozen=True)
+class DeleteBookmarkReport:
+    item_id: str
+    notes_deleted: int
+    media_dirs_deleted: int
+    video_artifacts_deleted: int
+    topic_pages_touched: int
 
 
 @app.callback()
@@ -545,6 +563,200 @@ def _run_retry_failed_articles(
     return report
 
 
+def _run_reprocess_note(cfg: Config, item_id: str, *, headless: bool = True) -> ReprocessNoteReport:
+    """Force-refresh one item, then regenerate derived layers.
+
+    This is the dashboard's per-note manual repair path. It deliberately reuses
+    the existing commands' behavior instead of maintaining a separate workflow:
+    force fetch for this item, digest its video if present, pick up pending media
+    and descriptions for this item, force API enrichment, update topics and
+    regenerate the vault/dashboard.
+    """
+    store = load_store(cfg.items_path)
+    item = store.get(item_id)
+    if item is None:
+        raise ValueError(f"item not found: {item_id}")
+    _auto_snapshot(cfg, f"reprocess-note-{item_id}")
+    selected = {item_id: item}
+    try:
+        articles = fetch_pending(selected, force=True)
+        x_articles = fetch_x_articles(
+            selected, cfg.storage_state_path, force=True, headless=headless
+        )
+    finally:
+        save_store(store, cfg.items_path)
+
+    _run_digest_video(
+        cfg,
+        ids=item_id,
+        topic=None,
+        all_pending=False,
+        source="all",
+        limit=None,
+        force=True,
+        language=None,
+        frames=False,
+        vision_model=None,
+        max_size_bytes=parse_size_to_bytes(_DEFAULT_REFRESH_VIDEO_MAX_SIZE),
+        allow_empty=True,
+    )
+    _run_media(cfg, force=False, limit=None, items_filter=[item_id])
+    _run_describe(
+        cfg,
+        force=False,
+        limit=None,
+        items_filter=[item_id],
+        model=cfg.llm_vision_model,
+        batch_size=1,
+        verbose=False,
+    )
+
+    store = load_store(cfg.items_path)
+    item = store.get(item_id)
+    if item is None:
+        raise ValueError(f"item disappeared during reprocess: {item_id}")
+    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab_topics:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    executor = ApiExecutor(
+        model=cfg.llm_model,
+        output_language=cfg.output_language,
+        provider=cfg.llm_provider,
+        base_url=cfg.llm_base_url,
+    )
+    enriched, invalid = enrich_selected_with_executor(store, executor, vocab_topics, [item])
+    save_store(store, cfg.items_path)
+    _report_invalid(invalid)
+    if invalid or enriched != 1:
+        raise RuntimeError(f"reprocess-note no pudo re-enriquecer {item_id}")
+    _run_topics_executor(cfg, "api", resynth=False)
+    _run_generate(cfg, None, None)
+    typer.echo(f"reprocess-note: {item_id} completado")
+    return ReprocessNoteReport(item_id=item_id, articles=articles, x_articles=x_articles)
+
+
+def _remove_direct_child_dir(root: Path, name: str) -> int:
+    """Remove `<root>/<name>` only when it is a direct child directory."""
+    if Path(name).is_absolute() or len(Path(name).parts) != 1:
+        raise ValueError(f"invalid item id for artifact cleanup: {name!r}")
+    path = root / name
+    if not path.exists():
+        return 0
+    root_resolved = root.resolve()
+    resolved = path.resolve()
+    if resolved.parent != root_resolved:
+        raise PermissionError(f"artifact path escapes {root}")
+    if resolved.is_dir():
+        shutil.rmtree(resolved)
+        return 1
+    resolved.unlink()
+    return 1
+
+
+def _note_file_belongs_to_item(path: Path, item_id: str) -> bool:
+    if path.name.endswith(f"-{item_id}.md"):
+        return True
+    try:
+        return _note_frontmatter_id(path.read_text(encoding="utf-8")) == item_id
+    except OSError:
+        return False
+
+
+def _delete_item_notes(output_dir: Path, item: Item) -> int:
+    items_dir = output_dir / "items"
+    if not items_dir.exists():
+        return 0
+    candidates = {items_dir / note_filename(item)}
+    candidates.update(path for path in items_dir.glob("*.md") if _note_file_belongs_to_item(path, item.id))
+    removed = 0
+    for path in sorted(candidates):
+        if path.exists():
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def _video_artifact_belongs_to_item(path: Path, item_id: str) -> bool:
+    if path.name.endswith(f"-{item_id}"):
+        return True
+    for artifact in (path / "summary.md", path / "transcript.md"):
+        if not artifact.exists():
+            continue
+        try:
+            if _note_frontmatter_id(artifact.read_text(encoding="utf-8")) == item_id:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _delete_video_artifacts(output_dir: Path, item_id: str) -> int:
+    videos_dir = output_dir / "videos"
+    if not videos_dir.exists():
+        return 0
+    removed = 0
+    for path in videos_dir.iterdir():
+        if path.is_dir() and _video_artifact_belongs_to_item(path, item_id):
+            shutil.rmtree(path)
+            removed += 1
+    return removed
+
+
+def _refresh_topic_pages_after_delete(cfg: Config, store: dict[str, Item], item_id: str) -> int:
+    vocab_path = cfg.data_dir / "vocab.yaml"
+    if not vocab_path.exists():
+        return 0
+    vocab_topics = load_vocab(vocab_path)
+    if not vocab_topics:
+        return 0
+    pages = load_topic_pages(cfg.topics_path) if cfg.topics_path.exists() else {}
+    posts = compute_topic_posts(store, vocab_topics)
+    touched = write_topic_pages(cfg.output_dir, vocab_topics, posts, pages, cfg.output_language)
+    topics_dir = cfg.output_dir / "topics"
+    if not topics_dir.exists():
+        return touched
+    for topic in vocab_topics:
+        topic_posts = posts.get(topic.slug)
+        if topic_posts is None or topic_posts.total != 0:
+            continue
+        path = topics_dir / f"{topic.slug}.md"
+        if path.exists() and item_id in path.read_text(encoding="utf-8"):
+            path.unlink()
+            touched += 1
+    return touched
+
+
+def _run_delete_bookmark(cfg: Config, item_id: str) -> DeleteBookmarkReport:
+    """Remove one bookmarked item and the generated artifacts tied to it."""
+    store = load_store(cfg.items_path)
+    item = store.get(item_id)
+    if item is None:
+        raise ValueError(f"item not found: {item_id}")
+    _auto_snapshot(cfg, f"delete-bookmark-{item_id}")
+    store.pop(item_id)
+    save_store(store, cfg.items_path)
+
+    notes_deleted = _delete_item_notes(cfg.output_dir, item)
+    media_dirs_deleted = _remove_direct_child_dir(cfg.media_dir, item_id)
+    media_dirs_deleted += _remove_direct_child_dir(cfg.output_dir / "_media", item_id)
+    video_artifacts_deleted = _delete_video_artifacts(cfg.output_dir, item_id)
+
+    _run_generate(cfg, None, None)
+    topic_pages_touched = _refresh_topic_pages_after_delete(cfg, store, item_id)
+    typer.echo(
+        "delete-bookmark: "
+        f"{item_id} eliminado · notas {notes_deleted} · media dirs {media_dirs_deleted} · "
+        f"vídeo {video_artifacts_deleted} · topics {topic_pages_touched}"
+    )
+    return DeleteBookmarkReport(
+        item_id=item_id,
+        notes_deleted=notes_deleted,
+        media_dirs_deleted=media_dirs_deleted,
+        video_artifacts_deleted=video_artifacts_deleted,
+        topic_pages_touched=topic_pages_touched,
+    )
+
+
 def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -> None:
     store = load_store(cfg.items_path)
     store = retained_store(store)
@@ -558,6 +770,7 @@ def _run_generate(cfg: Config, since: datetime | None, until: datetime | None) -
         cfg.topic_style,
         media_root=cfg.media_dir,
         topic_pages=topic_pages,
+        data_dir=cfg.data_dir,
     )
     typer.echo(f"Markdown generado en {cfg.output_dir}")
 
@@ -623,6 +836,7 @@ def _run_refresh_all(
     describe_batch_size: int = 5,
     skip_media: bool = False,
     skip_describe: bool = False,
+    video_max_size_bytes: int | None = parse_size_to_bytes(_DEFAULT_REFRESH_VIDEO_MAX_SIZE),
 ) -> None:
     """One-command daily ingestion pipeline for unattended/mobile runs."""
     if executor != "api":
@@ -643,7 +857,7 @@ def _run_refresh_all(
         language=None,
         frames=False,
         vision_model=None,
-        max_size_bytes=None,
+        max_size_bytes=video_max_size_bytes,
         allow_empty=True,
     )
     if skip_media:
@@ -673,6 +887,32 @@ def _run_refresh_all(
     typer.echo("refresh-all: completado")
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _item_id_from_note_filename(path: Path) -> str | None:
+    match = re.search(r"-([^-/.]+)\.md$", path.name)
+    return match.group(1) if match else None
+
+
+def _resolve_stale_served_note(root: Path, missing_path: Path) -> Path | None:
+    item_id = _item_id_from_note_filename(missing_path)
+    if item_id is None:
+        return None
+    items_dir = root / "items"
+    if not items_dir.exists():
+        return None
+    for path in sorted(items_dir.glob("*.md")):
+        if _note_file_belongs_to_item(path, item_id):
+            return path.resolve(strict=True)
+    return None
+
+
 def _resolve_served_note(output_dir: Path, raw_path: str) -> Path:
     """Resolve one dashboard note path without allowing filesystem escape."""
     if not raw_path.strip():
@@ -685,6 +925,10 @@ def _resolve_served_note(output_dir: Path, raw_path: str) -> Path:
     try:
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
+        if _path_is_within(candidate, root):
+            fallback = _resolve_stale_served_note(root, candidate)
+            if fallback is not None:
+                return fallback
         raise FileNotFoundError("note not found") from exc
 
     try:
@@ -750,6 +994,19 @@ def _note_view_markdown(markdown: str) -> str:
     return text.strip()
 
 
+def _note_frontmatter_id(markdown: str) -> str | None:
+    """Return the item id from note frontmatter when present."""
+    text = markdown.replace(GEN_START, "", 1).lstrip()
+    match = re.match(r"^---\s*\n(?P<body>.*?)\n---\s*\n?", text, flags=re.S)
+    if match is None:
+        return None
+    id_match = re.search(r"^id:\s*[\"']?(?P<id>[^\"'\n]+)[\"']?\s*$", match.group("body"), flags=re.M)
+    if id_match is None:
+        return None
+    item_id = id_match.group("id").strip()
+    return item_id or None
+
+
 def _web_media_url(target: str) -> str | None:
     """Return the safe `/media` URL for an Obsidian image embed target."""
     path = target.strip()
@@ -808,12 +1065,127 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     escaped_rel = html.escape(str(rel))
     body_html = _render_note_markdown(display_markdown)
     obsidian_href = "obsidian://open?path=" + quote(str(note_path.resolve()))
+    item_id = _note_frontmatter_id(markdown)
+    reprocess_control = ""
+    delete_modal = ""
+    note_actions_script = ""
+    if item_id:
+        escaped_item_id = html.escape(item_id, quote=True)
+        js_item_id = json.dumps(item_id)
+        reprocess_control = (
+            '<div class="note-actions">'
+            f'<button class="note-icon" id="reprocess-note" type="button" '
+            f'data-item-id="{escaped_item_id}" title="Reprocess note" '
+            'aria-label="Reprocess note">↻</button>'
+            f'<button class="note-icon danger" id="delete-note" type="button" '
+            f'data-item-id="{escaped_item_id}" title="Delete bookmark and note" '
+            'aria-label="Delete bookmark and note">×</button>'
+            '<span class="action-status" id="note-action-status"></span>'
+            "</div>"
+        )
+        delete_modal = """
+<div class="modal" id="delete-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+    <h2 id="delete-title">Eliminar bookmark</h2>
+    <p>Se borrará la nota, el item del store y los ficheros generados de este bookmark.</p>
+    <div class="modal-actions">
+      <button class="modal-btn" id="delete-cancel" type="button">Cancelar</button>
+      <button class="modal-btn danger" id="delete-confirm" type="button">Eliminar</button>
+    </div>
+  </div>
+</div>"""
+        note_actions_script = f"""
+<script>
+const itemId = {js_item_id};
+const actionStatus = document.getElementById('note-action-status');
+const reprocessButton = document.getElementById('reprocess-note');
+const deleteButton = document.getElementById('delete-note');
+const deleteModal = document.getElementById('delete-modal');
+const deleteCancel = document.getElementById('delete-cancel');
+const deleteConfirm = document.getElementById('delete-confirm');
+const setStatus = text => {{
+  if (actionStatus) actionStatus.textContent = text;
+}};
+const postItemAction = async endpoint => {{
+  const response = await fetch(endpoint, {{
+    method: 'POST',
+    headers: {{'content-type': 'application/json'}},
+    body: JSON.stringify({{item_id: itemId}})
+  }});
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'request failed');
+  return payload;
+}};
+if (reprocessButton) {{
+  const originalText = reprocessButton.textContent;
+  reprocessButton.addEventListener('click', async () => {{
+    reprocessButton.disabled = true;
+    reprocessButton.textContent = '...';
+    setStatus('reprocess started...');
+    try {{
+      await postItemAction('/api/reprocess-note');
+      setStatus('running in background');
+    }} catch (error) {{
+      reprocessButton.disabled = false;
+      reprocessButton.textContent = originalText;
+      setStatus('could not start: ' + error.message);
+    }}
+  }});
+}}
+if (deleteButton && deleteModal && deleteCancel && deleteConfirm) {{
+  const setDeleteModal = open => {{
+    deleteModal.hidden = !open;
+    if (open) deleteConfirm.focus();
+  }};
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const waitForDelete = async () => {{
+    for (;;) {{
+      await sleep(1000);
+      const response = await fetch('/api/status');
+      const state = await response.json();
+      if (state.running) {{
+        setStatus('deleting...');
+        continue;
+      }}
+      if (state.last_action === 'delete-bookmark:' + itemId && state.last_error) {{
+        throw new Error(String(state.last_error).split('\\n')[0]);
+      }}
+      window.location.href = '/';
+      return;
+    }}
+  }};
+  deleteButton.addEventListener('click', () => setDeleteModal(true));
+  deleteCancel.addEventListener('click', () => setDeleteModal(false));
+  deleteModal.addEventListener('click', event => {{
+    if (event.target === deleteModal) setDeleteModal(false);
+  }});
+  document.addEventListener('keydown', event => {{
+    if (event.key === 'Escape' && !deleteModal.hidden) setDeleteModal(false);
+  }});
+  deleteConfirm.addEventListener('click', async () => {{
+    deleteConfirm.disabled = true;
+    deleteCancel.disabled = true;
+    deleteButton.disabled = true;
+    setStatus('deleting...');
+    try {{
+      await postItemAction('/api/delete-bookmark');
+      setDeleteModal(false);
+      await waitForDelete();
+    }} catch (error) {{
+      deleteConfirm.disabled = false;
+      deleteCancel.disabled = false;
+      deleteButton.disabled = false;
+      setStatus('could not delete: ' + error.message);
+    }}
+  }});
+}}
+</script>"""
     page = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="content-security-policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline';">
+<meta http-equiv="content-security-policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self';">
 <title>{escaped_title}</title>
 <style>
 :root {{
@@ -828,11 +1200,43 @@ body {{
 }}
 .wrap {{ max-width:920px; margin:0 auto; padding:22px 16px 46px; }}
 .top {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }}
-a.btn {{
+.btn {{
   color:var(--ink); text-decoration:none; border:1px solid var(--hair);
   background:var(--surface-2); border-radius:7px; padding:9px 11px; font-size:13px;
 }}
-a.btn.primary {{ border-color:rgba(224,162,51,.38); color:var(--accent); }}
+.btn.primary {{ border-color:rgba(224,162,51,.38); color:var(--accent); }}
+.btn.subtle {{ color:var(--faint); background:transparent; }}
+button.btn {{ font:inherit; cursor:pointer; }}
+button.btn:disabled {{ opacity:.52; cursor:wait; }}
+.note-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:-12px 0 18px; }}
+.note-icon {{
+  width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center;
+  color:var(--faint); background:transparent; border:1px solid var(--hair);
+  border-radius:5px; font:600 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  cursor:pointer; padding:0;
+}}
+.note-icon:hover {{ color:var(--accent); border-color:rgba(224,162,51,.44); }}
+.note-icon.danger:hover {{ color:#F0A29A; border-color:rgba(240,122,109,.46); }}
+.note-icon:disabled {{ opacity:.45; cursor:wait; }}
+.action-status {{ align-self:center; color:var(--faint); font-size:12px; min-height:1em; }}
+.modal[hidden] {{ display:none; }}
+.modal {{
+  position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
+  padding:18px; background:rgba(7,6,4,.72);
+}}
+.modal-card {{
+  width:min(360px, 100%); background:var(--surface); border:1px solid var(--hair);
+  border-radius:8px; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.42);
+}}
+.modal-card h2 {{ margin:0 0 8px; font-size:18px; line-height:1.2; }}
+.modal-card p {{ margin:0; color:var(--muted); font-size:13.5px; line-height:1.5; }}
+.modal-actions {{ display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }}
+.modal-btn {{
+  color:var(--ink); background:var(--surface-2); border:1px solid var(--hair);
+  border-radius:6px; padding:8px 10px; font:inherit; font-size:13px; cursor:pointer;
+}}
+.modal-btn.danger {{ color:#F0A29A; border-color:rgba(240,122,109,.42); }}
+.modal-btn:disabled {{ opacity:.52; cursor:wait; }}
 article {{
   background:var(--surface); border:1px solid var(--hair); border-radius:10px;
   padding:22px; overflow:hidden;
@@ -879,7 +1283,8 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
   .wrap {{ padding:14px 10px 34px; }}
   article {{ padding:16px 14px; border-radius:8px; }}
   .top {{ position:sticky; top:0; z-index:2; background:rgba(14,12,8,.94); padding:8px 0; }}
-  a.btn {{ flex:1 1 auto; text-align:center; }}
+  .btn {{ flex:1 1 auto; text-align:center; }}
+  .action-status {{ flex:1 0 100%; }}
   .note-body {{ font-size:14.5px; line-height:1.64; }}
   .note-body h1 {{ font-size:25px; }}
   .note-body h2 {{ font-size:20px; }}
@@ -897,9 +1302,12 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
     <p class="eyebrow">XBrain note</p>
     <h1>{escaped_title}</h1>
     <div class="path">{escaped_rel}</div>
+    {reprocess_control}
     <div class="note-body">{body_html}</div>
   </article>
 </main>
+{delete_modal}
+{note_actions_script}
 </body>
 </html>
 """
@@ -962,6 +1370,18 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             lambda: _run_retry_failed_articles(
                 cfg, source="bookmarks", headless=True, regenerate=True
             ),
+        )
+
+    def start_reprocess_note(item_id: str) -> bool:
+        return start_background(
+            f"reprocess-note:{item_id}",
+            lambda: _run_reprocess_note(cfg, item_id, headless=True),
+        )
+
+    def start_delete_bookmark(item_id: str) -> bool:
+        return start_background(
+            f"delete-bookmark:{item_id}",
+            lambda: _run_delete_bookmark(cfg, item_id),
         )
 
     def dashboard_bytes() -> bytes:
@@ -1098,12 +1518,50 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                     return
                 self._send_json(202, state_payload())
                 return
+            if path == "/api/reprocess-note":
+                try:
+                    payload = self._read_json()
+                    raw_item_id = payload.get("item_id")
+                    if not isinstance(raw_item_id, str):
+                        raise ValueError("item_id must be a string")
+                    item_id = raw_item_id.strip()
+                    if not item_id:
+                        raise ValueError("item_id must not be empty")
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                if not start_reprocess_note(item_id):
+                    self._send_json(409, {**state_payload(), "error": "job already running"})
+                    return
+                self._send_json(202, state_payload())
+                return
+            if path == "/api/delete-bookmark":
+                try:
+                    payload = self._read_json()
+                    raw_item_id = payload.get("item_id")
+                    if not isinstance(raw_item_id, str):
+                        raise ValueError("item_id must be a string")
+                    item_id = raw_item_id.strip()
+                    if not item_id:
+                        raise ValueError("item_id must not be empty")
+                    if item_id not in load_store(cfg.items_path):
+                        self._send_json(404, {"error": f"item not found: {item_id}"})
+                        return
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                if not start_delete_bookmark(item_id):
+                    self._send_json(409, {**state_payload(), "error": "job already running"})
+                    return
+                self._send_json(202, state_payload())
+                return
             self._send_json(404, {"error": "not found"})
 
     server = ThreadingHTTPServer((host, port), Handler)
     typer.echo(f"Dashboard local: http://{host}:{server.server_port}/")
     typer.echo(
-        "POST /api/refresh-all y /api/retry-failed ejecutan tareas solo en este servidor local."
+        "POST /api/refresh-all, /api/retry-failed, /api/reprocess-note y "
+        "/api/delete-bookmark ejecutan tareas solo en este servidor local."
     )
     try:
         server.serve_forever()
@@ -1531,10 +1989,10 @@ def download_videos(
         "puesto, los vídeos de tamaño desconocido (sin bitrate/duración) también se saltan.",
     ),
 ) -> None:
-    """Deshabilitado: XBrain ya no descarga ni persiste MP4."""
+    """Deshabilitado: XBrain no ofrece una descarga persistente de MP4."""
     raise RuntimeError(
         "download-videos está deshabilitado por política de almacenamiento: "
-        "XBrain no descarga ni guarda MP4. Usa digest-video para captions/transcripts."
+        "XBrain no guarda MP4. Usa digest-video para captions/transcripts."
     )
 
 
@@ -1560,12 +2018,12 @@ def list_videos(
 ) -> None:
     """Cataloga (solo lectura) los vídeos referenciados en `items.json`.
 
-    Una fila por entrada de vídeo, con estado (downloaded / failed / pending /
-    poster-era), tamaño estimado (exacto si ya está descargado, "unknown" si no
-    hay bitrate/duración), el `primary_topic` del item y un snippet del texto.
-    NO escribe nada ni toma snapshot. Con `--json` emite un array estable con los
-    campos `id, url, state, topic, size_bytes|null, mp4_url, text` que un agente
-    puede parsear para elegir qué vídeos pasar a `fetch-video`.
+    Una fila por entrada de vídeo, con estado del media (downloaded / failed /
+    pending / poster-era), estado del digest (done / pending), tamaño estimado
+    (exacto si ya está descargado, "unknown" si no hay bitrate/duración), el
+    `primary_topic` del item y un snippet del texto. NO escribe nada ni toma
+    snapshot. Con `--json` emite un array estable con los campos `id, url, state,
+    digest, topic, size_bytes|null, mp4_url, text`.
     """
     cfg = _config()
     store = load_store(cfg.items_path)
@@ -1607,10 +2065,10 @@ def fetch_video(
         False, "--json", help="Salida como array JSON estable en vez de líneas humanas."
     ),
 ) -> None:
-    """Deshabilitado: XBrain no escribe MP4 ni siquiera en rutas temporales."""
+    """Deshabilitado: XBrain no ofrece una descarga manual persistente."""
     raise RuntimeError(
         "fetch-video está deshabilitado por política de almacenamiento: "
-        "XBrain no descarga MP4. Usa digest-video para captions/transcripts."
+        "XBrain no deja MP4 en disco. Usa digest-video para captions/transcripts."
     )
 
 
@@ -1660,7 +2118,7 @@ def _run_digest_video(
     max_size_bytes: int | None = None,
     allow_empty: bool = False,
 ) -> None:
-    """Digest selected videos from caption/text-track transcripts only."""
+    """Digest selected videos from captions or a temporary transcription fallback."""
     if frames:
         raise ValueError(
             "digest-video --frames está deshabilitado: XBrain no almacena frames ni "
@@ -1668,8 +2126,6 @@ def _run_digest_video(
         )
     if vision_model:
         raise ValueError("--vision-model solo tenía sentido con --frames, ahora deshabilitado.")
-    if max_size_bytes is not None:
-        typer.echo("digest-video: --max-size ignorado; no se descargan bytes de vídeo.")
     store = load_store(cfg.items_path)
     try:
         id_list = _resolve_digest_ids(store, ids, topic, all_pending, source, limit)
@@ -1679,16 +2135,16 @@ def _run_digest_video(
         typer.echo("Vídeos: no hay vídeos seleccionados para digest.")
         return
 
-    def _transcript(entry) -> VideoTranscript:
-        transcript = fetch_video_transcript(entry)
-        if language and transcript.language is None:
-            return VideoTranscript(
-                text=transcript.text,
-                language=language,
-                source_url=transcript.source_url,
-                format=transcript.format,
-            )
-        return transcript
+    def _transcript(item: Item, entry) -> VideoTranscript:
+        return fetch_or_transcribe_video_transcript(
+            item,
+            entry,
+            language=language,
+            transcribe_command=cfg.transcribe_command,
+            transcribe_model=cfg.transcribe_model,
+            transcribe_timeout_seconds=cfg.transcribe_timeout_seconds,
+            max_size_bytes=max_size_bytes,
+        )
 
     report = digest_video_transcripts(
         store,
@@ -1743,10 +2199,13 @@ def digest_video(
     max_size: str | None = typer.Option(
         None,
         "--max-size",
-        help="Compatibilidad: se ignora porque digest-video ya no descarga bytes de vídeo.",
+        help=(
+            "Límite para el fallback temporal a MP4 cuando no hay captions "
+            "(500MB / 2GB; sin unidad = MB). Las captions no descargan vídeo."
+        ),
     ),
 ) -> None:
-    """Procesa vídeos sin descargar media: captions/transcript → resumen ejecutivo.
+    """Procesa vídeos sin persistir media: captions o ASR temporal → resumen ejecutivo.
 
     Para cada vídeo seleccionado, XBrain busca una pista textual de captions o
     transcript capturada en el payload de X. Si existe, descarga solo ese texto,
@@ -1754,10 +2213,12 @@ def digest_video(
     `ContentSourceSuccess(kind="x_video")`. La transcripción raw queda guardada
     en el store y se renderiza en `videos/<video>/transcript.md`, pero no alimenta
     `enrich`, `topics`, dashboard ni Ask XBrain. Si X no expone transcript textual,
-    el vídeo se reporta como `sin transcript`; no hay fallback a MP4/audio.
+    XBrain descarga el MP4 solo dentro de un directorio temporal, lo transcribe con
+    `[transcribe].command`, guarda solo el texto y elimina siempre los bytes de
+    vídeo/audio temporales.
     """
     cfg = _config()
-    max_size_bytes = 0 if max_size else None
+    max_size_bytes = parse_size_to_bytes(max_size) if max_size else None
     _run_digest_video(
         cfg,
         ids=ids,
@@ -2020,6 +2481,14 @@ def refresh_all(
     describe_batch_size: int = typer.Option(5, "--describe-batch-size", min=1),
     skip_media: bool = typer.Option(False, "--skip-media"),
     skip_describe: bool = typer.Option(False, "--skip-describe"),
+    video_max_size: str | None = typer.Option(
+        _DEFAULT_REFRESH_VIDEO_MAX_SIZE,
+        "--video-max-size",
+        help=(
+            "Límite para el fallback temporal de digest-video. "
+            "Usa 4GB por defecto; pasa '' para desactivar el límite."
+        ),
+    ),
 ) -> None:
     """Ejecuta el flujo diario completo para alimentar el vault."""
     _run_refresh_all(
@@ -2034,6 +2503,7 @@ def refresh_all(
         describe_batch_size=describe_batch_size,
         skip_media=skip_media,
         skip_describe=skip_describe,
+        video_max_size_bytes=parse_size_to_bytes(video_max_size) if video_max_size else None,
     )
 
 

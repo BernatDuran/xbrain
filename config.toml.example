@@ -58,9 +58,25 @@ topic_style = "wikilink"
 # you change the describe-image rubric or expectations.
 version = "v1"
 
+[transcribe]
+# Optional ASR fallback for `xbrain digest-video` when X does not expose captions.
+# XBrain may stream the MP4 into a private temporary directory, run this
+# external command, store only the transcript text, and delete the temporary
+# media bytes. It never stores MP4/audio/frames in data/ or the vault.
+command = "parakeet-mlx"
+# model = "parakeet-tdt-0.6b-v2"
+#
+# Linux/VPS CPU example after installing faster-whisper in /opt/xbrain-asr.
+# The wrapper streams the MP4 into XBrain's temp dir, extracts mono 16k audio
+# there, transcribes that smaller WAV, and deletes every temporary media file.
+# `XBRAIN_WHISPER_BEAM_SIZE=1` is the recommended VPS default for long videos;
+# raise it to 3/5 if you prefer accuracy over runtime.
+# command = "env XBRAIN_WHISPER_CACHE=/opt/xbrain-asr/models XBRAIN_WHISPER_CPU_THREADS=6 XBRAIN_WHISPER_BEAM_SIZE=1 XBRAIN_WHISPER_DELETE_SOURCE_AFTER_AUDIO=1 /opt/xbrain-asr/bin/python /absolute/path/to/xbrain/scripts/xbrain-transcribe-faster-whisper"
+# model = "small"
+# timeout_seconds = 7200
+
 # Video policy:
-# `xbrain digest-video` does not download/store MP4, audio or frames. It uses
-# caption/text-track URLs captured from X when available, stores the raw
-# transcript as a reference artifact, and sends only an executive summary through
-# enrich/topics/dashboard/Ask. Legacy `[transcribe]` / `[vision]` settings are
-# intentionally omitted from the normal configuration.
+# `xbrain digest-video` never stores MP4, audio or frames. It uses caption/text
+# tracks captured from X when available; otherwise it may use the temporary ASR
+# fallback above. The raw transcript is a reference artifact; only the executive
+# summary flows through enrich/topics/dashboard/Ask.
