@@ -146,6 +146,16 @@ class DeleteBookmarkReport:
     topic_pages_touched: int
 
 
+@dataclass(frozen=True)
+class TopicActionReport:
+    item_id: str
+    action: str
+    primary_topic: str | None
+    topics: list[str]
+    topic_confidence: str | None
+    suggested_new_topics: list[str]
+
+
 @app.callback()
 def _configure_logging() -> None:
     """Surface library `logging` warnings (e.g. the 429 backoff notice) cleanly.
@@ -726,6 +736,88 @@ def _refresh_topic_pages_after_delete(cfg: Config, store: dict[str, Item], item_
     return touched
 
 
+def _topic_state_payload(item: Item) -> dict[str, object]:
+    enrichment = item.enriched
+    if enrichment is None:
+        return {
+            "item_id": item.id,
+            "enriched": False,
+            "primary_topic": None,
+            "topics": [],
+            "topic_confidence": None,
+            "suggested_new_topics": [],
+        }
+    return {
+        "item_id": item.id,
+        "enriched": True,
+        "primary_topic": enrichment.primary_topic,
+        "topics": enrichment.topics,
+        "topic_confidence": enrichment.topic_confidence,
+        "suggested_new_topics": enrichment.suggested_new_topics,
+    }
+
+
+def _run_topic_action(cfg: Config, item_id: str, action: str) -> TopicActionReport:
+    """Apply a per-note taxonomy decision and refresh generated outputs."""
+    if action not in {"accept", "reject", "regenerate"}:
+        raise ValueError(f"unknown topic action: {action}")
+    store = load_store(cfg.items_path)
+    item = store.get(item_id)
+    if item is None:
+        raise ValueError(f"item not found: {item_id}")
+    _auto_snapshot(cfg, f"topic-{action}-{item_id}")
+
+    if action == "regenerate":
+        vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+        if not vocab_topics:
+            raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+        executor = ApiExecutor(
+            model=cfg.llm_model,
+            output_language=cfg.output_language,
+            provider=cfg.llm_provider,
+            base_url=cfg.llm_base_url,
+        )
+        enriched, invalid = enrich_selected_with_executor(store, executor, vocab_topics, [item])
+        save_store(store, cfg.items_path)
+        _report_invalid(invalid)
+        if invalid or enriched != 1:
+            raise RuntimeError(f"topic regenerate no pudo re-enriquecer {item_id}")
+        _run_topics_executor(cfg, "api", resynth=False)
+        _run_generate(cfg, None, None)
+    else:
+        if item.enriched is None:
+            raise RuntimeError(f"item has no topic assignment: {item_id}")
+        if action == "accept":
+            item.enriched.topic_confidence = "high"
+            item.enriched.suggested_new_topics = []
+        else:
+            item.enriched.primary_topic = "misc"
+            item.enriched.topics = ["misc"]
+            item.enriched.topic_confidence = "low"
+            item.enriched.suggested_new_topics = []
+        save_store(store, cfg.items_path)
+        _refresh_topic_pages_after_delete(cfg, store, item_id)
+        _run_generate(cfg, None, None)
+
+    store = load_store(cfg.items_path)
+    item = store.get(item_id)
+    if item is None or item.enriched is None:
+        raise RuntimeError(f"topic action left item unenriched: {item_id}")
+    typer.echo(
+        "topic-action: "
+        f"{action} {item_id} · primary {item.enriched.primary_topic or '—'} · "
+        f"confidence {item.enriched.topic_confidence or 'unknown'}"
+    )
+    return TopicActionReport(
+        item_id=item_id,
+        action=action,
+        primary_topic=item.enriched.primary_topic,
+        topics=item.enriched.topics,
+        topic_confidence=item.enriched.topic_confidence,
+        suggested_new_topics=item.enriched.suggested_new_topics,
+    )
+
+
 def _run_delete_bookmark(cfg: Config, item_id: str) -> DeleteBookmarkReport:
     """Remove one bookmarked item and the generated artifacts tied to it."""
     store = load_store(cfg.items_path)
@@ -1068,12 +1160,16 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     item_id = _note_frontmatter_id(markdown)
     reprocess_control = ""
     delete_modal = ""
+    topic_modal = ""
     note_actions_script = ""
     if item_id:
         escaped_item_id = html.escape(item_id, quote=True)
         js_item_id = json.dumps(item_id)
         reprocess_control = (
             '<div class="note-actions">'
+            f'<button class="note-icon" id="topics-note" type="button" '
+            f'data-item-id="{escaped_item_id}" title="Review topics" '
+            'aria-label="Review topics">#</button>'
             f'<button class="note-icon" id="reprocess-note" type="button" '
             f'data-item-id="{escaped_item_id}" title="Reprocess note" '
             'aria-label="Reprocess note">↻</button>'
@@ -1094,10 +1190,30 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     </div>
   </div>
 </div>"""
+        topic_modal = """
+<div class="modal" id="topic-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="topic-title">
+    <h2 id="topic-title">Topics</h2>
+    <div class="topic-state" id="topic-state">Loading...</div>
+    <div class="modal-actions">
+      <button class="modal-btn" id="topic-cancel" type="button">Cerrar</button>
+      <button class="modal-btn" id="topic-accept" type="button">Aceptar</button>
+      <button class="modal-btn" id="topic-reject" type="button">Rechazar</button>
+      <button class="modal-btn primary" id="topic-regenerate" type="button">Regenerar</button>
+    </div>
+  </div>
+</div>"""
         note_actions_script = f"""
 <script>
 const itemId = {js_item_id};
 const actionStatus = document.getElementById('note-action-status');
+const topicButton = document.getElementById('topics-note');
+const topicModal = document.getElementById('topic-modal');
+const topicState = document.getElementById('topic-state');
+const topicCancel = document.getElementById('topic-cancel');
+const topicAccept = document.getElementById('topic-accept');
+const topicReject = document.getElementById('topic-reject');
+const topicRegenerate = document.getElementById('topic-regenerate');
 const reprocessButton = document.getElementById('reprocess-note');
 const deleteButton = document.getElementById('delete-note');
 const deleteModal = document.getElementById('delete-modal');
@@ -1106,15 +1222,32 @@ const deleteConfirm = document.getElementById('delete-confirm');
 const setStatus = text => {{
   if (actionStatus) actionStatus.textContent = text;
 }};
-const postItemAction = async endpoint => {{
+const postItemAction = async (endpoint, extra = {{}}) => {{
   const response = await fetch(endpoint, {{
     method: 'POST',
     headers: {{'content-type': 'application/json'}},
-    body: JSON.stringify({{item_id: itemId}})
+    body: JSON.stringify({{item_id: itemId, ...extra}})
   }});
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || 'request failed');
   return payload;
+}};
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const waitForAction = async (actionName, onDone, progressText) => {{
+  for (;;) {{
+    await sleep(1000);
+    const response = await fetch('/api/status');
+    const state = await response.json();
+    if (state.running) {{
+      setStatus(progressText);
+      continue;
+    }}
+    if (state.last_action === actionName && state.last_error) {{
+      throw new Error(String(state.last_error).split('\\n')[0]);
+    }}
+    onDone();
+    return;
+  }}
 }};
 if (reprocessButton) {{
   const originalText = reprocessButton.textContent;
@@ -1132,27 +1265,66 @@ if (reprocessButton) {{
     }}
   }});
 }}
+if (topicButton && topicModal && topicState) {{
+  const topicControls = [topicAccept, topicReject, topicRegenerate].filter(Boolean);
+  const setTopicModal = open => {{
+    topicModal.hidden = !open;
+    if (open) topicButton.focus();
+  }};
+  const setTopicDisabled = disabled => topicControls.forEach(button => {{ button.disabled = disabled; }});
+  const renderTopicState = payload => {{
+    const topics = payload.topics && payload.topics.length ? payload.topics.join(', ') : 'none';
+    const suggestions = payload.suggested_new_topics && payload.suggested_new_topics.length
+      ? payload.suggested_new_topics.join(', ')
+      : 'none';
+    topicState.textContent = payload.enriched
+      ? 'Primary: ' + (payload.primary_topic || 'none') + ' · topics: ' + topics +
+        ' · confidence: ' + (payload.topic_confidence || 'unknown') +
+        ' · suggested: ' + suggestions
+      : 'No topic assignment yet. Use regenerate to create one.';
+  }};
+  const loadTopicState = async () => {{
+    topicState.textContent = 'Loading...';
+    const response = await fetch('/api/topic-state?item_id=' + encodeURIComponent(itemId));
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'request failed');
+    renderTopicState(payload);
+  }};
+  const runTopicAction = async action => {{
+    setTopicDisabled(true);
+    setStatus('topic ' + action + ' started...');
+    try {{
+      await postItemAction('/api/topic-action', {{action}});
+      await waitForAction('topic-' + action + ':' + itemId, () => window.location.reload(), 'updating topics...');
+    }} catch (error) {{
+      setTopicDisabled(false);
+      setStatus('could not update topics: ' + error.message);
+    }}
+  }};
+  topicButton.addEventListener('click', async () => {{
+    setTopicModal(true);
+    setTopicDisabled(false);
+    try {{
+      await loadTopicState();
+    }} catch (error) {{
+      topicState.textContent = 'Could not load topics: ' + error.message;
+    }}
+  }});
+  if (topicCancel) topicCancel.addEventListener('click', () => setTopicModal(false));
+  topicModal.addEventListener('click', event => {{
+    if (event.target === topicModal) setTopicModal(false);
+  }});
+  if (topicAccept) topicAccept.addEventListener('click', () => runTopicAction('accept'));
+  if (topicReject) topicReject.addEventListener('click', () => runTopicAction('reject'));
+  if (topicRegenerate) topicRegenerate.addEventListener('click', () => runTopicAction('regenerate'));
+}}
 if (deleteButton && deleteModal && deleteCancel && deleteConfirm) {{
   const setDeleteModal = open => {{
     deleteModal.hidden = !open;
     if (open) deleteConfirm.focus();
   }};
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const waitForDelete = async () => {{
-    for (;;) {{
-      await sleep(1000);
-      const response = await fetch('/api/status');
-      const state = await response.json();
-      if (state.running) {{
-        setStatus('deleting...');
-        continue;
-      }}
-      if (state.last_action === 'delete-bookmark:' + itemId && state.last_error) {{
-        throw new Error(String(state.last_error).split('\\n')[0]);
-      }}
-      window.location.href = '/';
-      return;
-    }}
+    await waitForAction('delete-bookmark:' + itemId, () => window.location.href = '/', 'deleting...');
   }};
   deleteButton.addEventListener('click', () => setDeleteModal(true));
   deleteCancel.addEventListener('click', () => setDeleteModal(false));
@@ -1235,8 +1407,13 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
   color:var(--ink); background:var(--surface-2); border:1px solid var(--hair);
   border-radius:6px; padding:8px 10px; font:inherit; font-size:13px; cursor:pointer;
 }}
+.modal-btn.primary {{ color:var(--accent); border-color:rgba(224,162,51,.42); }}
 .modal-btn.danger {{ color:#F0A29A; border-color:rgba(240,122,109,.42); }}
 .modal-btn:disabled {{ opacity:.52; cursor:wait; }}
+.topic-state {{
+  color:var(--muted); font-size:12.5px; line-height:1.5; border:1px solid var(--hair);
+  background:#100E0A; border-radius:7px; padding:10px; overflow-wrap:anywhere;
+}}
 article {{
   background:var(--surface); border:1px solid var(--hair); border-radius:10px;
   padding:22px; overflow:hidden;
@@ -1306,6 +1483,7 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
     <div class="note-body">{body_html}</div>
   </article>
 </main>
+{topic_modal}
 {delete_modal}
 {note_actions_script}
 </body>
@@ -1378,6 +1556,12 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             lambda: _run_reprocess_note(cfg, item_id, headless=True),
         )
 
+    def start_topic_action(item_id: str, action: str) -> bool:
+        return start_background(
+            f"topic-{action}:{item_id}",
+            lambda: _run_topic_action(cfg, item_id, action),
+        )
+
     def start_delete_bookmark(item_id: str) -> bool:
         return start_background(
             f"delete-bookmark:{item_id}",
@@ -1437,6 +1621,17 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             path = parsed.path
             if path == "/api/status":
                 self._send_json(200, state_payload())
+                return
+            if path == "/api/topic-state":
+                item_id = parse_qs(parsed.query).get("item_id", [""])[0].strip()
+                if not item_id:
+                    self._send_json(400, {"error": "missing item_id"})
+                    return
+                item = load_store(cfg.items_path).get(item_id)
+                if item is None:
+                    self._send_json(404, {"error": f"item not found: {item_id}"})
+                    return
+                self._send_json(200, _topic_state_payload(item))
                 return
             if path in ("/", "/dashboard.html"):
                 try:
@@ -1535,6 +1730,32 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                     return
                 self._send_json(202, state_payload())
                 return
+            if path == "/api/topic-action":
+                try:
+                    payload = self._read_json()
+                    raw_item_id = payload.get("item_id")
+                    raw_action = payload.get("action")
+                    if not isinstance(raw_item_id, str):
+                        raise ValueError("item_id must be a string")
+                    if not isinstance(raw_action, str):
+                        raise ValueError("action must be a string")
+                    item_id = raw_item_id.strip()
+                    action = raw_action.strip()
+                    if not item_id:
+                        raise ValueError("item_id must not be empty")
+                    if action not in {"accept", "reject", "regenerate"}:
+                        raise ValueError("action must be accept, reject or regenerate")
+                    if item_id not in load_store(cfg.items_path):
+                        self._send_json(404, {"error": f"item not found: {item_id}"})
+                        return
+                except ValueError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                if not start_topic_action(item_id, action):
+                    self._send_json(409, {**state_payload(), "error": "job already running"})
+                    return
+                self._send_json(202, state_payload())
+                return
             if path == "/api/delete-bookmark":
                 try:
                     payload = self._read_json()
@@ -1560,8 +1781,8 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
     server = ThreadingHTTPServer((host, port), Handler)
     typer.echo(f"Dashboard local: http://{host}:{server.server_port}/")
     typer.echo(
-        "POST /api/refresh-all, /api/retry-failed, /api/reprocess-note y "
-        "/api/delete-bookmark ejecutan tareas solo en este servidor local."
+        "POST /api/refresh-all, /api/retry-failed, /api/reprocess-note, "
+        "/api/topic-action y /api/delete-bookmark ejecutan tareas solo en este servidor local."
     )
     try:
         server.serve_forever()

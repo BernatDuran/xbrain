@@ -136,6 +136,16 @@ def test_compute_counts_topics_authors_and_deep_links():
     assert row["confidence"] in {"high", "low"}
 
 
+def test_taxonomy_triage_omits_manually_accepted_misc():
+    accepted_misc = _item("100", topic="misc", confidence="high")
+    weak_misc = _item("101", topic="misc", confidence="low")
+
+    data = compute_dashboard_data([accepted_misc, weak_misc], {}, {}, [], "JUN 1, 2026")
+
+    assert data["meta"]["taxonomy"]["misc"] == 2
+    assert {row["id"] for row in data["taxonomy"]["review_items"]} == {"101"}
+
+
 def test_long_form_and_media_counts():
     items = [
         _item(

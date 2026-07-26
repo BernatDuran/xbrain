@@ -10,11 +10,13 @@ from xbrain.cli import (
     _resolve_served_media,
     _resolve_served_note,
     _run_delete_bookmark,
+    _run_topic_action,
     app,
 )
 from xbrain.config import load_config
-from xbrain.models import Author, Item, Link
+from xbrain.models import Author, Enrichment, Item, Link, Topic
 from xbrain.notes_io import GEN_END, GEN_START
+from xbrain.rubrics import save_vocab
 from xbrain.store import load_store, save_store
 
 runner = CliRunner()
@@ -159,6 +161,10 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert "items/source.md" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "obsidian://open?path=" in html
+    assert 'id="topics-note"' in html
+    assert 'id="topic-modal"' in html
+    assert "/api/topic-state" in html
+    assert "/api/topic-action" in html
     assert 'id="reprocess-note"' in html
     assert 'class="note-icon"' in html
     assert ">↻</button>" in html
@@ -202,6 +208,48 @@ def test_render_note_page_omits_reprocess_without_item_id(tmp_path: Path):
     assert "/api/reprocess-note" not in html
     assert 'id="delete-note"' not in html
     assert "/api/delete-bookmark" not in html
+    assert 'id="topics-note"' not in html
+    assert "/api/topic-state" not in html
+    assert "/api/topic-action" not in html
+
+
+def test_run_topic_action_accepts_and_rejects_topic_assignment(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab(
+        [
+            Topic(slug="misc", description="Miscellaneous"),
+            Topic(slug="ai-coding", description="AI coding"),
+        ],
+        cfg.data_dir / "vocab.yaml",
+    )
+    item = _linked_item("42")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="summary",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="low",
+        suggested_new_topics=["frontier-ai"],
+    )
+    save_store({"42": item}, cfg.items_path)
+
+    accepted = _run_topic_action(cfg, "42", "accept")
+    store = load_store(cfg.items_path)
+
+    assert accepted.action == "accept"
+    assert store["42"].enriched.topic_confidence == "high"
+    assert store["42"].enriched.suggested_new_topics == []
+
+    rejected = _run_topic_action(cfg, "42", "reject")
+    store = load_store(cfg.items_path)
+
+    assert rejected.action == "reject"
+    assert store["42"].enriched.primary_topic == "misc"
+    assert store["42"].enriched.topics == ["misc"]
+    assert store["42"].enriched.topic_confidence == "low"
+    assert (cfg.output_dir / "dashboard.html").exists()
 
 
 def test_run_delete_bookmark_removes_store_note_media_and_regenerates(

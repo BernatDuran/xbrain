@@ -577,7 +577,7 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
     review_items = {
         item.id: item
         for item in sorted(
-            [*misc_items, *low_items],
+            [item for item in items if _needs_topic_review(item)],
             key=lambda i: i.created_at,
             reverse=True,
         )
@@ -596,6 +596,19 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
         ],
         "review_items": rows(list(review_items.values()))[:12],
     }
+
+
+def _needs_topic_review(item: Item) -> bool:
+    enrichment = item.enriched
+    if enrichment is None:
+        return False
+    if enrichment.topic_confidence in (None, "low"):
+        return True
+    if enrichment.suggested_new_topics:
+        return True
+    return (enrichment.primary_topic == "misc" or "misc" in enrichment.topics) and (
+        enrichment.topic_confidence != "high"
+    )
 
 
 def _meta(
