@@ -248,7 +248,7 @@ def test_run_topic_action_accepts_and_rejects_topic_assignment(tmp_path: Path, m
     assert rejected.action == "reject"
     assert store["42"].enriched.primary_topic == "misc"
     assert store["42"].enriched.topics == ["misc"]
-    assert store["42"].enriched.topic_confidence == "low"
+    assert store["42"].enriched.topic_confidence == "high"
     assert (cfg.output_dir / "dashboard.html").exists()
 
 

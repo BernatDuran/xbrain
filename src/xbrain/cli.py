@@ -793,7 +793,7 @@ def _run_topic_action(cfg: Config, item_id: str, action: str) -> TopicActionRepo
         else:
             item.enriched.primary_topic = "misc"
             item.enriched.topics = ["misc"]
-            item.enriched.topic_confidence = "low"
+            item.enriched.topic_confidence = "high"
             item.enriched.suggested_new_topics = []
         save_store(store, cfg.items_path)
         _refresh_topic_pages_after_delete(cfg, store, item_id)
