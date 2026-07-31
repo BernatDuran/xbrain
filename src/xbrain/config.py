@@ -321,9 +321,7 @@ def load_config(repo_root: Path) -> Config:
         os.environ.get("XBRAIN_EMAIL_ENABLED", email.get("enabled", False)),
         setting="[email].enabled",
     )
-    email_recipient = os.environ.get("XBRAIN_EMAIL_RECIPIENT") or str(
-        email.get("recipient", "bernat.duran.mascorda@gmail.com")
-    )
+    email_recipient = os.environ.get("XBRAIN_EMAIL_RECIPIENT") or str(email.get("recipient", ""))
     email_smtp_username = os.environ.get("XBRAIN_SMTP_USERNAME") or str(
         email.get("smtp_username", "")
     )

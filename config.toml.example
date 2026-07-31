@@ -24,7 +24,7 @@ token_path = "auth/google_drive_token.json"
 # Optional notification after bookmark updates. It only sends when both
 # [drive].enabled=true and [email].enabled=true.
 enabled = false
-recipient = "bernat.duran.mascorda@gmail.com"
+recipient = "you@example.com"
 # Sender may also be set with XBRAIN_EMAIL_FROM. Keep SMTP secrets in .env/env.
 sender = ""
 smtp_host = ""

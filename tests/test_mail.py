@@ -53,6 +53,7 @@ def test_send_bookmark_update_email_uses_configured_smtp(tmp_path: Path, monkeyp
     monkeypatch.setenv("XBRAIN_SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("XBRAIN_SMTP_USERNAME", "smtp-user")
     monkeypatch.setenv("XBRAIN_SMTP_PASSWORD", "smtp-pass")
+    monkeypatch.setenv("XBRAIN_EMAIL_RECIPIENT", "recipient@example.com")
     monkeypatch.setattr("xbrain.mail.smtplib.SMTP", FakeSMTP)
     FakeSMTP.sent_messages = []
     FakeSMTP.logins = []
@@ -89,7 +90,7 @@ def test_send_bookmark_update_email_uses_configured_smtp(tmp_path: Path, monkeyp
     assert FakeSMTP.logins == [("smtp-user", "smtp-pass")]
     assert FakeSMTP.starttls_calls == 1
     message = FakeSMTP.sent_messages[0]
-    assert message["To"] == "bernat.duran.mascorda@gmail.com"
+    assert message["To"] == "recipient@example.com"
     assert message["From"] == "sender@example.com"
     text_body = message.get_body(preferencelist=("plain",)).get_content()
     html_body = message.get_body(preferencelist=("html",)).get_content()

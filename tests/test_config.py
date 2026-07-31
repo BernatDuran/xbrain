@@ -104,7 +104,7 @@ def test_load_config_email_defaults_disabled(tmp_path: Path):
     cfg = load_config(tmp_path)
 
     assert cfg.email_enabled is False
-    assert cfg.email_recipient == "bernat.duran.mascorda@gmail.com"
+    assert cfg.email_recipient == ""
     assert cfg.snapshot_auto_prune_keep_last == 25
 
 
@@ -130,6 +130,7 @@ def test_load_config_rejects_negative_snapshot_auto_prune_setting(tmp_path: Path
 def test_load_config_reads_email_from_env(tmp_path: Path, monkeypatch):
     _write_repo(tmp_path)
     monkeypatch.setenv("XBRAIN_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("XBRAIN_EMAIL_RECIPIENT", "recipient@example.com")
     monkeypatch.setenv("XBRAIN_EMAIL_FROM", "sender@example.com")
     monkeypatch.setenv("XBRAIN_SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("XBRAIN_SMTP_USERNAME", "smtp-user")
@@ -138,6 +139,7 @@ def test_load_config_reads_email_from_env(tmp_path: Path, monkeypatch):
     cfg = load_config(tmp_path)
 
     assert cfg.email_enabled is True
+    assert cfg.email_recipient == "recipient@example.com"
     assert cfg.email_sender == "sender@example.com"
     assert cfg.email_smtp_host == "smtp.example.com"
     assert cfg.email_smtp_username == "smtp-user"

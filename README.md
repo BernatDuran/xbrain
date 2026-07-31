@@ -398,7 +398,7 @@ token_path = "auth/google_drive_token.json"
 
 [email]
 enabled = false                           # notify after Drive-backed updates
-recipient = "bernat.duran.mascorda@gmail.com"
+recipient = "you@example.com"
 sender = ""                               # or XBRAIN_EMAIL_FROM
 
 [snapshots]
@@ -438,7 +438,7 @@ topic_style = "wikilink"                  # wikilink | hashtag (in-body Topics: 
 | `[drive]` | `credentials_path` | `auth/google_drive_credentials.json` | OAuth desktop-client JSON from Google Cloud Console. |
 | `[drive]` | `token_path` | `auth/google_drive_token.json` | Local user token created by `xbrain drive login`. |
 | `[email]` | `enabled` | `false` | Send an email after `refresh-all` / `sync`, only when Drive mode is also enabled. |
-| `[email]` | `recipient` | `bernat.duran.mascorda@gmail.com` | Notification recipient. |
+| `[email]` | `recipient` | `""` | Notification recipient. Required when email notifications are enabled. |
 | `[email]` | `sender` | SMTP username | Notification sender address. Secrets stay in `.env` / environment. |
 | `[snapshots]` | `auto_prune_keep_last` | `25` | Keep the newest N automatic snapshots after destructive runs. Manual snapshots are preserved. `0` disables automatic pruning. |
 | `[x]` | `handle` | — | Your X handle, no `@`. |
@@ -461,9 +461,11 @@ every enrichment; the next `xbrain enrich` re-enriches in the new language) and
 [Snapshots & safety](#snapshots--safety)). Otherwise new items get the new
 language while old summaries stay as they were.
 
-Secrets (`NANOGPT_API_KEY`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`) live in
-the **environment** or local `.env` only — never in `config.toml`, never in the
-repo. For NanoGPT, copy `.env.example` to `.env` and set `NANOGPT_API_KEY`.
+Secrets (`NANOGPT_API_KEY`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`,
+`XBRAIN_SMTP_PASSWORD`) and Google OAuth files (`auth/google_drive_credentials.json`,
+`auth/google_drive_token.json`) live in the **environment** or local ignored
+files only — never in `config.toml`, never in the repo. For NanoGPT, copy
+`.env.example` to `.env` and set `NANOGPT_API_KEY`.
 
 ### Google Drive library
 
@@ -512,7 +514,7 @@ Optional email notification:
 ```toml
 [email]
 enabled = true
-recipient = "bernat.duran.mascorda@gmail.com"
+recipient = "you@example.com"
 sender = "your-smtp-sender@example.com"
 smtp_host = "smtp.example.com"
 smtp_port = 587
