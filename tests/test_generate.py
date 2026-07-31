@@ -1,8 +1,10 @@
 # tests/test_generate.py
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from xbrain.generate import generate
+from xbrain.generate import _storage_summary
 from xbrain.models import (
     Author,
     Content,
@@ -35,6 +37,15 @@ def test_generate_creates_index_log_and_only_link_notes(tmp_path: Path):
     assert (tmp_path / "log.md").exists()
     notes = list((tmp_path / "items").glob("*.md"))
     assert len(notes) == 1
+
+
+def test_generate_dashboard_updated_stamp_includes_hour_and_minute(tmp_path: Path):
+    store = {"1": _item("1", with_link=True)}
+
+    generate(store, tmp_path)
+
+    html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
+    assert re.search(r'"updated": "[A-Z]{3} \d{1,2}, \d{4} \d{2}:\d{2} UTC"', html)
 
 
 def test_generate_removes_stale_item_notes(tmp_path: Path):
@@ -102,6 +113,54 @@ def test_generate_renders_downloaded_photo_as_obsidian_embed(tmp_path: Path):
     assert "![[_media/1/0.png]]" in body
     # The file got mirrored into the vault.
     assert (output_dir / "_media" / "1" / "0.png").exists()
+
+
+def test_generate_skips_media_copy_when_media_root_is_vault_media(tmp_path: Path):
+    from xbrain.models import MediaPhotoDownloaded
+
+    output_dir = tmp_path / "vault"
+    media_root = output_dir / "_media"
+    photo_dir = media_root / "1"
+    photo_dir.mkdir(parents=True)
+    photo = photo_dir / "0.png"
+    photo.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    item = _item("1", with_link=True)
+    item.media = [
+        MediaPhotoDownloaded(
+            url="https://pbs.twimg.com/media/A.png",
+            local_path="1/0.png",
+            width=10,
+            height=8,
+            bytes_size=12,
+            downloaded_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        )
+    ]
+
+    generate({"1": item}, output_dir, media_root=media_root)
+
+    note = next((output_dir / "items").glob("*.md"))
+    assert "![[_media/1/0.png]]" in note.read_text(encoding="utf-8")
+    assert photo.read_bytes() == b"\x89PNG\r\n\x1a\nfake"
+
+
+def test_storage_summary_counts_vault_media_when_data_media_is_absent(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "vault" / "learnings" / "x-knowledge"
+    data_dir.mkdir(parents=True)
+    (data_dir / "items.json").write_text("{}", encoding="utf-8")
+    media = output_dir / "_media" / "1" / "0.png"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"image-bytes")
+
+    summary = _storage_summary(data_dir, output_dir)
+
+    assert summary["media_bytes"] == len(b"image-bytes")
+    assert summary["mirrored_media_bytes"] == 0
+    assert summary["total_bytes"] == len(b"{}") + len(b"image-bytes")
+    assert summary["data_bytes"] == len(b"{}")
+    assert summary["vault_bytes"] == len(b"image-bytes")
+    assert summary["media_storage"] == "vault/_media"
 
 
 def test_generate_renders_failed_photo_as_warning(tmp_path: Path):

@@ -30,6 +30,135 @@ def test_load_config_resolves_paths(tmp_path: Path):
     assert cfg.x_handle == "vgonpa"
     assert cfg.output_dir == Path("/tmp/vault/learnings/x-knowledge")
     assert cfg.items_path == tmp_path / "data" / "items.json"
+    assert cfg.drive_enabled is False
+
+
+def test_load_config_reads_drive_settings_and_uses_cache_paths(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[drive]\n"
+        "enabled = true\n"
+        'root_folder_id = "folder-123"\n'
+        'cache_dir = "cache/drive"\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.drive_enabled is True
+    assert cfg.drive_root_folder_id == "folder-123"
+    assert cfg.drive_cache_dir == tmp_path / "cache" / "drive"
+    assert cfg.data_dir == tmp_path / "cache" / "drive" / "data"
+    assert cfg.output_dir == tmp_path / "cache" / "drive" / "vault" / "x-knowledge"
+    assert cfg.media_dir == cfg.output_dir / "_media"
+
+
+def test_load_config_reads_selected_drive_root(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[drive]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "auth").mkdir()
+    (tmp_path / "auth" / "google_drive_selection.json").write_text(
+        '{"root_folder_id": "selected-folder"}',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.drive_root_folder_id == "selected-folder"
+
+
+def test_load_config_rejects_enabled_drive_without_root(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[drive]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="root_folder_id"):
+        load_config(tmp_path)
+
+
+def test_load_config_email_defaults_disabled(tmp_path: Path):
+    _write_repo(tmp_path)
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.email_enabled is False
+    assert cfg.email_recipient == "bernat.duran.mascorda@gmail.com"
+    assert cfg.snapshot_auto_prune_keep_last == 25
+
+
+def test_load_config_reads_snapshot_auto_prune_setting(tmp_path: Path):
+    _write_repo(tmp_path)
+    with (tmp_path / "config.toml").open("a", encoding="utf-8") as fh:
+        fh.write("\n[snapshots]\nauto_prune_keep_last = 7\n")
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.snapshot_auto_prune_keep_last == 7
+
+
+def test_load_config_rejects_negative_snapshot_auto_prune_setting(tmp_path: Path):
+    _write_repo(tmp_path)
+    with (tmp_path / "config.toml").open("a", encoding="utf-8") as fh:
+        fh.write("\n[snapshots]\nauto_prune_keep_last = -1\n")
+
+    with pytest.raises(ValueError, match="auto_prune_keep_last"):
+        load_config(tmp_path)
+
+
+def test_load_config_reads_email_from_env(tmp_path: Path, monkeypatch):
+    _write_repo(tmp_path)
+    monkeypatch.setenv("XBRAIN_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("XBRAIN_EMAIL_FROM", "sender@example.com")
+    monkeypatch.setenv("XBRAIN_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("XBRAIN_SMTP_USERNAME", "smtp-user")
+    monkeypatch.setenv("XBRAIN_SMTP_PASSWORD", "smtp-pass")
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.email_enabled is True
+    assert cfg.email_sender == "sender@example.com"
+    assert cfg.email_smtp_host == "smtp.example.com"
+    assert cfg.email_smtp_username == "smtp-user"
+    assert cfg.email_smtp_password == "smtp-pass"
+
+
+def test_load_config_rejects_enabled_email_without_smtp(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        'vault = "/tmp/vault"\n'
+        'output_subdir = "x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n'
+        "[email]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing required"):
+        load_config(tmp_path)
 
 
 def test_load_config_defaults_transcribe_command_to_parakeet(tmp_path: Path):

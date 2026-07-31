@@ -437,6 +437,7 @@ def _analyze_media(
         result = _VisualResult()
         if visual is not None:
             result = _extract_described_slides(path, visual, item_id=item_id)
+        transcript: Transcript | None
         try:
             transcript = transcribe_fn(path)
         except TranscriberFailed as exc:
@@ -453,6 +454,8 @@ def _analyze_media(
             transcript = _fallback_to_visual_only(result, item_id=item_id, reason=exc)
             if transcript is None:
                 return None
+        if transcript is None:
+            return None
         return _MediaAnalysis(transcript=transcript, visual=result)
     finally:
         path.unlink(missing_ok=True)

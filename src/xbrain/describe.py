@@ -795,6 +795,33 @@ def _run_one_batch(
             described_at=clock(),
             report=report,
         )
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        if len(batch) > 1:
+            message = str(exc)
+            logger.warning(
+                "describe: batch failed with malformed response (%d photos); "
+                "retrying one-by-one: %s",
+                len(batch),
+                message,
+            )
+            report.batches_failed += 1
+            for candidate in batch:
+                _run_one_batch(
+                    batch=[candidate],
+                    client=client,
+                    model=model,
+                    system=system,
+                    output_language=output_language,
+                    description_version=description_version,
+                    clock=clock,
+                    media_root=media_root,
+                    recoverable=recoverable,
+                    report=report,
+                )
+            return
+        message = str(exc)
+        logger.warning("describe: batch failed (%d photos): %s", len(batch), message)
+        _record_batch_failure(report, batch, message)
     except recoverable as exc:
         message = str(exc)
         logger.warning("describe: batch failed (%d photos): %s", len(batch), message)

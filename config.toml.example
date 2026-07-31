@@ -6,6 +6,37 @@ output_subdir = "learnings/x-knowledge"
 # Data directory for the JSON store, relative to the repo root.
 data_dir = "data"
 
+[drive]
+# Google Drive is opt-in. When enabled, XBrain uses a local cache and syncs it
+# with the selected Drive folder before/after write commands. When disabled,
+# all library files stay local using [paths].
+enabled = false
+# Set with `xbrain drive select-root <folder-id>` or paste it here.
+# root_folder_id = ""
+# Local working cache used only when enabled=true.
+cache_dir = ".xbrain-cache/google-drive"
+# OAuth desktop-client JSON downloaded from Google Cloud Console.
+credentials_path = "auth/google_drive_credentials.json"
+# User token created by `xbrain drive login`; keep it local and gitignored.
+token_path = "auth/google_drive_token.json"
+
+[email]
+# Optional notification after bookmark updates. It only sends when both
+# [drive].enabled=true and [email].enabled=true.
+enabled = false
+recipient = "bernat.duran.mascorda@gmail.com"
+# Sender may also be set with XBRAIN_EMAIL_FROM. Keep SMTP secrets in .env/env.
+sender = ""
+smtp_host = ""
+smtp_port = 587
+smtp_starttls = true
+smtp_ssl = false
+
+[snapshots]
+# Keep this many newest automatic snapshots. Manual snapshots are never removed
+# by the automatic policy. Set to 0 to disable automatic pruning.
+auto_prune_keep_last = 25
+
 [x]
 # Your X handle, without the @.
 handle = "your_handle"

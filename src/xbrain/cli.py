@@ -14,7 +14,7 @@ import threading
 import traceback
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +32,13 @@ from xbrain.describe import apply_describe_worksheet, export_describe_worksheet
 from xbrain.describe import describe_all as run_describe_all
 from xbrain.describe import emit_summary_line as describe_emit_summary_line
 from xbrain.diff import diff_snapshots, format_json, format_text
+from xbrain.drive import (
+    authenticate as drive_authenticate,
+    drive_sync_down,
+    drive_sync_up,
+    drive_write_session,
+    login as drive_login,
+)
 from xbrain.enrich import (
     apply_worksheet_judgments,
     enrich_selected_with_executor,
@@ -48,6 +55,7 @@ from xbrain.fetch import fetch_pending
 from xbrain.fetch_x import fetch_x_articles
 from xbrain.generate import generate as run_generate
 from xbrain.llm_client import validate_llm_model
+from xbrain.mail import send_bookmark_update_email
 from xbrain.media import download_all as run_media_download
 from xbrain.media import emit_summary_line as media_emit_summary_line
 from xbrain.models import ArchiveImport, Author, ContentSourceFailure, Item, SourceName, Topic
@@ -154,6 +162,7 @@ class TopicActionReport:
     topics: list[str]
     topic_confidence: str | None
     suggested_new_topics: list[str]
+    promoted_topics: list[str] = field(default_factory=list)
 
 
 @app.callback()
@@ -192,6 +201,43 @@ def _repo_root() -> Path:
 
 def _config() -> Config:
     return load_config(_repo_root())
+
+
+def _notify_bookmark_update(cfg: Config, *, command: str, updated_item_ids: list[str]) -> None:
+    if not (cfg.drive_enabled and cfg.email_enabled):
+        return
+    try:
+        store = load_store(cfg.items_path)
+        send_bookmark_update_email(
+            cfg,
+            command=command,
+            store=store,
+            updated_item_ids=updated_item_ids,
+        )
+        typer.echo(f"Email enviado a {cfg.email_recipient}")
+    except Exception as exc:  # noqa: BLE001 - notification must not undo a completed update
+        typer.echo(f"AVISO: no se pudo enviar el email de actualización: {exc}", err=True)
+
+
+def _sort_item_ids(item_ids: set[str]) -> list[str]:
+    return sorted(
+        item_ids,
+        key=lambda item_id: (
+            not item_id.isdigit(),
+            int(item_id) if item_id.isdigit() else item_id,
+        ),
+    )
+
+
+def _updated_item_ids(before: dict[str, Item], after: dict[str, Item]) -> list[str]:
+    return _sort_item_ids(
+        {
+            item_id
+            for item_id, item in after.items()
+            if item_id not in before
+            or item.model_dump_json() != before[item_id].model_dump_json()
+        }
+    )
 
 
 def _parse_date(value: str | None, *, end_of_day: bool = False) -> datetime | None:
@@ -367,6 +413,15 @@ def _auto_snapshot(cfg: Config, command: str) -> None:
         dir_label=f"pre-{command}",
     )
     typer.echo(f"Snapshot created: {path.name} ({manifest.item_count} items)")
+    deleted = snapshot.snapshot_prune_auto(
+        cfg.data_dir,
+        keep_last=cfg.snapshot_auto_prune_keep_last,
+    )
+    if deleted:
+        typer.echo(
+            f"Snapshots auto-pruned: {deleted} "
+            f"(keeping last {cfg.snapshot_auto_prune_keep_last} automatic snapshots)"
+        )
 
 
 def _format_size_estimate(estimated_bytes: int, n_estimable: int, n_unknown: int) -> str:
@@ -757,31 +812,103 @@ def _topic_state_payload(item: Item) -> dict[str, object]:
     }
 
 
-def _run_topic_action(cfg: Config, item_id: str, action: str) -> TopicActionReport:
+def _topic_description_for_promoted_slug(slug: str) -> str:
+    label = slug.replace("-", " ").strip()
+    return f"Posts about {label}. Added from an operator-approved XBrain suggestion."
+
+
+def _selected_topic_suggestions(item: Item, suggested_topics: list[str] | None) -> list[str]:
+    if not suggested_topics:
+        return []
+    if item.enriched is None:
+        raise RuntimeError(f"item has no topic suggestions: {item.id}")
+    allowed = set(item.enriched.suggested_new_topics)
+    selected: list[str] = []
+    for raw_slug in suggested_topics:
+        slug = raw_slug.strip()
+        if not slug:
+            continue
+        if slug not in allowed:
+            raise ValueError(f"topic suggestion is not available for item {item.id}: {slug}")
+        if slug not in selected:
+            selected.append(slug)
+    return selected
+
+
+def _topic_suggestion_hints(
+    item: Item,
+    selected: list[str],
+    *,
+    prioritize_suggestions: bool,
+) -> list[str]:
+    if selected:
+        return selected
+    if prioritize_suggestions and item.enriched is not None:
+        return list(dict.fromkeys(item.enriched.suggested_new_topics))
+    return []
+
+
+def _promote_topic_suggestions(vocab_topics: list[Topic], selected: list[str]) -> list[str]:
+    known = {topic.slug for topic in vocab_topics}
+    promoted: list[str] = []
+    for slug in selected:
+        if slug in known:
+            continue
+        vocab_topics.append(Topic(slug=slug, description=_topic_description_for_promoted_slug(slug)))
+        known.add(slug)
+        promoted.append(slug)
+    return promoted
+
+
+def _run_topic_action(
+    cfg: Config,
+    item_id: str,
+    action: str,
+    *,
+    prioritize_suggestions: bool = False,
+    suggested_topics: list[str] | None = None,
+    promote_suggestions: bool = False,
+) -> TopicActionReport:
     """Apply a per-note taxonomy decision and refresh generated outputs."""
     if action not in {"accept", "reject", "regenerate"}:
         raise ValueError(f"unknown topic action: {action}")
+    if action != "regenerate" and (prioritize_suggestions or promote_suggestions or suggested_topics):
+        raise ValueError("topic suggestions can only be used with regenerate")
     store = load_store(cfg.items_path)
     item = store.get(item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
     _auto_snapshot(cfg, f"topic-{action}-{item_id}")
+    promoted_topics: list[str] = []
 
     if action == "regenerate":
         vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
         if not vocab_topics:
             raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+        selected = _selected_topic_suggestions(item, suggested_topics)
+        if promote_suggestions and not selected:
+            raise ValueError("select at least one suggested topic to promote")
+        if promote_suggestions:
+            promoted_topics = _promote_topic_suggestions(vocab_topics, selected)
+        hints = _topic_suggestion_hints(
+            item,
+            selected,
+            prioritize_suggestions=prioritize_suggestions or promote_suggestions,
+        )
         executor = ApiExecutor(
             model=cfg.llm_model,
             output_language=cfg.output_language,
             provider=cfg.llm_provider,
             base_url=cfg.llm_base_url,
+            topic_hints={item_id: hints} if hints else None,
         )
         enriched, invalid = enrich_selected_with_executor(store, executor, vocab_topics, [item])
         save_store(store, cfg.items_path)
         _report_invalid(invalid)
         if invalid or enriched != 1:
             raise RuntimeError(f"topic regenerate no pudo re-enriquecer {item_id}")
+        if promoted_topics:
+            save_vocab(vocab_topics, cfg.data_dir / "vocab.yaml")
         _run_topics_executor(cfg, "api", resynth=False)
         _run_generate(cfg, None, None)
     else:
@@ -815,6 +942,7 @@ def _run_topic_action(cfg: Config, item_id: str, action: str) -> TopicActionRepo
         topics=item.enriched.topics,
         topic_confidence=item.enriched.topic_confidence,
         suggested_new_topics=item.enriched.suggested_new_topics,
+        promoted_topics=promoted_topics,
     )
 
 
@@ -929,10 +1057,11 @@ def _run_refresh_all(
     skip_media: bool = False,
     skip_describe: bool = False,
     video_max_size_bytes: int | None = parse_size_to_bytes(_DEFAULT_REFRESH_VIDEO_MAX_SIZE),
-) -> None:
+) -> list[str]:
     """One-command daily ingestion pipeline for unattended/mobile runs."""
     if executor != "api":
         raise ValueError("refresh-all solo soporta --executor api por ahora.")
+    before_store = load_store(cfg.items_path)
     typer.echo("refresh-all: 1/8 extract")
     _run_extract(cfg, source, since, until, headless=headless)
     typer.echo("refresh-all: 2/8 fetch")
@@ -977,6 +1106,8 @@ def _run_refresh_all(
     typer.echo("refresh-all: 8/8 generate")
     _run_generate(cfg, since, until)
     typer.echo("refresh-all: completado")
+    after_store = load_store(cfg.items_path)
+    return _updated_item_ids(before_store, after_store)
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -1195,11 +1326,14 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="topic-title">
     <h2 id="topic-title">Topics</h2>
     <div class="topic-state" id="topic-state">Loading...</div>
+    <div class="topic-suggestions" id="topic-suggestions" hidden></div>
     <div class="modal-actions">
       <button class="modal-btn" id="topic-cancel" type="button">Cerrar</button>
       <button class="modal-btn" id="topic-accept" type="button">Aceptar</button>
       <button class="modal-btn" id="topic-reject" type="button">Rechazar</button>
-      <button class="modal-btn primary" id="topic-regenerate" type="button">Regenerar</button>
+      <button class="modal-btn" id="topic-regenerate" type="button">Regenerar</button>
+      <button class="modal-btn" id="topic-prioritize" type="button">Priorizar</button>
+      <button class="modal-btn primary" id="topic-promote" type="button">Promover + regenerar</button>
     </div>
   </div>
 </div>"""
@@ -1210,15 +1344,24 @@ const actionStatus = document.getElementById('note-action-status');
 const topicButton = document.getElementById('topics-note');
 const topicModal = document.getElementById('topic-modal');
 const topicState = document.getElementById('topic-state');
+const topicSuggestions = document.getElementById('topic-suggestions');
 const topicCancel = document.getElementById('topic-cancel');
 const topicAccept = document.getElementById('topic-accept');
 const topicReject = document.getElementById('topic-reject');
 const topicRegenerate = document.getElementById('topic-regenerate');
+const topicPrioritize = document.getElementById('topic-prioritize');
+const topicPromote = document.getElementById('topic-promote');
 const reprocessButton = document.getElementById('reprocess-note');
 const deleteButton = document.getElementById('delete-note');
 const deleteModal = document.getElementById('delete-modal');
 const deleteCancel = document.getElementById('delete-cancel');
 const deleteConfirm = document.getElementById('delete-confirm');
+const escapeHtml = value => String(value ?? '').replace(/[&<>"]/g, char => ({{
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;'
+}}[char]));
 const setStatus = text => {{
   if (actionStatus) actionStatus.textContent = text;
 }};
@@ -1257,7 +1400,7 @@ if (reprocessButton) {{
     setStatus('reprocess started...');
     try {{
       await postItemAction('/api/reprocess-note');
-      setStatus('running in background');
+      await waitForAction('reprocess-note:' + itemId, () => window.location.reload(), 'reprocessing...');
     }} catch (error) {{
       reprocessButton.disabled = false;
       reprocessButton.textContent = originalText;
@@ -1266,7 +1409,13 @@ if (reprocessButton) {{
   }});
 }}
 if (topicButton && topicModal && topicState) {{
-  const topicControls = [topicAccept, topicReject, topicRegenerate].filter(Boolean);
+  const topicControls = [
+    topicAccept,
+    topicReject,
+    topicRegenerate,
+    topicPrioritize,
+    topicPromote
+  ].filter(Boolean);
   const setTopicModal = open => {{
     topicModal.hidden = !open;
     if (open) topicButton.focus();
@@ -1274,27 +1423,51 @@ if (topicButton && topicModal && topicState) {{
   const setTopicDisabled = disabled => topicControls.forEach(button => {{ button.disabled = disabled; }});
   const renderTopicState = payload => {{
     const topics = payload.topics && payload.topics.length ? payload.topics.join(', ') : 'none';
-    const suggestions = payload.suggested_new_topics && payload.suggested_new_topics.length
-      ? payload.suggested_new_topics.join(', ')
-      : 'none';
+    const suggestions = payload.suggested_new_topics || [];
     topicState.textContent = payload.enriched
       ? 'Primary: ' + (payload.primary_topic || 'none') + ' · topics: ' + topics +
         ' · confidence: ' + (payload.topic_confidence || 'unknown') +
-        ' · suggested: ' + suggestions
+        ' · suggested: ' + (suggestions.length ? suggestions.join(', ') : 'none')
       : 'No topic assignment yet. Use regenerate to create one.';
+    if (topicSuggestions) {{
+      if (suggestions.length) {{
+        topicSuggestions.hidden = false;
+        topicSuggestions.innerHTML =
+          '<div class="topic-suggestions-title">Sugerencias a revisar</div>' +
+          suggestions.map(slug =>
+            '<label class="topic-suggestion">' +
+            '<input type="checkbox" value="' + escapeHtml(slug) + '" checked>' +
+            '<span>' + escapeHtml(slug) + '</span>' +
+            '</label>'
+          ).join('');
+      }} else {{
+        topicSuggestions.hidden = true;
+        topicSuggestions.innerHTML = '';
+      }}
+    }}
+    const hasSuggestions = suggestions.length > 0;
+    if (topicPrioritize) topicPrioritize.disabled = !hasSuggestions;
+    if (topicPromote) topicPromote.disabled = !hasSuggestions;
   }};
+  const selectedSuggestions = () => Array.from(
+    topicSuggestions ? topicSuggestions.querySelectorAll('input[type="checkbox"]:checked') : []
+  ).map(input => input.value);
   const loadTopicState = async () => {{
     topicState.textContent = 'Loading...';
+    if (topicSuggestions) {{
+      topicSuggestions.hidden = true;
+      topicSuggestions.innerHTML = '';
+    }}
     const response = await fetch('/api/topic-state?item_id=' + encodeURIComponent(itemId));
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'request failed');
     renderTopicState(payload);
   }};
-  const runTopicAction = async action => {{
+  const runTopicAction = async (action, extra = {{}}) => {{
     setTopicDisabled(true);
     setStatus('topic ' + action + ' started...');
     try {{
-      await postItemAction('/api/topic-action', {{action}});
+      await postItemAction('/api/topic-action', {{action, ...extra}});
       await waitForAction('topic-' + action + ':' + itemId, () => window.location.reload(), 'updating topics...');
     }} catch (error) {{
       setTopicDisabled(false);
@@ -1317,6 +1490,22 @@ if (topicButton && topicModal && topicState) {{
   if (topicAccept) topicAccept.addEventListener('click', () => runTopicAction('accept'));
   if (topicReject) topicReject.addEventListener('click', () => runTopicAction('reject'));
   if (topicRegenerate) topicRegenerate.addEventListener('click', () => runTopicAction('regenerate'));
+  if (topicPrioritize) topicPrioritize.addEventListener('click', () => runTopicAction('regenerate', {{
+    prioritize_suggestions: true,
+    suggested_topics: selectedSuggestions()
+  }}));
+  if (topicPromote) topicPromote.addEventListener('click', () => {{
+    const selected = selectedSuggestions();
+    if (!selected.length) {{
+      setStatus('selecciona al menos una sugerencia');
+      return;
+    }}
+    runTopicAction('regenerate', {{
+      prioritize_suggestions: true,
+      promote_suggestions: true,
+      suggested_topics: selected
+    }});
+  }});
 }}
 if (deleteButton && deleteModal && deleteCancel && deleteConfirm) {{
   const setDeleteModal = open => {{
@@ -1402,7 +1591,7 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
 }}
 .modal-card h2 {{ margin:0 0 8px; font-size:18px; line-height:1.2; }}
 .modal-card p {{ margin:0; color:var(--muted); font-size:13.5px; line-height:1.5; }}
-.modal-actions {{ display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }}
+.modal-actions {{ display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:16px; }}
 .modal-btn {{
   color:var(--ink); background:var(--surface-2); border:1px solid var(--hair);
   border-radius:6px; padding:8px 10px; font:inherit; font-size:13px; cursor:pointer;
@@ -1414,6 +1603,14 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
   color:var(--muted); font-size:12.5px; line-height:1.5; border:1px solid var(--hair);
   background:#100E0A; border-radius:7px; padding:10px; overflow-wrap:anywhere;
 }}
+.topic-suggestions {{
+  margin-top:10px; color:var(--muted); font-size:12.5px; line-height:1.4;
+  border:1px solid var(--hair); background:#100E0A; border-radius:7px; padding:10px;
+  max-height:190px; overflow:auto;
+}}
+.topic-suggestions-title {{ color:var(--ink); font-weight:650; margin-bottom:8px; }}
+.topic-suggestion {{ display:flex; align-items:center; gap:8px; margin:6px 0; overflow-wrap:anywhere; }}
+.topic-suggestion input {{ margin:0; accent-color:var(--accent); flex:0 0 auto; }}
 article {{
   background:var(--surface); border:1px solid var(--hair); border-radius:10px;
   padding:22px; overflow:hidden;
@@ -1522,7 +1719,17 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
         def job() -> None:
             error: str | None = None
             try:
-                target()
+                updated_item_ids: list[str] = []
+                with drive_write_session(cfg):
+                    result = target()
+                    if isinstance(result, list) and all(
+                        isinstance(item_id, str) for item_id in result
+                    ):
+                        updated_item_ids = result
+                if action == "refresh-all":
+                    _notify_bookmark_update(
+                        cfg, command="refresh-all", updated_item_ids=updated_item_ids
+                    )
             except Exception as exc:  # noqa: BLE001 - background job reports through status API
                 error = f"{exc}\n{traceback.format_exc(limit=4)}"
                 logging.getLogger(__name__).warning("dashboard %s failed", action, exc_info=True)
@@ -1556,10 +1763,24 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             lambda: _run_reprocess_note(cfg, item_id, headless=True),
         )
 
-    def start_topic_action(item_id: str, action: str) -> bool:
+    def start_topic_action(
+        item_id: str,
+        action: str,
+        *,
+        prioritize_suggestions: bool = False,
+        suggested_topics: list[str] | None = None,
+        promote_suggestions: bool = False,
+    ) -> bool:
         return start_background(
             f"topic-{action}:{item_id}",
-            lambda: _run_topic_action(cfg, item_id, action),
+            lambda: _run_topic_action(
+                cfg,
+                item_id,
+                action,
+                prioritize_suggestions=prioritize_suggestions,
+                suggested_topics=suggested_topics,
+                promote_suggestions=promote_suggestions,
+            ),
         )
 
     def start_delete_bookmark(item_id: str) -> bool:
@@ -1571,7 +1792,8 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
     def dashboard_bytes() -> bytes:
         dashboard = cfg.output_dir / "dashboard.html"
         if not dashboard.exists():
-            _run_generate(cfg, None, None)
+            with drive_write_session(cfg):
+                _run_generate(cfg, None, None)
         return dashboard.read_bytes()
 
     def chat_payload(question: str) -> dict[str, object]:
@@ -1745,13 +1967,36 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                         raise ValueError("item_id must not be empty")
                     if action not in {"accept", "reject", "regenerate"}:
                         raise ValueError("action must be accept, reject or regenerate")
+                    raw_prioritize_suggestions = payload.get("prioritize_suggestions", False)
+                    raw_promote_suggestions = payload.get("promote_suggestions", False)
+                    raw_suggested_topics = payload.get("suggested_topics", [])
+                    if not isinstance(raw_prioritize_suggestions, bool):
+                        raise ValueError("prioritize_suggestions must be a boolean")
+                    if not isinstance(raw_promote_suggestions, bool):
+                        raise ValueError("promote_suggestions must be a boolean")
+                    if not isinstance(raw_suggested_topics, list) or not all(
+                        isinstance(topic, str) for topic in raw_suggested_topics
+                    ):
+                        raise ValueError("suggested_topics must be a list of strings")
+                    if action != "regenerate" and (
+                        raw_prioritize_suggestions
+                        or raw_promote_suggestions
+                        or raw_suggested_topics
+                    ):
+                        raise ValueError("topic suggestions can only be used with regenerate")
                     if item_id not in load_store(cfg.items_path):
                         self._send_json(404, {"error": f"item not found: {item_id}"})
                         return
                 except ValueError as exc:
                     self._send_json(400, {"error": str(exc)})
                     return
-                if not start_topic_action(item_id, action):
+                if not start_topic_action(
+                    item_id,
+                    action,
+                    prioritize_suggestions=raw_prioritize_suggestions,
+                    suggested_topics=raw_suggested_topics,
+                    promote_suggestions=raw_promote_suggestions,
+                ):
                     self._send_json(409, {**state_payload(), "error": "job already running"})
                     return
                 self._send_json(202, state_payload())
@@ -1808,13 +2053,15 @@ def extract(
     headless: bool = typer.Option(False, "--headless/--no-headless", help=_HEADLESS_HELP),
 ) -> None:
     """Extrae bookmarks de X; tweets propios y posts simples se descartan."""
-    _run_extract(
-        _config(),
-        source.value,
-        _parse_date(since),
-        _parse_date(until, end_of_day=True),
-        headless=headless,
-    )
+    cfg = _config()
+    with drive_write_session(cfg):
+        _run_extract(
+            cfg,
+            source.value,
+            _parse_date(since),
+            _parse_date(until, end_of_day=True),
+            headless=headless,
+        )
 
 
 @app.command(name="import-archive")
@@ -1822,13 +2069,14 @@ def extract(
 def import_archive(zip_path: Path) -> None:
     """Backfill del histórico de tweets desde el archivo oficial de X."""
     cfg = _config()
-    store = load_store(cfg.items_path)
-    state = load_state(cfg.state_path)
-    author = Author(handle=cfg.x_handle, name=cfg.x_handle)
-    added = merge_items(store, parse_archive(zip_path, author))
-    state.archive_imported = ArchiveImport(file=zip_path.name, at=datetime.now(timezone.utc))
-    save_store(store, cfg.items_path)
-    save_state(state, cfg.state_path)
+    with drive_write_session(cfg):
+        store = load_store(cfg.items_path)
+        state = load_state(cfg.state_path)
+        author = Author(handle=cfg.x_handle, name=cfg.x_handle)
+        added = merge_items(store, parse_archive(zip_path, author))
+        state.archive_imported = ArchiveImport(file=zip_path.name, at=datetime.now(timezone.utc))
+        save_store(store, cfg.items_path)
+        save_state(state, cfg.state_path)
     typer.echo(f"Archivo importado: {added} tweets nuevos")
 
 
@@ -1841,9 +2089,11 @@ def fetch(
     headless: bool = typer.Option(False, "--headless/--no-headless", help=_HEADLESS_HELP),
 ) -> None:
     """Descarga el contenido de los artículos enlazados."""
-    _run_fetch(
-        _config(), _parse_date(since), _parse_date(until, end_of_day=True), force, headless=headless
-    )
+    cfg = _config()
+    with drive_write_session(cfg):
+        _run_fetch(
+            cfg, _parse_date(since), _parse_date(until, end_of_day=True), force, headless=headless
+        )
 
 
 @app.command(name="retry-failed")
@@ -1853,7 +2103,9 @@ def retry_failed(
     headless: bool = typer.Option(True, "--headless/--no-headless", help=_HEADLESS_HELP),
 ) -> None:
     """Relanza solo los items cuyos artículos enlazados fallaron y regenera el vault."""
-    _run_retry_failed_articles(_config(), source.value, headless=headless, regenerate=True)
+    cfg = _config()
+    with drive_write_session(cfg):
+        _run_retry_failed_articles(cfg, source.value, headless=headless, regenerate=True)
 
 
 def _run_media(
@@ -1965,7 +2217,8 @@ def media(
     """
     cfg = _config()
     items_filter = [s.strip() for s in items.split(",") if s.strip()] if items else None
-    _run_media(cfg, force=force, limit=limit, items_filter=items_filter, verbose=verbose)
+    with drive_write_session(cfg):
+        _run_media(cfg, force=force, limit=limit, items_filter=items_filter, verbose=verbose)
 
 
 @app.command(name="refresh-media")
@@ -1994,7 +2247,9 @@ def refresh_media(
     del tamaño total de descarga. El scroll es lento y a ritmo humano; puede
     tardar varios minutos.
     """
-    _run_refresh_media(_config(), source.value, force=force, headless=headless)
+    cfg = _config()
+    with drive_write_session(cfg):
+        _run_refresh_media(cfg, source.value, force=force, headless=headless)
 
 
 def _run_describe(
@@ -2123,47 +2378,48 @@ def describe(
     en las llamadas LLM subsiguientes.
     """
     cfg = _config()
-    items_filter = [s.strip() for s in items.split(",") if s.strip()] if items else None
-    worksheet_path = cfg.data_dir / "describe-worksheet.json"
-    if apply is not None:
-        _auto_snapshot(cfg, "describe-apply")
-        store = load_store(cfg.items_path)
-        applied, invalid = apply_describe_worksheet(store, apply)
-        save_store(store, cfg.items_path)
-        typer.echo(f"Describe worksheet aplicada: {applied} fotos descritas")
-        _report_invalid(invalid)
-        return
-    if executor is not None and executor not in ("api", "manual", "claude-code"):
-        raise ValueError(f"Ejecutor desconocido: {executor!r}")
-    if executor in ("manual", "claude-code"):
-        store = load_store(cfg.items_path)
-        n = export_describe_worksheet(
-            store,
-            cfg.media_dir,
-            worksheet_path,
-            version=cfg.describe_version,
-            output_language=cfg.output_language,
+    with drive_write_session(cfg):
+        items_filter = [s.strip() for s in items.split(",") if s.strip()] if items else None
+        worksheet_path = cfg.data_dir / "describe-worksheet.json"
+        if apply is not None:
+            _auto_snapshot(cfg, "describe-apply")
+            store = load_store(cfg.items_path)
+            applied, invalid = apply_describe_worksheet(store, apply)
+            save_store(store, cfg.items_path)
+            typer.echo(f"Describe worksheet aplicada: {applied} fotos descritas")
+            _report_invalid(invalid)
+            return
+        if executor is not None and executor not in ("api", "manual", "claude-code"):
+            raise ValueError(f"Ejecutor desconocido: {executor!r}")
+        if executor in ("manual", "claude-code"):
+            store = load_store(cfg.items_path)
+            n = export_describe_worksheet(
+                store,
+                cfg.media_dir,
+                worksheet_path,
+                version=cfg.describe_version,
+                output_language=cfg.output_language,
+                force=force,
+                limit=limit,
+                items_filter=items_filter,
+            )
+            typer.echo(
+                f"{n} fotos exportadas a {worksheet_path}\n"
+                "Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
+                f"  xbrain describe --apply {worksheet_path}"
+            )
+            return
+        chosen_model = model or cfg.llm_vision_model
+        validate_llm_model(cfg.llm_provider, chosen_model, setting="describe --model")
+        _run_describe(
+            cfg,
             force=force,
             limit=limit,
             items_filter=items_filter,
+            model=chosen_model,
+            batch_size=batch_size,
+            verbose=verbose,
         )
-        typer.echo(
-            f"{n} fotos exportadas a {worksheet_path}\n"
-            "Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
-            f"  xbrain describe --apply {worksheet_path}"
-        )
-        return
-    chosen_model = model or cfg.llm_vision_model
-    validate_llm_model(cfg.llm_provider, chosen_model, setting="describe --model")
-    _run_describe(
-        cfg,
-        force=force,
-        limit=limit,
-        items_filter=items_filter,
-        model=chosen_model,
-        batch_size=batch_size,
-        verbose=verbose,
-    )
 
 
 def _warn_items_filter_no_match(cfg: Config, items_filter: list[str]) -> None:
@@ -2440,19 +2696,20 @@ def digest_video(
     """
     cfg = _config()
     max_size_bytes = parse_size_to_bytes(max_size) if max_size else None
-    _run_digest_video(
-        cfg,
-        ids=ids,
-        topic=topic,
-        all_pending=all_pending,
-        source=source.value,
-        limit=limit,
-        force=force,
-        language=language,
-        frames=frames,
-        vision_model=vision_model,
-        max_size_bytes=max_size_bytes,
-    )
+    with drive_write_session(cfg):
+        _run_digest_video(
+            cfg,
+            ids=ids,
+            topic=topic,
+            all_pending=all_pending,
+            source=source.value,
+            limit=limit,
+            force=force,
+            language=language,
+            frames=frames,
+            vision_model=vision_model,
+            max_size_bytes=max_size_bytes,
+        )
 
 
 @app.command()
@@ -2477,54 +2734,57 @@ def enrich(
 ) -> None:
     """Enriquece los items con resumen + topics."""
     cfg = _config()
-    store = load_store(cfg.items_path)
-    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
-    if not vocab_topics:
-        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    with drive_write_session(cfg):
+        store = load_store(cfg.items_path)
+        vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+        if not vocab_topics:
+            raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
 
-    if apply is not None:
-        executor_name, judgments = import_worksheet(apply)
-        enriched, invalid = apply_worksheet_judgments(store, judgments, vocab_topics, executor_name)
-        save_store(store, cfg.items_path)
-        typer.echo(f"Worksheet aplicada: {enriched} items enriquecidos")
-        _report_invalid(invalid)
-        return
+        if apply is not None:
+            executor_name, judgments = import_worksheet(apply)
+            enriched, invalid = apply_worksheet_judgments(
+                store, judgments, vocab_topics, executor_name
+            )
+            save_store(store, cfg.items_path)
+            typer.echo(f"Worksheet aplicada: {enriched} items enriquecidos")
+            _report_invalid(invalid)
+            return
 
-    chosen = executor or cfg.enrich_executor
+        chosen = executor or cfg.enrich_executor
 
-    if chosen in ("manual", "claude-code"):
-        since_dt = _parse_date(since)
-        until_dt = _parse_date(until, end_of_day=True)
-        pending = (
-            items_for_taxonomy_reenrichment(store, since_dt, until_dt)
-            if taxonomy_risk
-            else items_pending_enrichment(store, since_dt, until_dt)
-        )
-        if not pending:
-            typer.echo(
-                "No hay items con riesgo taxonómico para re-enriquecer."
+        if chosen in ("manual", "claude-code"):
+            since_dt = _parse_date(since)
+            until_dt = _parse_date(until, end_of_day=True)
+            pending = (
+                items_for_taxonomy_reenrichment(store, since_dt, until_dt)
                 if taxonomy_risk
-                else "No hay items pendientes de enriquecer."
+                else items_pending_enrichment(store, since_dt, until_dt)
+            )
+            if not pending:
+                typer.echo(
+                    "No hay items con riesgo taxonómico para re-enriquecer."
+                    if taxonomy_risk
+                    else "No hay items pendientes de enriquecer."
+                )
+                return
+            worksheet = cfg.data_dir / "enrich-worksheet.json"
+            export_worksheet(pending, vocab_topics, worksheet, chosen, cfg.output_language)
+            typer.echo(
+                f"{len(pending)} items exportados a {worksheet}\n"
+                f"Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
+                f"  xbrain enrich --apply {worksheet}"
             )
             return
-        worksheet = cfg.data_dir / "enrich-worksheet.json"
-        export_worksheet(pending, vocab_topics, worksheet, chosen, cfg.output_language)
-        typer.echo(
-            f"{len(pending)} items exportados a {worksheet}\n"
-            f"Rellena el array `judgments` (con Claude Code o a mano) y ejecuta:\n"
-            f"  xbrain enrich --apply {worksheet}"
+
+        if chosen != "api":
+            raise ValueError(f"Ejecutor desconocido: {chosen!r}")
+
+        _run_enrich_api(
+            cfg,
+            _parse_date(since),
+            _parse_date(until, end_of_day=True),
+            taxonomy_risk=taxonomy_risk,
         )
-        return
-
-    if chosen != "api":
-        raise ValueError(f"Ejecutor desconocido: {chosen!r}")
-
-    _run_enrich_api(
-        cfg,
-        _parse_date(since),
-        _parse_date(until, end_of_day=True),
-        taxonomy_risk=taxonomy_risk,
-    )
 
 
 def _mark_for_regenerate(store: dict, cfg: Config, regenerate: bool) -> None:
@@ -2594,13 +2854,14 @@ def vocab(
 ) -> None:
     """Induce el vocabulario de topics (data/vocab.yaml) desde el corpus."""
     cfg = _config()
-    store = load_store(cfg.items_path)
-    if not store:
-        raise RuntimeError("El store está vacío — ejecuta `xbrain extract` antes.")
-    if apply is not None:
-        _vocab_apply(cfg, store, apply, regenerate)
-    else:
-        _vocab_run(cfg, store, executor, regenerate)
+    with drive_write_session(cfg):
+        store = load_store(cfg.items_path)
+        if not store:
+            raise RuntimeError("El store está vacío — ejecuta `xbrain extract` antes.")
+        if apply is not None:
+            _vocab_apply(cfg, store, apply, regenerate)
+        else:
+            _vocab_run(cfg, store, executor, regenerate)
 
 
 def _topics_apply(cfg: Config, store: dict, vocab: list, apply: Path) -> None:
@@ -2669,14 +2930,15 @@ def topics(
 ) -> None:
     """Genera las páginas de topic: listas de posts + overviews sintetizados."""
     cfg = _config()
-    store = load_store(cfg.items_path)
-    vocab = load_vocab(cfg.data_dir / "vocab.yaml")
-    if not vocab:
-        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
-    if apply is not None:
-        _topics_apply(cfg, store, vocab, apply)
-    else:
-        _topics_run(cfg, store, vocab, resynth, executor)
+    with drive_write_session(cfg):
+        store = load_store(cfg.items_path)
+        vocab = load_vocab(cfg.data_dir / "vocab.yaml")
+        if not vocab:
+            raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+        if apply is not None:
+            _topics_apply(cfg, store, vocab, apply)
+        else:
+            _topics_run(cfg, store, vocab, resynth, executor)
 
 
 @app.command()
@@ -2686,7 +2948,9 @@ def generate(
     until: str = typer.Option(None, help="ISO date; whole day inclusive, e.g. 2025-12-31"),
 ) -> None:
     """Genera las notas markdown en el vault."""
-    _run_generate(_config(), _parse_date(since), _parse_date(until, end_of_day=True))
+    cfg = _config()
+    with drive_write_session(cfg):
+        _run_generate(cfg, _parse_date(since), _parse_date(until, end_of_day=True))
 
 
 @app.command(name="refresh-all")
@@ -2712,20 +2976,23 @@ def refresh_all(
     ),
 ) -> None:
     """Ejecuta el flujo diario completo para alimentar el vault."""
-    _run_refresh_all(
-        _config(),
-        source=source.value,
-        since=_parse_date(since),
-        until=_parse_date(until, end_of_day=True),
-        headless=headless,
-        executor=executor,
-        media_limit=media_limit,
-        describe_limit=describe_limit,
-        describe_batch_size=describe_batch_size,
-        skip_media=skip_media,
-        skip_describe=skip_describe,
-        video_max_size_bytes=parse_size_to_bytes(video_max_size) if video_max_size else None,
-    )
+    cfg = _config()
+    with drive_write_session(cfg):
+        updated_item_ids = _run_refresh_all(
+            cfg,
+            source=source.value,
+            since=_parse_date(since),
+            until=_parse_date(until, end_of_day=True),
+            headless=headless,
+            executor=executor,
+            media_limit=media_limit,
+            describe_limit=describe_limit,
+            describe_batch_size=describe_batch_size,
+            skip_media=skip_media,
+            skip_describe=skip_describe,
+            video_max_size_bytes=parse_size_to_bytes(video_max_size) if video_max_size else None,
+        )
+    _notify_bookmark_update(cfg, command="refresh-all", updated_item_ids=updated_item_ids)
 
 
 @app.command()
@@ -2735,9 +3002,14 @@ def sync(
 ) -> None:
     """extract + fetch + generate en orden."""
     cfg = _config()
-    _run_extract(cfg, "all", None, None, headless=headless)
-    _run_fetch(cfg, None, None, False, headless=headless)
-    _run_generate(cfg, None, None)
+    with drive_write_session(cfg):
+        before_store = load_store(cfg.items_path)
+        _run_extract(cfg, "all", None, None, headless=headless)
+        _run_fetch(cfg, None, None, False, headless=headless)
+        _run_generate(cfg, None, None)
+        after_store = load_store(cfg.items_path)
+    updated_item_ids = _updated_item_ids(before_store, after_store)
+    _notify_bookmark_update(cfg, command="sync", updated_item_ids=updated_item_ids)
 
 
 @app.command(name="serve-dashboard")
@@ -2866,6 +3138,173 @@ def status() -> None:
     typer.echo(f"  última extracción tweets: {state.own_tweets.last_run}")
 
 
+drive_app = typer.Typer(help="Gestionar Google Drive como biblioteca remota")
+app.add_typer(drive_app, name="drive")
+
+
+def _selection_path(cfg: Config) -> Path:
+    return cfg.repo_root / "auth" / "google_drive_selection.json"
+
+
+def _write_drive_selection(cfg: Config, folder_id: str) -> None:
+    path = _selection_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"root_folder_id": folder_id}, indent=2), encoding="utf-8")
+
+
+def _format_sync_report(prefix: str, report) -> str:
+    return (
+        f"{prefix}: downloaded={report.downloaded} uploaded={report.uploaded} "
+        f"folders_created={report.folders_created} trashed={report.trashed}"
+    )
+
+
+def _local_legacy_drive_paths(cfg: Config) -> list[Path]:
+    return [
+        path
+        for path in (
+            cfg.drive_cache_dir / "data" / "media",
+            cfg.drive_cache_dir / "vault" / "x-knowledge",
+        )
+        if path.exists()
+    ]
+
+
+@drive_app.command("login")
+@_handle_cli_errors
+def drive_login_cmd(
+    port: int = typer.Option(
+        8766,
+        "--port",
+        help="Puerto localhost para el callback OAuth. Útil con túnel SSH en VPS.",
+    ),
+    open_browser: bool = typer.Option(
+        False,
+        "--open-browser/--no-open-browser",
+        help="Intentar abrir navegador en la máquina que ejecuta XBrain.",
+    ),
+) -> None:
+    """Authenticate the current user with Google Drive."""
+    cfg = _config()
+    drive_login(cfg, port=port, open_browser=open_browser)
+    typer.echo(f"Google Drive token guardado en {cfg.drive_token_path}")
+
+
+@drive_app.command("logout")
+@_handle_cli_errors
+def drive_logout_cmd() -> None:
+    """Remove the local Google Drive token."""
+    cfg = _config()
+    cfg.drive_token_path.unlink(missing_ok=True)
+    typer.echo(f"Google Drive token eliminado: {cfg.drive_token_path}")
+
+
+@drive_app.command("roots")
+@_handle_cli_errors
+def drive_roots(
+    create: str | None = typer.Option(None, "--create", help="Crear una carpeta raíz."),
+) -> None:
+    """List available Drive folders or create a new root folder."""
+    cfg = _config()
+    client = drive_authenticate(cfg)
+    if create:
+        folder = client.create_folder(create)
+        typer.echo(f"{folder.id}\t{folder.name}")
+        return
+    folders = client.list_folders()
+    if not folders:
+        typer.echo("No hay carpetas disponibles.")
+        return
+    for folder in folders:
+        marker = " *" if folder.id == cfg.drive_root_folder_id else ""
+        typer.echo(f"{folder.id}\t{folder.name}{marker}")
+
+
+@drive_app.command("select-root")
+@_handle_cli_errors
+def drive_select_root(folder_id: str = typer.Argument(..., help="ID de carpeta de Google Drive")) -> None:
+    """Select the Drive folder XBrain will use as its remote library root."""
+    cfg = _config()
+    _write_drive_selection(cfg, folder_id)
+    typer.echo(f"Google Drive root seleccionado: {folder_id}")
+    typer.echo("Activa [drive].enabled = true en config.toml para usarlo.")
+
+
+@drive_app.command("sync")
+@_handle_cli_errors
+def drive_sync() -> None:
+    """Synchronize the configured Drive root with the local cache."""
+    cfg = _config()
+    down = drive_sync_down(cfg)
+    up = drive_sync_up(cfg)
+    typer.echo(_format_sync_report("sync-down", down))
+    typer.echo(_format_sync_report("sync-up", up))
+
+
+def _copy_bootstrap_tree(source: Path, destination: Path, *, force: bool) -> int:
+    if not source.exists():
+        return 0
+    if destination.exists():
+        if not force:
+            raise FileExistsError(f"Destination already exists: {destination}. Use --force.")
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+    return sum(1 for path in destination.rglob("*") if path.is_file())
+
+
+def _drive_cache_vault_output_dir(cfg: Config) -> Path:
+    try:
+        relative_output = cfg.output_dir.resolve().relative_to(cfg.vault.resolve())
+    except ValueError:
+        relative_output = Path(cfg.output_dir.name)
+    return cfg.drive_cache_dir / "vault" / relative_output
+
+
+@drive_app.command("bootstrap-local")
+@_handle_cli_errors
+def drive_bootstrap_local(
+    force: bool = typer.Option(False, "--force", help="Sobrescribe la caché Drive local."),
+) -> None:
+    """Copy the current local library into the Drive cache and upload it."""
+    cfg = _config()
+    if not cfg.drive_root_folder_id:
+        raise RuntimeError("Selecciona una carpeta con `xbrain drive select-root <folder-id>`.")
+    cache_data = cfg.drive_cache_dir / "data"
+    cache_vault = _drive_cache_vault_output_dir(cfg)
+    if cfg.drive_enabled and (cfg.data_dir == cache_data or cfg.output_dir == cache_vault):
+        raise RuntimeError(
+            "bootstrap-local debe ejecutarse antes de activar [drive].enabled=true, "
+            "o con una configuración local temporal."
+        )
+    data_files = _copy_bootstrap_tree(cfg.data_dir, cache_data, force=force)
+    vault_files = _copy_bootstrap_tree(cfg.output_dir, cache_vault, force=force)
+    report = drive_authenticate(cfg).sync_up(cfg.drive_root_folder_id, cfg.drive_cache_dir)
+    typer.echo(
+        f"Bootstrap local: data_files={data_files} vault_files={vault_files}\n"
+        f"{_format_sync_report('sync-up', report)}"
+    )
+
+
+@drive_app.command("status")
+@_handle_cli_errors
+def drive_status() -> None:
+    """Show Drive mode and local cache paths."""
+    cfg = _config()
+    typer.echo(f"enabled: {cfg.drive_enabled}")
+    typer.echo(f"root_folder_id: {cfg.drive_root_folder_id or 'not selected'}")
+    typer.echo(f"cache_dir: {cfg.drive_cache_dir}")
+    typer.echo(f"data_dir: {cfg.data_dir}")
+    typer.echo(f"vault: {cfg.vault}")
+    typer.echo(f"media_dir: {cfg.media_dir}")
+    typer.echo(f"token: {cfg.drive_token_path}")
+    legacy_paths = _local_legacy_drive_paths(cfg)
+    if legacy_paths:
+        typer.echo("legacy local paths still present:")
+        for path in legacy_paths:
+            typer.echo(f"  {path}")
+
+
 snapshot_app = typer.Typer(help="Gestionar snapshots de data/")
 app.add_typer(snapshot_app, name="snapshot")
 
@@ -2877,11 +3316,12 @@ def snapshot_create_cmd(
 ) -> None:
     """Create a snapshot of data/ right now."""
     cfg = _config()
-    path, manifest = snapshot.snapshot_create(
-        cfg.data_dir,
-        command="manual",
-        dir_label=name,
-    )
+    with drive_write_session(cfg):
+        path, manifest = snapshot.snapshot_create(
+            cfg.data_dir,
+            command="manual",
+            dir_label=name,
+        )
     typer.echo(f"Snapshot created: {path.name} ({manifest.item_count} items)")
 
 
@@ -2927,7 +3367,8 @@ def snapshot_restore_cmd(name: str = typer.Argument(..., help="Snapshot director
     silently.
     """
     cfg = _config()
-    actions = snapshot.snapshot_restore(cfg.data_dir, name)
+    with drive_write_session(cfg):
+        actions = snapshot.snapshot_restore(cfg.data_dir, name)
     for artifact, action in actions:
         typer.echo(f"  {artifact}: {action}")
     typer.echo(f"Restored {name}. Run `xbrain generate` to refresh the vault.")
@@ -2940,7 +3381,8 @@ def snapshot_prune_cmd(
 ) -> None:
     """Delete older snapshots, keeping the N newest."""
     cfg = _config()
-    deleted = snapshot.snapshot_prune(cfg.data_dir, keep_last=keep_last)
+    with drive_write_session(cfg):
+        deleted = snapshot.snapshot_prune(cfg.data_dir, keep_last=keep_last)
     typer.echo(f"Snapshots deleted: {deleted}")
 
 

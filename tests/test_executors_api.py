@@ -108,6 +108,12 @@ def test_user_prompt_includes_link_domains_when_no_folder():
     assert not item.bookmark_folder
 
 
+def test_user_prompt_includes_operator_topic_hints():
+    prompt = _user_prompt(_item("1"), VOCAB, {"1": ["frontier-ai-tools"]})
+    assert "Operator-prioritized taxonomy hints" in prompt
+    assert "- frontier-ai-tools" in prompt
+
+
 def test_api_executor_skips_wrong_shape_response(capsys):
     # A response that is valid JSON but not a judgment object must be skipped
     # with a warning, not silently become an empty enrichment.

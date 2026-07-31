@@ -390,6 +390,20 @@ vault = "/absolute/path/to/your/obsidian/vault"
 output_subdir = "learnings/x-knowledge"   # wiki folder, relative to the vault
 data_dir = "data"                         # JSON store, relative to the repo
 
+[drive]
+enabled = false                           # false = local, true = Google Drive
+cache_dir = ".xbrain-cache/google-drive"  # local working copy when enabled
+credentials_path = "auth/google_drive_credentials.json"
+token_path = "auth/google_drive_token.json"
+
+[email]
+enabled = false                           # notify after Drive-backed updates
+recipient = "bernat.duran.mascorda@gmail.com"
+sender = ""                               # or XBRAIN_EMAIL_FROM
+
+[snapshots]
+auto_prune_keep_last = 25                 # keep newest automatic snapshots; 0 disables
+
 [x]
 handle = "your_handle"                    # without the @
 
@@ -418,6 +432,15 @@ topic_style = "wikilink"                  # wikilink | hashtag (in-body Topics: 
 | `[paths]` | `vault` | — | Absolute path to your Obsidian vault. |
 | `[paths]` | `output_subdir` | — | Wiki folder inside the vault. |
 | `[paths]` | `data_dir` | — | JSON store, relative to the repo. |
+| `[drive]` | `enabled` | `false` | When `true`, XBrain reads/writes a local cache and syncs it with Google Drive. When `false`, everything stays local. |
+| `[drive]` | `root_folder_id` | — | Google Drive folder selected by `xbrain drive select-root <folder-id>`. Required only when Drive is enabled. |
+| `[drive]` | `cache_dir` | `.xbrain-cache/google-drive` | Local working copy used by Drive mode. |
+| `[drive]` | `credentials_path` | `auth/google_drive_credentials.json` | OAuth desktop-client JSON from Google Cloud Console. |
+| `[drive]` | `token_path` | `auth/google_drive_token.json` | Local user token created by `xbrain drive login`. |
+| `[email]` | `enabled` | `false` | Send an email after `refresh-all` / `sync`, only when Drive mode is also enabled. |
+| `[email]` | `recipient` | `bernat.duran.mascorda@gmail.com` | Notification recipient. |
+| `[email]` | `sender` | SMTP username | Notification sender address. Secrets stay in `.env` / environment. |
+| `[snapshots]` | `auto_prune_keep_last` | `25` | Keep the newest N automatic snapshots after destructive runs. Manual snapshots are preserved. `0` disables automatic pruning. |
 | `[x]` | `handle` | — | Your X handle, no `@`. |
 | `[llm]` | `provider` | `nanogpt` | API LLM provider for all API-backed LLM calls: `nanogpt` or `anthropic`. |
 | `[llm]` | `model` | `zai-org/glm-5.2` | Text model used by `enrich`, `vocab` and `topics`. |
@@ -441,6 +464,71 @@ language while old summaries stay as they were.
 Secrets (`NANOGPT_API_KEY`, `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY`) live in
 the **environment** or local `.env` only — never in `config.toml`, never in the
 repo. For NanoGPT, copy `.env.example` to `.env` and set `NANOGPT_API_KEY`.
+
+### Google Drive library
+
+Google Drive mode is optional. In local mode (`[drive].enabled = false`),
+XBrain behaves as before: `data/` and the generated Obsidian vault are local.
+In Drive mode, XBrain uses a local cache for the current run and synchronizes
+that cache with the selected Drive folder before and after write commands.
+
+There is no extra LLM cost. Drive API calls use Google Drive API quota, and the
+uploaded files count against your Google Drive storage. If your Google account
+runs out of Drive storage, you may need more Google storage; XBrain itself does
+not add paid API processing beyond the existing LLM stages.
+
+Drive setup:
+
+```bash
+uv run xbrain drive login --port 8766
+uv run xbrain drive roots
+uv run xbrain drive roots --create xbrain-root
+uv run xbrain drive select-root <folder-id>
+uv run xbrain drive bootstrap-local
+```
+
+On a VPS, forward the OAuth callback port from your phone's SSH client before
+running `drive login`:
+
+```bash
+ssh -L 8766:127.0.0.1:8766 user@your-vps
+uv run xbrain drive login --port 8766
+```
+
+Then enable Drive:
+
+```toml
+[drive]
+enabled = true
+```
+
+When enabled, commands such as `xbrain sync` and `xbrain refresh-all` place new
+bookmarks, `data/`, downloaded media and generated vault files in the selected
+Google Drive folder through the cache sync. `auth/storage_state.json`, `.env`,
+Google OAuth credentials and tokens remain local.
+
+Optional email notification:
+
+```toml
+[email]
+enabled = true
+recipient = "bernat.duran.mascorda@gmail.com"
+sender = "your-smtp-sender@example.com"
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_starttls = true
+smtp_ssl = false
+```
+
+Set the SMTP credentials in `.env` or the process environment:
+
+```bash
+XBRAIN_SMTP_USERNAME=your-smtp-user
+XBRAIN_SMTP_PASSWORD=your-smtp-password
+```
+
+XBrain sends the email only after a successful `refresh-all` or `sync`, and only
+when both `[drive].enabled = true` and `[email].enabled = true`.
 
 ### Video digest policy
 
@@ -593,8 +681,8 @@ uv run xbrain <command> [options]
 | `import-archive <zip>` | Legacy helper for historical own-tweet imports; not part of the normal retained-library workflow. |
 | `fetch` | Download linked article content, expand linked X Article content, then prune non-library items from `items.json`. By default, items whose only previous failures were transient (`timeout`, `dns_error`) are re-fetched automatically; terminal failures (`not_found`, `paywall`, `forbidden`, `js_required`, `empty_content`) stay skipped until `--force`. `--force` re-fetches every external_article source regardless of state. |
 | `retry-failed` | Force-retry only retained bookmarks whose linked article/X-article sources failed, then regenerate the vault. This is the same action exposed by the dashboard's retry button for failed bookmarks. |
-| `media` | Download X-post photos referenced in `Item.media` **and the inline images of a bookmarked X Article** (stored under `data/media/<id>/article/<n>`, separate from the item's own photos), reusing the one photo-download engine for both. `--limit` is a combined budget; the SUMMARY reports article images separately. Item photos and the downloaded Article images both render inline in the wiki — `generate` embeds each Article image in the author's order (see the blogpost render). `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Local media storage](#local-media-storage). |
-| `describe` | Describe downloaded X-post photos and inline X Article images with `[llm].provider` + `[llm].vision_model`, then feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described images unless `[describe].version` is bumped in `config.toml`. |
+| `media` | Download X-post photos referenced in `Item.media` **and the inline images of a bookmarked X Article**. Local mode stores bytes under `data/media`; Google Drive mode stores them directly under the generated vault's `_media` directory to avoid duplicate Drive storage. `--limit` is a combined budget; the SUMMARY reports article images separately. Item photos and downloaded Article images render inline in the wiki. `--force`, `--limit N`, `--items <a,b,c>`, `--verbose`. See [Media storage](#media-storage). |
+| `describe` | Describe downloaded X-post photos and inline X Article images with `[llm].provider` + `[llm].vision_model`, then feed the prose into `enrich` + `topics`. `--force`, `--limit N`, `--items <a,b,c>`, `--model`, `--batch-size`, `--verbose`. Idempotent — re-runs skip already-described images unless `[describe].version` is bumped in `config.toml`. If a multi-image response is malformed, the batch is retried one image at a time. |
 | `refresh-media` | Re-capture X and backfill playable video URL + metadata onto poster-era records. It still does not download video bytes. Re-seeing 0 known items on a non-empty store aborts unless `--force`. `--source bookmarks\|tweets\|all`, `--force`. |
 | `download-videos` | Disabled by storage policy. XBrain does not persist MP4. |
 | `list-videos` | Read-only catalog of every video referenced in `items.json`, showing both media `STATE` and analysis `DIGEST`. Useful for inspecting what XBrain knows about video bookmarks. Writes nothing. |
@@ -607,6 +695,7 @@ uv run xbrain <command> [options]
 | `generate` | Render the wiki into the vault. |
 | `sync` | `extract` + `fetch` + `generate`, in order. |
 | `status` | Counts and last-run timestamps. |
+| `drive` | Manage Google Drive login, root-folder selection, sync and status. |
 | `snapshot` | Manage `data/` snapshots: `create`, `list`, `show`, `restore`, `prune`. See [Snapshots & safety](#snapshots--safety). |
 | `diff` | Compare two snapshots (or one snapshot vs. the live `data/`). Surfaces reassigned items, topic growth, overview drift, vocab changes. `--format text\|json`. |
 | `login` | Open a browser to log in to X (see [Authentication](#authentication) — prefer the cookie import). |
@@ -619,14 +708,14 @@ Run `uv run xbrain <command> --help` for the full option list.
 
 ---
 
-## Local media storage
+## Media storage
 
 `xbrain media` downloads X-post photos **and the inline images of a
 bookmarked X Article** and persists the bytes locally. Item photos are then
 shown inline in the generated wiki; the downloaded Article images are embedded
 in the note by `generate`, in the author's order, as a blogpost.
 
-**Layout**
+**Local mode layout**
 
 ```
 data/
@@ -638,7 +727,7 @@ data/
     │   └── article/       # inline images of an X Article (#39), namespaced
     │       ├── 0.jpg      #   so they never collide with the item's photos
     │       └── 1.png
-    └── ...
+	    └── ...
 ```
 
 Item photos are stored under `data/media/<item-id>/<index>.<ext>` and Article
@@ -647,12 +736,31 @@ same download engine); the extension matches the format the X CDN sent us
 (`.jpg`, `.png`, or `.webp`). `data/` is gitignored — the bytes never enter
 the repo.
 
+**Google Drive mode layout**
+
+When `[drive].enabled = true`, media is stored only once, directly in the
+generated vault:
+
+```
+xbrain-root/
+└── vault/
+    └── <output_subdir>/
+        └── _media/
+            └── <item-id>/
+                ├── <index>.<ext>
+                └── article/
+                    └── <n>.<ext>
+```
+
+This keeps Obsidian/wiki embeds self-contained while avoiding the previous
+`data/media` + `vault/_media` duplication in Google Drive.
+
 **Vault rendering**
 
-`xbrain generate` mirrors each downloaded photo from `data/media/` into
-`<vault>/<output_subdir>/_media/<item-id>/<index>.<ext>` at render time
-and emits Obsidian wikilink embeds (`![[_media/<id>/<n>.<ext>]]`) so the
-vault is fully self-contained. No symlinks, no Obsidian config needed.
+`xbrain generate` emits Obsidian wikilink embeds
+(`![[_media/<id>/<n>.<ext>]]`) so the vault is fully self-contained. In local
+mode it mirrors media into `_media`; in Drive mode `_media` is already the
+canonical media directory, so no duplicate copy is made.
 
 **Disk budget (approximate)**
 
@@ -771,6 +879,11 @@ xbrain snapshot create --name pre-rubric-v2 # mark a known-good state
 xbrain snapshot restore <name>              # roll back data/ (run `generate` next)
 xbrain snapshot prune --keep-last 10        # cap disk use
 ```
+
+By default, XBrain keeps the newest 25 **automatic** snapshots after each
+destructive run and leaves manual snapshots untouched. Change
+`[snapshots].auto_prune_keep_last`, or set it to `0` to disable automatic
+pruning.
 
 The Obsidian vault is **not** snapshotted — it is fully derived from `data/`
 via `xbrain generate`. `restore` rolls back `data/`; you run `xbrain generate`

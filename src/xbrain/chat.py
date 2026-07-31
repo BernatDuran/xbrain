@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import re
 import textwrap
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,10 +17,14 @@ from xbrain.notes_io import GEN_END, GEN_START
 
 MAX_QUESTION_CHARS = 1200
 MAX_SOURCES = 6
+MAX_RETRIEVAL_CANDIDATES = 24
 CHUNK_CHAR_LIMIT = 1800
+SYNTHESIS_SOURCE_CHAR_LIMIT = 900
+EVIDENCE_NOTE_CHAR_LIMIT = 700
+SYNTHESIS_MAX_TOKENS = 1200
 ANSWER_MAX_TOKENS = 900
 
-_WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9_]{3,}")
+_WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9_]{2,}")
 _STOPWORDS = frozenset(
     {
         "aqui",
@@ -26,34 +32,162 @@ _STOPWORDS = frozenset(
         "algo",
         "also",
         "and",
+        "as",
         "are",
+        "by",
         "como",
         "con",
         "cual",
         "cuales",
+        "de",
         "del",
         "des",
         "desde",
+        "el",
         "donde",
         "els",
+        "en",
+        "es",
         "esta",
         "estan",
         "este",
         "esto",
         "for",
         "hay",
+        "in",
+        "is",
+        "it",
+        "la",
         "las",
+        "lo",
         "los",
+        "of",
+        "on",
+        "or",
         "para",
         "per",
         "por",
         "que",
         "the",
+        "to",
+        "un",
         "una",
         "what",
         "with",
     }
 )
+
+_SEMANTIC_CONCEPTS = {
+    "ai": {
+        "ai",
+        "ia",
+        "artificial intelligence",
+        "inteligencia artificial",
+        "llm",
+        "llms",
+        "model",
+        "models",
+        "modelo",
+        "modelos",
+        "genai",
+    },
+    "agents": {
+        "agent",
+        "agents",
+        "agente",
+        "agentes",
+        "agentic",
+        "agentica",
+        "agentico",
+        "workflow",
+        "workflows",
+        "orchestration",
+        "orquestacion",
+        "multi-agent",
+        "multiagente",
+    },
+    "business": {
+        "business",
+        "negocio",
+        "negocios",
+        "startup",
+        "startups",
+        "company",
+        "empresa",
+        "revenue",
+        "ingresos",
+        "sales",
+        "ventas",
+        "marketing",
+        "ecommerce",
+        "commerce",
+    },
+    "career": {
+        "career",
+        "carrera",
+        "empleo",
+        "job",
+        "jobs",
+        "skills",
+        "habilidades",
+        "engineer",
+        "ingeniero",
+        "ingenieria",
+        "hireable",
+        "promotion",
+        "promocion",
+    },
+    "learning": {
+        "learn",
+        "learning",
+        "aprender",
+        "aprendizaje",
+        "study",
+        "estudio",
+        "curso",
+        "courses",
+        "guide",
+        "guia",
+        "roadmap",
+        "tutorial",
+    },
+    "productivity": {
+        "productivity",
+        "productividad",
+        "workflow",
+        "habits",
+        "habitos",
+        "system",
+        "sistema",
+        "automation",
+        "automatizacion",
+        "leverage",
+        "apalancamiento",
+    },
+    "knowledge": {
+        "knowledge",
+        "conocimiento",
+        "second brain",
+        "segundo cerebro",
+        "obsidian",
+        "notes",
+        "notas",
+        "pkm",
+        "library",
+        "biblioteca",
+    },
+    "communication": {
+        "communication",
+        "comunicacion",
+        "writing",
+        "escritura",
+        "persuasion",
+        "storytelling",
+        "copywriting",
+        "content",
+        "contenido",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -96,6 +230,9 @@ class ChatAnswer:
     model: str
     scanned_files: int
     retrieved_sources: int
+    candidate_sources: int
+    synthesis_used: bool
+    retrieval_mode: str
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -105,7 +242,18 @@ class ChatAnswer:
             "model": self.model,
             "scanned_files": self.scanned_files,
             "retrieved_sources": self.retrieved_sources,
+            "candidate_sources": self.candidate_sources,
+            "synthesis_used": self.synthesis_used,
+            "retrieval_mode": self.retrieval_mode,
         }
+
+
+@dataclass(frozen=True)
+class EvidenceNote:
+    """One compact note distilled from a retrieved source candidate."""
+
+    source_id: str
+    note: str
 
 
 def _generated_region(markdown: str) -> str:
@@ -134,6 +282,28 @@ def _plain_text(markdown: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
+
+
+def _normalize_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _stem_token(token: str) -> str:
+    for suffix in (
+        "ciones",
+        "ments",
+        "mente",
+        "acion",
+        "idad",
+        "ing",
+        "ed",
+        "es",
+        "s",
+    ):
+        if len(token) > len(suffix) + 3 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
 
 
 def _title_for(path: Path, markdown: str) -> str:
@@ -208,12 +378,12 @@ def load_markdown_chunks(output_dir: Path) -> tuple[list[MarkdownChunk], int]:
 def _tokens(text: str) -> list[str]:
     return [
         token
-        for token in (match.group(0).lower() for match in _WORD_RE.finditer(text))
+        for token in (match.group(0) for match in _WORD_RE.finditer(_normalize_text(text)))
         if token not in _STOPWORDS
     ]
 
 
-def _score_chunk(query: Counter[str], chunk: MarkdownChunk) -> float:
+def _lexical_score_chunk(query: Counter[str], chunk: MarkdownChunk) -> float:
     body = Counter(_tokens(chunk.text))
     title = Counter(_tokens(chunk.title))
     if not body and not title:
@@ -225,22 +395,78 @@ def _score_chunk(query: Counter[str], chunk: MarkdownChunk) -> float:
     return score
 
 
+def _semantic_features(text: str) -> Counter[str]:
+    """Build a small local concept vector for hybrid retrieval.
+
+    This is deliberately dependency-free: it boosts bilingual/domain aliases,
+    light stems and phrases from the generated corpus. It complements exact
+    keyword search without adding a heavyweight embedding stack to the VPS.
+    """
+    normalized = _normalize_text(text)
+    tokens = _tokens(normalized)
+    features: Counter[str] = Counter()
+    for token in tokens:
+        features[f"tok:{token}"] += 1
+        stem = _stem_token(token)
+        if stem != token:
+            features[f"stem:{stem}"] += 1
+    token_set = set(tokens)
+    for concept, aliases in _SEMANTIC_CONCEPTS.items():
+        hits = 0
+        for alias in aliases:
+            normalized_alias = _normalize_text(alias)
+            if " " in normalized_alias or "-" in normalized_alias:
+                if normalized_alias in normalized:
+                    hits += 1
+            elif normalized_alias in token_set:
+                hits += 1
+        if hits:
+            features[f"concept:{concept}"] += min(hits, 4) * 3
+    return features
+
+
+def _cosine(a: Counter[str], b: Counter[str]) -> float:
+    if not a or not b:
+        return 0.0
+    dot = sum(value * b.get(key, 0.0) for key, value in a.items())
+    if dot <= 0:
+        return 0.0
+    norm_a = math.sqrt(sum(value * value for value in a.values()))
+    norm_b = math.sqrt(sum(value * value for value in b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _hybrid_score_chunk(
+    query: Counter[str],
+    query_vector: Counter[str],
+    chunk: MarkdownChunk,
+) -> float:
+    lexical = _lexical_score_chunk(query, chunk)
+    title_vector = _semantic_features(chunk.title)
+    body_vector = _semantic_features(chunk.text)
+    semantic = _cosine(query_vector, body_vector) + (_cosine(query_vector, title_vector) * 1.6)
+    return lexical + semantic * 8.0
+
+
 def retrieve_sources(
     output_dir: Path,
     question: str,
     *,
     limit: int = MAX_SOURCES,
 ) -> tuple[list[ChatSource], int]:
-    """Retrieve the best source snippets for a question using local text search."""
+    """Retrieve the best source snippets with hybrid lexical/concept scoring."""
     query = Counter(_tokens(question))
     chunks, scanned_files = load_markdown_chunks(output_dir)
     if not query or not chunks:
         return [], scanned_files
+    query_vector = _semantic_features(question)
 
     scored = [
         (score, chunk)
         for chunk in chunks
-        if (score := _score_chunk(query, chunk)) > 0
+        if (score := _hybrid_score_chunk(query, query_vector, chunk)) > 0
     ]
     scored.sort(key=lambda pair: (-pair[0], str(pair[1].path), pair[1].index))
 
@@ -264,30 +490,121 @@ def retrieve_sources(
     return sources, scanned_files
 
 
-def _system_prompt() -> str:
+def _synthesis_system_prompt() -> str:
     return (
-        "Eres el chat de biblioteca de XBrain. Responde solo con la informacion "
-        "incluida en los fragmentos de markdown proporcionados.\n"
+        "Eres el paso de selección de evidencias de Ask XBrain. Tu tarea es comprimir "
+        "fragmentos recuperados antes de la respuesta final.\n"
         "Reglas obligatorias:\n"
-        "- No uses conocimiento externo ni supongas hechos que no aparezcan en los fragmentos.\n"
-        "- Si los fragmentos no bastan, dilo de forma clara.\n"
-        "- Responde en el mismo idioma de la pregunta.\n"
-        "- Cita solo IDs de fuente existentes, como S1 o S2.\n"
-        "- Devuelve un unico objeto JSON: "
-        '{"answer":"...","sources":["S1","S2"]}'
+        "- Usa solo los fragmentos proporcionados.\n"
+        "- Conserva detalles concretos que respondan a la pregunta.\n"
+        "- Descarta fragmentos irrelevantes aunque compartan palabras clave.\n"
+        "- Cada nota debe estar asociada a un único ID de fuente existente.\n"
+        "- Devuelve un único objeto JSON: "
+        '{"evidence":[{"source":"S1","note":"..."}],"missing":"..."}'
     )
 
 
-def _user_prompt(question: str, sources: list[ChatSource]) -> str:
-    blocks = [f"Pregunta del usuario:\n{question}", "", "Fragmentos disponibles:"]
+def _synthesis_user_prompt(question: str, sources: list[ChatSource]) -> str:
+    blocks = [
+        f"Pregunta del usuario:\n{question}",
+        "",
+        (
+            "Candidatos recuperados. Selecciona los que realmente aportan evidencia "
+            "y resume cada uno en una nota compacta:"
+        ),
+    ]
     for source in sources:
         blocks += [
             "",
             f"[{source.id}] {source.title}",
             f"Path: {source.path}",
             "Contenido:",
-            source.excerpt,
+            source.excerpt[:SYNTHESIS_SOURCE_CHAR_LIMIT].strip(),
         ]
+    return "\n".join(blocks)
+
+
+def _evidence_from_response(data: dict[str, Any], sources: list[ChatSource]) -> list[EvidenceNote]:
+    raw = data.get("evidence", [])
+    if not isinstance(raw, list):
+        return []
+    valid_ids = {source.id for source in sources}
+    evidence: list[EvidenceNote] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        source_id = entry.get("source")
+        note = entry.get("note")
+        if not isinstance(source_id, str) or source_id not in valid_ids or source_id in seen:
+            continue
+        if not isinstance(note, str) or not note.strip():
+            continue
+        seen.add(source_id)
+        evidence.append(EvidenceNote(source_id=source_id, note=note.strip()[:EVIDENCE_NOTE_CHAR_LIMIT]))
+    return evidence
+
+
+def _synthesize_evidence(
+    client: Any,
+    *,
+    model: str,
+    question: str,
+    sources: list[ChatSource],
+) -> list[EvidenceNote]:
+    response = client.messages.create(
+        model=model,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
+        system=_synthesis_system_prompt(),
+        messages=[{"role": "user", "content": _synthesis_user_prompt(question, sources)}],
+    )
+    data = json_from_response(response, context="dashboard chat evidence synthesis")
+    return _evidence_from_response(data, sources)
+
+
+def _system_prompt() -> str:
+    return (
+        "Eres el chat de biblioteca de XBrain. Responde solo con la informacion incluida "
+        "en las evidencias o fragmentos de markdown proporcionados.\n"
+        "Reglas obligatorias:\n"
+        "- No uses conocimiento externo ni supongas hechos que no aparezcan en el contexto.\n"
+        "- Si el contexto no basta, dilo de forma clara y concreta.\n"
+        "- Responde en el mismo idioma de la pregunta.\n"
+        "- Cita los IDs de fuente relevantes dentro de la respuesta, como [S1] o [S2].\n"
+        "- Prioriza respuestas accionables: conclusión breve, puntos clave y límites.\n"
+        "- Devuelve un unico objeto JSON: "
+        '{"answer":"...","sources":["S1","S2"]}'
+    )
+
+
+def _user_prompt(
+    question: str,
+    sources: list[ChatSource],
+    evidence: list[EvidenceNote] | None = None,
+) -> str:
+    blocks = [f"Pregunta del usuario:\n{question}", "", "Fragmentos disponibles:"]
+    if evidence:
+        source_by_id = {source.id: source for source in sources}
+        for note in evidence:
+            source = source_by_id.get(note.source_id)
+            if source is None:
+                continue
+            blocks += [
+                "",
+                f"[{source.id}] {source.title}",
+                f"Path: {source.path}",
+                "Evidencia sintetizada:",
+                note.note,
+            ]
+    else:
+        for source in sources:
+            blocks += [
+                "",
+                f"[{source.id}] {source.title}",
+                f"Path: {source.path}",
+                "Contenido:",
+                source.excerpt,
+            ]
     return "\n".join(blocks)
 
 
@@ -316,8 +633,12 @@ def answer_question(
     if len(cleaned) > MAX_QUESTION_CHARS:
         raise ValueError(f"question is too long; max {MAX_QUESTION_CHARS} characters")
 
-    sources, scanned_files = retrieve_sources(output_dir, cleaned, limit=max_sources)
-    if not sources:
+    candidates, scanned_files = retrieve_sources(
+        output_dir,
+        cleaned,
+        limit=max(max_sources, MAX_RETRIEVAL_CANDIDATES),
+    )
+    if not candidates:
         return ChatAnswer(
             answer=(
                 "No he encontrado informacion suficiente en los markdown generados de XBrain "
@@ -328,27 +649,60 @@ def answer_question(
             model=model,
             scanned_files=scanned_files,
             retrieved_sources=0,
+            candidate_sources=0,
+            synthesis_used=False,
+            retrieval_mode="hybrid",
         )
 
     active_client = client or build_llm_client(provider, base_url=base_url)
+    final_sources = candidates[:max_sources]
+    evidence: list[EvidenceNote] | None = None
+    synthesis_used = False
+    if len(candidates) > max_sources:
+        try:
+            synthesized = _synthesize_evidence(
+                active_client,
+                model=model,
+                question=cleaned,
+                sources=candidates,
+            )
+        except Exception:  # noqa: BLE001 - evidence synthesis is an optional quality layer
+            synthesized = []
+        if synthesized:
+            evidence = synthesized[:max_sources]
+            source_by_id = {source.id: source for source in candidates}
+            final_sources = [
+                source_by_id[note.source_id]
+                for note in evidence
+                if note.source_id in source_by_id
+            ]
+            synthesis_used = bool(final_sources)
+        if not final_sources:
+            final_sources = candidates[:max_sources]
+            evidence = None
+            synthesis_used = False
+
     response = active_client.messages.create(
         model=model,
         max_tokens=ANSWER_MAX_TOKENS,
         system=_system_prompt(),
-        messages=[{"role": "user", "content": _user_prompt(cleaned, sources)}],
+        messages=[{"role": "user", "content": _user_prompt(cleaned, final_sources, evidence)}],
     )
     data = json_from_response(response, context="dashboard chat")
     answer = str(data.get("answer", "")).strip()
     if not answer:
         raise ValueError("dashboard chat response has no answer")
-    selected = _selected_sources(data, sources)
+    selected = _selected_sources(data, final_sources)
     if not selected and "no he encontrado" not in answer.lower():
-        selected = sources[: min(3, len(sources))]
+        selected = final_sources[: min(3, len(final_sources))]
     return ChatAnswer(
         answer=answer,
         sources=selected,
         provider=provider,
         model=model,
         scanned_files=scanned_files,
-        retrieved_sources=len(sources),
+        retrieved_sources=len(candidates),
+        candidate_sources=len(candidates),
+        synthesis_used=synthesis_used,
+        retrieval_mode="hybrid",
     )

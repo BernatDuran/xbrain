@@ -5,18 +5,22 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from xbrain import snapshot
 from xbrain.cli import (
+    _copy_bootstrap_tree,
+    _drive_cache_vault_output_dir,
     _render_note_page,
     _resolve_served_media,
     _resolve_served_note,
     _run_delete_bookmark,
+    _run_reprocess_note,
     _run_topic_action,
     app,
 )
 from xbrain.config import load_config
 from xbrain.models import Author, Enrichment, Item, Link, Topic
 from xbrain.notes_io import GEN_END, GEN_START
-from xbrain.rubrics import save_vocab
+from xbrain.rubrics import load_vocab, save_vocab
 from xbrain.store import load_store, save_store
 
 runner = CliRunner()
@@ -57,6 +61,60 @@ def test_status_runs_on_empty_store(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "Items: 0" in result.stdout
+
+
+def test_drive_select_root_writes_local_selection(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["drive", "select-root", "folder-123"])
+
+    assert result.exit_code == 0
+    selection = tmp_path / "auth" / "google_drive_selection.json"
+    assert "folder-123" in selection.read_text(encoding="utf-8")
+    cfg = load_config(tmp_path)
+    assert cfg.drive_root_folder_id == "folder-123"
+
+
+def test_drive_status_reports_media_dir(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["drive", "status"])
+
+    assert result.exit_code == 0
+    assert "media_dir:" in result.stdout
+
+
+def test_copy_bootstrap_tree_copies_files(tmp_path: Path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "file.txt").write_text("body", encoding="utf-8")
+
+    copied = _copy_bootstrap_tree(source, destination, force=False)
+
+    assert copied == 1
+    assert (destination / "nested" / "file.txt").read_text(encoding="utf-8") == "body"
+
+
+def test_drive_cache_vault_output_dir_preserves_nested_output_subdir(tmp_path: Path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        f'vault = "{vault}"\n'
+        'output_subdir = "learnings/x-knowledge"\n'
+        'data_dir = "data"\n'
+        "[x]\n"
+        'handle = "vgonpa"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XBRAIN_REPO_ROOT", str(tmp_path))
+
+    cfg = load_config(tmp_path)
+
+    assert _drive_cache_vault_output_dir(cfg) == (
+        tmp_path / ".xbrain-cache" / "google-drive" / "vault" / "learnings" / "x-knowledge"
+    )
 
 
 def test_generate_creates_output_dir(tmp_path: Path, monkeypatch):
@@ -163,6 +221,10 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert "obsidian://open?path=" in html
     assert 'id="topics-note"' in html
     assert 'id="topic-modal"' in html
+    assert 'id="topic-suggestions"' in html
+    assert 'id="topic-prioritize"' in html
+    assert 'id="topic-promote"' in html
+    assert "selectedSuggestions" in html
     assert "/api/topic-state" in html
     assert "/api/topic-action" in html
     assert 'id="reprocess-note"' in html
@@ -172,6 +234,7 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert ">×</button>" in html
     assert 'id="delete-modal"' in html
     assert "/api/reprocess-note" in html
+    assert "'reprocess-note:' + itemId" in html
     assert "/api/delete-bookmark" in html
     assert "connect-src 'self'" in html
 
@@ -250,6 +313,278 @@ def test_run_topic_action_accepts_and_rejects_topic_assignment(tmp_path: Path, m
     assert store["42"].enriched.topics == ["misc"]
     assert store["42"].enriched.topic_confidence == "high"
     assert (cfg.output_dir / "dashboard.html").exists()
+
+
+def test_run_topic_action_regenerate_reenriches_item_and_refreshes_outputs(
+    tmp_path: Path, monkeypatch
+):
+    from xbrain.executors.base import EnrichmentJudgment
+    import xbrain.cli as cli
+
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab(
+        [
+            Topic(slug="misc", description="Miscellaneous"),
+            Topic(slug="ai-coding", description="AI coding"),
+        ],
+        cfg.data_dir / "vocab.yaml",
+    )
+    item = _linked_item("42")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="old summary",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="low",
+    )
+    save_store({"42": item}, cfg.items_path)
+    calls: list[str] = []
+
+    class _FakeApiExecutor:
+        def __init__(self, *args, **kwargs):
+            calls.append("executor")
+
+        def enrich_items(self, items, vocab):
+            calls.append(f"enrich:{[item.id for item in items]}")
+            return [
+                EnrichmentJudgment(
+                    item_id="42",
+                    summary="new summary",
+                    primary_topic="ai-coding",
+                    topics=["ai-coding"],
+                    topic_confidence="high",
+                )
+            ]
+
+    monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
+    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics"))
+    monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: calls.append("generate"))
+
+    report = _run_topic_action(cfg, "42", "regenerate")
+    store = load_store(cfg.items_path)
+
+    assert report.action == "regenerate"
+    assert report.primary_topic == "ai-coding"
+    assert store["42"].enriched.summary == "new summary"
+    assert calls == ["executor", "enrich:['42']", "topics", "generate"]
+    assert any(path.name.endswith("-pre-topic-regenerate-42") for path, _ in snapshot.snapshot_list(cfg.data_dir))
+
+
+def test_run_topic_action_regenerate_prioritizes_selected_suggestions(
+    tmp_path: Path, monkeypatch
+):
+    from xbrain.executors.base import EnrichmentJudgment
+    import xbrain.cli as cli
+
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab(
+        [
+            Topic(slug="misc", description="Miscellaneous"),
+            Topic(slug="ai-coding", description="AI coding"),
+        ],
+        cfg.data_dir / "vocab.yaml",
+    )
+    item = _linked_item("42")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="old summary",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="low",
+        suggested_new_topics=["ai-productivity-tools", "llm-workflows"],
+    )
+    save_store({"42": item}, cfg.items_path)
+    calls: list[object] = []
+
+    class _FakeApiExecutor:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs.get("topic_hints"))
+
+        def enrich_items(self, items, vocab):
+            return [
+                EnrichmentJudgment(
+                    item_id="42",
+                    summary="new summary",
+                    primary_topic="ai-coding",
+                    topics=["ai-coding"],
+                    topic_confidence="medium",
+                    suggested_new_topics=["ai-productivity-tools"],
+                )
+            ]
+
+    monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
+    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: None)
+
+    report = _run_topic_action(
+        cfg,
+        "42",
+        "regenerate",
+        prioritize_suggestions=True,
+        suggested_topics=["ai-productivity-tools"],
+    )
+
+    assert report.action == "regenerate"
+    assert calls == [{"42": ["ai-productivity-tools"]}]
+    assert [topic.slug for topic in load_vocab(cfg.data_dir / "vocab.yaml")] == [
+        "misc",
+        "ai-coding",
+    ]
+
+
+def test_run_topic_action_promotes_selected_suggestions_before_regenerate(
+    tmp_path: Path, monkeypatch
+):
+    from xbrain.executors.base import EnrichmentJudgment
+    import xbrain.cli as cli
+
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab([Topic(slug="misc", description="Miscellaneous")], cfg.data_dir / "vocab.yaml")
+    item = _linked_item("42")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="old summary",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="low",
+        suggested_new_topics=["ai-productivity-tools"],
+    )
+    save_store({"42": item}, cfg.items_path)
+    calls: list[object] = []
+
+    class _FakeApiExecutor:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs.get("topic_hints"))
+
+        def enrich_items(self, items, vocab):
+            assert {topic.slug for topic in vocab} == {"misc", "ai-productivity-tools"}
+            return [
+                EnrichmentJudgment(
+                    item_id="42",
+                    summary="new summary",
+                    primary_topic="ai-productivity-tools",
+                    topics=["ai-productivity-tools"],
+                    topic_confidence="high",
+                )
+            ]
+
+    monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
+    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: None)
+
+    report = _run_topic_action(
+        cfg,
+        "42",
+        "regenerate",
+        promote_suggestions=True,
+        suggested_topics=["ai-productivity-tools"],
+    )
+    store = load_store(cfg.items_path)
+
+    assert report.promoted_topics == ["ai-productivity-tools"]
+    assert store["42"].enriched.primary_topic == "ai-productivity-tools"
+    assert calls == [{"42": ["ai-productivity-tools"]}]
+    assert [topic.slug for topic in load_vocab(cfg.data_dir / "vocab.yaml")] == [
+        "misc",
+        "ai-productivity-tools",
+    ]
+
+
+def test_run_topic_action_rejects_unavailable_topic_suggestions(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab([Topic(slug="misc", description="Miscellaneous")], cfg.data_dir / "vocab.yaml")
+    item = _linked_item("42")
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="api",
+        summary="old summary",
+        primary_topic="misc",
+        topics=["misc"],
+        topic_confidence="low",
+        suggested_new_topics=["ai-productivity-tools"],
+    )
+    save_store({"42": item}, cfg.items_path)
+
+    with pytest.raises(ValueError, match="not available"):
+        _run_topic_action(
+            cfg,
+            "42",
+            "regenerate",
+            prioritize_suggestions=True,
+            suggested_topics=["invented-topic"],
+        )
+
+
+def test_run_reprocess_note_refreshes_single_item_pipeline(tmp_path: Path, monkeypatch):
+    from xbrain.executors.base import EnrichmentJudgment
+    import xbrain.cli as cli
+
+    _setup_repo(tmp_path, monkeypatch)
+    cfg = load_config(tmp_path)
+    save_vocab([Topic(slug="misc", description="Miscellaneous")], cfg.data_dir / "vocab.yaml")
+    save_store({"42": _linked_item("42"), "43": _linked_item("43")}, cfg.items_path)
+    calls: list[str] = []
+
+    def _fake_fetch_pending(selected, *, force):
+        calls.append(f"fetch:{sorted(selected)}:{force}")
+        return 1
+
+    def _fake_fetch_x_articles(selected, _storage_state, force, *, headless):
+        calls.append(f"x_fetch:{sorted(selected)}:{force}:{headless}")
+        return 2
+
+    class _FakeApiExecutor:
+        def __init__(self, *args, **kwargs):
+            calls.append("executor")
+
+        def enrich_items(self, items, vocab):
+            calls.append(f"enrich:{[item.id for item in items]}")
+            return [
+                EnrichmentJudgment(
+                    item_id="42",
+                    summary="reprocessed",
+                    primary_topic="misc",
+                    topics=["misc"],
+                    topic_confidence="high",
+                )
+            ]
+
+    monkeypatch.setattr(cli, "fetch_pending", _fake_fetch_pending)
+    monkeypatch.setattr(cli, "fetch_x_articles", _fake_fetch_x_articles)
+    monkeypatch.setattr(cli, "_run_digest_video", lambda *_args, **_kwargs: calls.append("digest"))
+    monkeypatch.setattr(cli, "_run_media", lambda *_args, **_kwargs: calls.append("media"))
+    monkeypatch.setattr(cli, "_run_describe", lambda *_args, **_kwargs: calls.append("describe"))
+    monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
+    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics"))
+    monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: calls.append("generate"))
+
+    report = _run_reprocess_note(cfg, "42", headless=True)
+    store = load_store(cfg.items_path)
+
+    assert report.item_id == "42"
+    assert report.articles == 1
+    assert report.x_articles == 2
+    assert store["42"].enriched.summary == "reprocessed"
+    assert store["43"].enriched is None
+    assert calls == [
+        "fetch:['42']:True",
+        "x_fetch:['42']:True:True",
+        "digest",
+        "media",
+        "describe",
+        "executor",
+        "enrich:['42']",
+        "topics",
+        "generate",
+    ]
+    assert any(path.name.endswith("-pre-reprocess-note-42") for path, _ in snapshot.snapshot_list(cfg.data_dir))
 
 
 def test_run_delete_bookmark_removes_store_note_media_and_regenerates(

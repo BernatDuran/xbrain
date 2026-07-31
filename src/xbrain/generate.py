@@ -45,13 +45,9 @@ _FAILURE_ES: dict[FailureReason, str] = {
 }
 
 
-# Subdirectory under `output_dir` where downloaded photos are mirrored at
-# generate time, so an Obsidian vault is fully self-contained. Photos are
-# canonically stored under `data/media/<id>/<n>.<ext>` and copied to
-# `<output_dir>/_media/<id>/<n>.<ext>` whenever `generate` runs with a
-# `media_root` argument. The leading underscore keeps the directory at
-# the top of file listings and matches the convention used by static-
-# site generators (Hugo, Jekyll) for non-content assets.
+# Subdirectory under `output_dir` where note embeds expect media bytes. In local
+# mode this is a render-time mirror of `data/media`; in Drive mode it is the
+# canonical media location, so no duplicate `data/media` tree is needed.
 _VAULT_MEDIA_SUBDIR = "_media"
 
 
@@ -180,7 +176,7 @@ def _write_dashboard(
     }
     thumbs = collect_thumbnails(items, media_root, id2note)
     now = datetime.now(timezone.utc)
-    updated = f"{now:%b} {now.day}, {now.year}".upper()
+    updated = f"{now:%b} {now.day}, {now.year} {now:%H:%M} UTC".upper()
     storage = _storage_summary(data_dir, output_dir)
     data = compute_dashboard_data(
         items,
@@ -391,12 +387,12 @@ def _sum_files(paths: list[Path]) -> int:
 def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int | str | list[dict[str, int | str]]]:
     """Global storage footprint shown in the dashboard.
 
-    `data_dir` is the XBrain source of truth: JSON/YAML records, downloaded media
-    and snapshots. The generated vault is derived, but its markdown/dashboard
-    size is useful operational context, so it is reported separately.
+    `data_dir` carries JSON/YAML records and snapshots. Media may live there in
+    local mode (`data/media`) or directly in the generated vault in Drive mode
+    (`<output_dir>/_media`) to avoid duplicate Drive storage.
     """
     data_files = _iter_regular_files(data_dir)
-    media_files: list[Path] = []
+    data_media_files: list[Path] = []
     snapshot_files: list[Path] = []
     store_files: list[Path] = []
     other_data_files: list[Path] = []
@@ -405,7 +401,7 @@ def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int |
             rel = path.relative_to(data_dir)
             first = rel.parts[0] if rel.parts else ""
             if first == "media":
-                media_files.append(path)
+                data_media_files.append(path)
             elif first == "snapshots":
                 snapshot_files.append(path)
             elif path.suffix in {".json", ".yaml", ".yml"}:
@@ -413,24 +409,55 @@ def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int |
             else:
                 other_data_files.append(path)
     output_files = _iter_regular_files(output_dir)
-    note_files = [path for path in output_files if path.suffix == ".md"]
-    dashboard_files = [path for path in output_files if path.name == "dashboard.html"]
+    output_media_root = (output_dir / _VAULT_MEDIA_SUBDIR).resolve(strict=False)
+    output_media_files = [
+        path
+        for path in output_files
+        if path.resolve(strict=False).is_relative_to(output_media_root)
+    ]
+    media_files = data_media_files if data_media_files else output_media_files
+    mirrored_media_files = output_media_files if data_media_files else []
+    media_storage = "data/media" if data_media_files else "vault/_media"
+    if not media_files:
+        media_storage = "none"
+    output_media_paths = set(output_media_files)
+    note_files = [
+        path
+        for path in output_files
+        if path.suffix == ".md" and path not in output_media_paths
+    ]
+    dashboard_files = [
+        path
+        for path in output_files
+        if path.name == "dashboard.html" and path not in output_media_paths
+    ]
     store_bytes = _sum_files(store_files)
     media_bytes = _sum_files(media_files)
+    mirrored_media_bytes = _sum_files(mirrored_media_files)
     snapshot_bytes = _sum_files(snapshot_files)
     other_data_bytes = _sum_files(other_data_files)
     note_bytes = _sum_files(note_files)
     dashboard_bytes = _sum_files(dashboard_files)
-    data_bytes = store_bytes + media_bytes + snapshot_bytes + other_data_bytes
-    vault_bytes = note_bytes + dashboard_bytes
+    data_media_bytes = _sum_files(data_media_files)
+    output_media_bytes = _sum_files(output_media_files)
+    data_bytes = store_bytes + data_media_bytes + snapshot_bytes + other_data_bytes
+    vault_bytes = note_bytes + dashboard_bytes + output_media_bytes
     total_bytes = data_bytes + vault_bytes
-    categories = [
+    categories: list[dict[str, int | str]] = [
         {"label": "Store JSON/YAML", "bytes": store_bytes, "value": _human_bytes(store_bytes)},
         {"label": "Stored media", "bytes": media_bytes, "value": _human_bytes(media_bytes)},
         {"label": "Snapshots", "bytes": snapshot_bytes, "value": _human_bytes(snapshot_bytes)},
         {"label": "Generated notes", "bytes": note_bytes, "value": _human_bytes(note_bytes)},
         {"label": "Dashboard HTML", "bytes": dashboard_bytes, "value": _human_bytes(dashboard_bytes)},
     ]
+    if mirrored_media_bytes:
+        categories.append(
+            {
+                "label": "Vault media mirror",
+                "bytes": mirrored_media_bytes,
+                "value": _human_bytes(mirrored_media_bytes),
+            }
+        )
     if other_data_bytes:
         categories.append(
             {"label": "Other data", "bytes": other_data_bytes, "value": _human_bytes(other_data_bytes)}
@@ -441,6 +468,8 @@ def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int |
         "vault_bytes": vault_bytes,
         "store_bytes": store_bytes,
         "media_bytes": media_bytes,
+        "media_storage": media_storage,
+        "mirrored_media_bytes": mirrored_media_bytes,
         "snapshot_bytes": snapshot_bytes,
         "note_bytes": note_bytes,
         "dashboard_bytes": dashboard_bytes,
@@ -449,6 +478,8 @@ def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int |
         "vault_label": _human_bytes(vault_bytes),
         "store_label": _human_bytes(store_bytes),
         "media_label": _human_bytes(media_bytes),
+        "media_storage_label": media_storage,
+        "mirrored_media_label": _human_bytes(mirrored_media_bytes),
         "snapshot_label": _human_bytes(snapshot_bytes),
         "note_label": _human_bytes(note_bytes),
         "dashboard_label": _human_bytes(dashboard_bytes),
@@ -597,9 +628,9 @@ def _render_media_lines(item: Item) -> list[str]:
     Variant handling:
     - `MediaPhotoDownloaded` / `MediaPhotoDescribed`
       → Obsidian embed `![[_media/<id>/<n>.<ext>]]`. The vault is
-      self-contained: `generate()` mirrors the file from `data/media/` into
-      `<output_dir>/_media/` before rendering, so the embed resolves
-      with no user configuration. The described variant inherits the same
+      self-contained: local mode mirrors from `data/media`, while Drive mode
+      stores the canonical bytes directly in `<output_dir>/_media`, so the
+      embed resolves with no user configuration. The described variant inherits the same
       on-disk file — the description is consumed by the LLM prompts in `executors/api.py` /
       `topic_synth.py`, NOT shown as alt-text in this phase. Decorative
       photos are still embedded; the `is_decorative` flag only filters
@@ -670,13 +701,12 @@ _FAILURE_ES_MEDIA: dict[str, str] = {
 
 
 def _mirror_file(item_id: str, source: Path, destination: Path) -> None:
-    """Copy one media file from the store into the vault's `_media/` tree.
+    """Ensure one media file is available in the vault's `_media/` tree.
 
-    Uses `shutil.copy2` (preserves mtime) and skips (with a warning) when the
-    source bytes are missing — a manual cleanup of `data/media/` must not crash the
-    generator; the Obsidian embed then renders as a broken image, the right signal.
-    Shared by the photo/video block and the `x_video` slide-frame embeds so the
-    self-contained-vault mirroring has ONE implementation.
+    Local mode copies from `data/media`. Drive mode commonly passes the same
+    path for source and destination because `_media` is canonical there; that is
+    treated as already mirrored. Missing bytes warn but do not abort generation,
+    so the note renders a visible broken embed instead of losing the whole run.
     """
     if not source.exists():
         logger.warning(
@@ -685,17 +715,17 @@ def _mirror_file(item_id: str, source: Path, destination: Path) -> None:
             source,
         )
         return
+    if source.resolve(strict=False) == destination.resolve(strict=False):
+        return
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 
 
 def _mirror_item_media(item: Item, media_root: Path, vault_media_dir: Path) -> None:
-    """Copy every downloaded photo on `item` into the vault's `_media/` tree.
+    """Ensure every downloaded photo on `item` exists in the vault `_media` tree.
 
-    The canonical store is `data/media/<id>/<n>.<ext>` (under `media_root`);
-    the vault mirror is `<output_dir>/_media/<id>/<n>.<ext>`. Mirroring
-    happens at render time, not download time, so the vault stays in sync
-    with whichever subset of items `--since`/`--until` is regenerating.
+    `media_root` is `data/media` in local mode and `<output_dir>/_media` in
+    Drive mode. The same function handles both by skipping self-copies.
     """
     for entry in item.media:
         # The described variant inherits the on-disk bytes from the prior
@@ -724,17 +754,12 @@ def _mirror_item_frames(item: Item, media_root: Path, vault_media_dir: Path) -> 
 
 
 def _mirror_item_article_images(item: Item, media_root: Path, vault_media_dir: Path) -> None:
-    """Mirror every downloaded inline Article image on `item` into the vault (#39 PR5).
+    """Ensure every downloaded inline Article image is available in `_media`.
 
-    An X long-form Article's inline images live OUTSIDE `item.media` — on the
-    `x_article` `ContentSourceSuccess.blocks` as `ArticleImageBlock`s. PR4
-    downloads each into the namespaced `data/media/<id>/article/<n>.<ext>` path
-    (the STORED `MediaPhotoDownloaded.local_path`); this mirrors those bytes to
-    `<output_dir>/_media/<id>/article/<n>.<ext>` so the `![[_media/…]]` blogpost
-    embed resolves in a self-contained vault — the SAME `_mirror_file` the photo
-    and slide-frame blocks use. The stored `local_path` is copied verbatim (no
-    per-source index recompute — the index is global across the item's Articles).
-    A missing byte renders a broken embed (via `_mirror_file`), never a crash.
+    X long-form Article images live outside `item.media`, on the `x_article`
+    blocks as `ArticleImageBlock`s. The stored `local_path` is copied verbatim
+    under `_media`; in Drive mode it already lives there and the self-copy is
+    skipped.
     """
     if item.content is None:
         return

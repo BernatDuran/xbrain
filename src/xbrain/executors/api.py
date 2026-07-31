@@ -177,7 +177,30 @@ def _video_transcript_section(item: Item) -> list[str]:
     return lines
 
 
-def _user_prompt(item: Item, vocab: list[Topic]) -> str:
+def _topic_hints_section(item: Item, topic_hints: dict[str, list[str]] | None) -> list[str]:
+    """Optional operator hints for one-item taxonomy regeneration."""
+    hints = list(dict.fromkeys(topic_hints.get(item.id, []) if topic_hints else []))
+    if not hints:
+        return []
+    lines = [
+        "",
+        "Operator-prioritized taxonomy hints:",
+        (
+            "Use these slugs as strong review signals. If a hinted slug exists in the "
+            "controlled vocabulary above, prefer it when it accurately fits the item. "
+            "If a hinted slug is not in the vocabulary, do not use it as primary_topic "
+            "or topics; return it in suggested_new_topics only if it still looks useful."
+        ),
+    ]
+    lines += [f"- {slug}" for slug in hints]
+    return lines
+
+
+def _user_prompt(
+    item: Item,
+    vocab: list[Topic],
+    topic_hints: dict[str, list[str]] | None = None,
+) -> str:
     parts = [
         "Controlled vocabulary (use only these slugs):",
         _vocab_block(vocab),
@@ -191,6 +214,7 @@ def _user_prompt(item: Item, vocab: list[Topic]) -> str:
     parts += _video_transcript_section(item)
     parts += _links_section(item)
     parts += _article_sections(item)
+    parts += _topic_hints_section(item, topic_hints)
     return "\n".join(parts)
 
 
@@ -204,12 +228,14 @@ class ApiExecutor:
         client=None,
         provider: LlmProvider = "nanogpt",
         base_url: str | None = None,
+        topic_hints: dict[str, list[str]] | None = None,
     ):
         if client is None:
             client = build_llm_client(provider, base_url=base_url)
         self._client = client
         self._model = model
         self._output_language = output_language
+        self._topic_hints = topic_hints or {}
 
     def enrich_items(self, items: list[Item], vocab: list[Topic]) -> list[EnrichmentJudgment]:
         system = _system_prompt(self._output_language)
@@ -222,7 +248,9 @@ class ApiExecutor:
                     model=self._model,
                     max_tokens=_MAX_TOKENS,
                     system=system,
-                    messages=[{"role": "user", "content": _user_prompt(item, vocab)}],
+                    messages=[
+                        {"role": "user", "content": _user_prompt(item, vocab, self._topic_hints)}
+                    ],
                 )
                 judgment = json_from_response(response, context=f"item {item.id}")
                 if not {"summary", "primary_topic", "topics"} <= judgment.keys():

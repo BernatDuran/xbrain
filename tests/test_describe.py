@@ -689,6 +689,39 @@ def test_describe_all_isolates_a_batch_error(tmp_path: Path, capsys):
     assert "SUMMARY:" not in err
 
 
+def test_describe_all_retries_malformed_batch_one_by_one(tmp_path: Path):
+    """A malformed multi-photo JSON response falls back to per-photo calls."""
+    media_root = tmp_path / "media"
+    item = _item(
+        "1",
+        [_downloaded(item_id="1", index=i, media_root=media_root) for i in range(2)],
+    )
+    store = {"1": item}
+    client = _FakeVisionClient(
+        [
+            _FakeTruncatedResponse(),
+            [_judgment(0, description="first image")],
+            [_judgment(0, description="second image")],
+        ]
+    )
+
+    report = describe_all(
+        store,
+        media_root,
+        model="m",
+        output_language="English",
+        description_version="v1",
+        batch_size=2,
+        client=client,
+    )
+
+    assert len(client.messages.calls) == 3
+    assert report.batches_failed == 1
+    assert report.photos_failed == 0
+    assert report.photos_described == 2
+    assert [media.description for media in item.media] == ["first image", "second image"]
+
+
 def test_describe_all_raises_when_every_batch_fails(tmp_path: Path):
     """A total-failure run (every batch errored) must raise RuntimeError."""
     from anthropic import APIError

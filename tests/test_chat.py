@@ -29,6 +29,21 @@ def test_retrieve_sources_reads_generated_markdown_only(tmp_path):
     assert "SECRETO" not in sources[0].excerpt
 
 
+def test_retrieve_sources_uses_hybrid_concept_matching(tmp_path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    _write_item(
+        output_dir,
+        "2026-01-01-business-ai-1.md",
+        "# Business AI systems\n\nAgents can automate sales workflows and increase revenue.",
+    )
+
+    sources, scanned = retrieve_sources(output_dir, "negocio con IA")
+
+    assert scanned == 1
+    assert len(sources) == 1
+    assert sources[0].title == "Business AI systems"
+
+
 def test_answer_question_uses_configured_client_and_sources(tmp_path):
     output_dir = tmp_path / "vault" / "x-knowledge"
     _write_item(
@@ -66,6 +81,65 @@ def test_answer_question_uses_configured_client_and_sources(tmp_path):
     assert call["model"] == "zai-org/glm-5.2"
     assert "conocimiento externo" in call["system"]
     assert "RAG local" in call["messages"][0]["content"]
+
+
+def test_answer_question_synthesizes_many_candidates_before_answering(tmp_path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    for index in range(8):
+        _write_item(
+            output_dir,
+            f"2026-01-{index + 1:02d}-agents-{index}.md",
+            f"# Agents {index}\n\nLos agentes de IA automatizan workflows numero {index}.",
+        )
+
+    class FakeMessages:
+        def __init__(self):
+            self.calls = []
+            self.payloads = [
+                TextResponse(
+                    [
+                        TextBlock(
+                            '{"evidence":['
+                            '{"source":"S2","note":"S2 aporta una tactica concreta."},'
+                            '{"source":"S5","note":"S5 aporta un limite operativo."}'
+                            '],"missing":""}'
+                        )
+                    ]
+                ),
+                TextResponse(
+                    [
+                        TextBlock(
+                            '{"answer":"Usa tacticas concretas [S2] y revisa limites [S5].",'
+                            '"sources":["S2","S5"]}'
+                        )
+                    ]
+                ),
+            ]
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self.payloads.pop(0)
+
+    class FakeClient:
+        def __init__(self):
+            self.messages = FakeMessages()
+
+    client = FakeClient()
+    answer = answer_question(
+        output_dir,
+        "Que ideas utiles hay sobre agentes de IA?",
+        provider="nanogpt",
+        model="zai-org/glm-5.2",
+        client=client,
+    )
+
+    assert answer.synthesis_used is True
+    assert answer.candidate_sources == 8
+    assert [source.id for source in answer.sources] == ["S2", "S5"]
+    assert len(client.messages.calls) == 2
+    assert "selección de evidencias" in client.messages.calls[0]["system"]
+    assert "Candidatos recuperados" in client.messages.calls[0]["messages"][0]["content"]
+    assert "Evidencia sintetizada" in client.messages.calls[1]["messages"][0]["content"]
 
 
 def test_answer_question_without_sources_does_not_call_llm(tmp_path):

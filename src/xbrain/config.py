@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,10 @@ from xbrain.models import ExecutorName
 # navigation-first behaviour; `hashtag` emits Obsidian tags so the line pivots
 # into the tag pane. Frontmatter `tags:` are unaffected by this toggle.
 SUPPORTED_TOPIC_STYLES: tuple[str, ...] = ("wikilink", "hashtag")
+DEFAULT_DRIVE_SCOPES: tuple[str, ...] = (
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,22 @@ class Config:
     vault: Path
     output_dir: Path
     data_dir: Path
+    drive_enabled: bool
+    drive_root_folder_id: str
+    drive_cache_dir: Path
+    drive_credentials_path: Path
+    drive_token_path: Path
+    drive_scopes: tuple[str, ...]
+    email_enabled: bool
+    email_recipient: str
+    email_sender: str
+    email_smtp_host: str
+    email_smtp_port: int
+    email_smtp_username: str
+    email_smtp_password: str
+    email_smtp_starttls: bool
+    email_smtp_ssl: bool
+    snapshot_auto_prune_keep_last: int
     x_handle: str
     llm_provider: LlmProvider
     llm_model: str
@@ -80,14 +101,13 @@ class Config:
     def media_dir(self) -> Path:
         """Root directory for downloaded photo bytes.
 
-        Photos are stored at ``<media_dir>/<item-id>/<index>.<ext>``. Lives
-        under `data/` so it shares the gitignore with the rest of the
-        artifact tree. The snapshot lifecycle in `xbrain.snapshot`
-        currently covers only the JSON store (`items.json`, `state.json`,
-        `vocab.yaml`, `topics.json`) — the binary photo bytes are NOT
-        snapshotted today. A re-download via `xbrain media` is the
-        recovery path if `data/media/` is lost.
+        In local mode, photos live under `data/media/`. In Google Drive mode,
+        the generated vault is the synchronized, user-facing library, so media
+        lives directly under `<output_dir>/_media/` and is not duplicated in
+        `data/media/`.
         """
+        if self.drive_enabled:
+            return self.output_dir / "_media"
         return self.data_dir / "media"
 
     @property
@@ -101,6 +121,13 @@ class Config:
     @property
     def storage_state_path(self) -> Path:
         return self.repo_root / "auth" / "storage_state.json"
+
+
+def _resolve_repo_path(repo_root: Path, value: str, *, setting: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"config.toml: {setting} must be a non-empty string")
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else repo_root / path
 
 
 def _load_dotenv(repo_root: Path) -> None:
@@ -124,6 +151,30 @@ def _load_dotenv(repo_root: Path) -> None:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
         os.environ.setdefault(key, value)
+
+
+def _drive_selected_root(repo_root: Path) -> str:
+    path = repo_root / "auth" / "google_drive_selection.json"
+    if not path.exists():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    value = payload.get("root_folder_id") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def _bool_setting(value: object, *, setting: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"config.toml: {setting} must be boolean")
 
 
 def _configured_text_model(provider: LlmProvider, settings: dict) -> str:
@@ -231,7 +282,89 @@ def load_config(repo_root: Path) -> Config:
     x_settings = settings["x"]
     if not x_settings.get("handle"):
         raise ValueError("config.toml: [x].handle is empty — set your X handle")
+    drive = settings.get("drive", {})
+    drive_enabled = bool(drive.get("enabled", False))
+    drive_cache_dir = _resolve_repo_path(
+        repo_root,
+        drive.get("cache_dir", ".xbrain-cache/google-drive"),
+        setting="[drive].cache_dir",
+    )
+    drive_credentials_path = _resolve_repo_path(
+        repo_root,
+        drive.get("credentials_path", "auth/google_drive_credentials.json"),
+        setting="[drive].credentials_path",
+    )
+    drive_token_path = _resolve_repo_path(
+        repo_root,
+        drive.get("token_path", "auth/google_drive_token.json"),
+        setting="[drive].token_path",
+    )
+    drive_scopes_raw = drive.get("scopes", list(DEFAULT_DRIVE_SCOPES))
+    if not isinstance(drive_scopes_raw, list) or not all(
+        isinstance(scope, str) and scope for scope in drive_scopes_raw
+    ):
+        raise ValueError("config.toml: [drive].scopes must be a list of non-empty strings")
+    drive_root_folder_id = (
+        os.environ.get("XBRAIN_DRIVE_ROOT_FOLDER_ID")
+        or str(drive.get("root_folder_id", ""))
+        or _drive_selected_root(repo_root)
+    )
+    if drive_enabled and not drive_root_folder_id:
+        raise ValueError("config.toml: [drive].root_folder_id is required when drive.enabled=true")
     vault = Path(paths["vault"]).expanduser()
+    data_dir = repo_root / paths["data_dir"]
+    if drive_enabled:
+        vault = drive_cache_dir / "vault"
+        data_dir = drive_cache_dir / "data"
+    email = settings.get("email", {})
+    email_enabled = _bool_setting(
+        os.environ.get("XBRAIN_EMAIL_ENABLED", email.get("enabled", False)),
+        setting="[email].enabled",
+    )
+    email_recipient = os.environ.get("XBRAIN_EMAIL_RECIPIENT") or str(
+        email.get("recipient", "bernat.duran.mascorda@gmail.com")
+    )
+    email_smtp_username = os.environ.get("XBRAIN_SMTP_USERNAME") or str(
+        email.get("smtp_username", "")
+    )
+    email_sender = (
+        os.environ.get("XBRAIN_EMAIL_FROM")
+        or str(email.get("sender", ""))
+        or email_smtp_username
+    )
+    email_smtp_host = os.environ.get("XBRAIN_SMTP_HOST") or str(email.get("smtp_host", ""))
+    email_smtp_port = int(os.environ.get("XBRAIN_SMTP_PORT") or email.get("smtp_port", 587))
+    if email_smtp_port < 1:
+        raise ValueError("config.toml: [email].smtp_port must be >= 1")
+    email_smtp_password = os.environ.get("XBRAIN_SMTP_PASSWORD") or str(
+        email.get("smtp_password", "")
+    )
+    email_smtp_starttls = _bool_setting(
+        os.environ.get("XBRAIN_SMTP_STARTTLS", email.get("smtp_starttls", True)),
+        setting="[email].smtp_starttls",
+    )
+    email_smtp_ssl = _bool_setting(
+        os.environ.get("XBRAIN_SMTP_SSL", email.get("smtp_ssl", False)),
+        setting="[email].smtp_ssl",
+    )
+    if email_enabled:
+        missing = [
+            name
+            for name, value in (
+                ("recipient", email_recipient),
+                ("sender", email_sender),
+                ("smtp_host", email_smtp_host),
+                ("smtp_username", email_smtp_username),
+                ("smtp_password", email_smtp_password),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"config.toml: [email] missing required settings: {missing}")
+    snapshots = settings.get("snapshots", {})
+    snapshot_auto_prune_keep_last = int(snapshots.get("auto_prune_keep_last", 25))
+    if snapshot_auto_prune_keep_last < 0:
+        raise ValueError("config.toml: [snapshots].auto_prune_keep_last must be >= 0")
     enrich = settings.get("enrich", {})
     vocab = settings.get("vocab", {})
     executor = enrich.get("executor", "claude-code")
@@ -275,7 +408,23 @@ def load_config(repo_root: Path) -> Config:
         repo_root=repo_root,
         vault=vault,
         output_dir=vault / paths["output_subdir"],
-        data_dir=repo_root / paths["data_dir"],
+        data_dir=data_dir,
+        drive_enabled=drive_enabled,
+        drive_root_folder_id=drive_root_folder_id,
+        drive_cache_dir=drive_cache_dir,
+        drive_credentials_path=drive_credentials_path,
+        drive_token_path=drive_token_path,
+        drive_scopes=tuple(drive_scopes_raw),
+        email_enabled=email_enabled,
+        email_recipient=email_recipient,
+        email_sender=email_sender,
+        email_smtp_host=email_smtp_host,
+        email_smtp_port=email_smtp_port,
+        email_smtp_username=email_smtp_username,
+        email_smtp_password=email_smtp_password,
+        email_smtp_starttls=email_smtp_starttls,
+        email_smtp_ssl=email_smtp_ssl,
+        snapshot_auto_prune_keep_last=snapshot_auto_prune_keep_last,
         x_handle=x_settings["handle"],
         llm_provider=llm_provider,
         llm_model=llm_model,
