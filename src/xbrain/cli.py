@@ -234,8 +234,7 @@ def _updated_item_ids(before: dict[str, Item], after: dict[str, Item]) -> list[s
         {
             item_id
             for item_id, item in after.items()
-            if item_id not in before
-            or item.model_dump_json() != before[item_id].model_dump_json()
+            if item_id not in before or item.model_dump_json() != before[item_id].model_dump_json()
         }
     )
 
@@ -732,7 +731,9 @@ def _delete_item_notes(output_dir: Path, item: Item) -> int:
     if not items_dir.exists():
         return 0
     candidates = {items_dir / note_filename(item)}
-    candidates.update(path for path in items_dir.glob("*.md") if _note_file_belongs_to_item(path, item.id))
+    candidates.update(
+        path for path in items_dir.glob("*.md") if _note_file_belongs_to_item(path, item.id)
+    )
     removed = 0
     for path in sorted(candidates):
         if path.exists():
@@ -854,10 +855,72 @@ def _promote_topic_suggestions(vocab_topics: list[Topic], selected: list[str]) -
     for slug in selected:
         if slug in known:
             continue
-        vocab_topics.append(Topic(slug=slug, description=_topic_description_for_promoted_slug(slug)))
+        vocab_topics.append(
+            Topic(slug=slug, description=_topic_description_for_promoted_slug(slug))
+        )
         known.add(slug)
         promoted.append(slug)
     return promoted
+
+
+def _run_topic_regenerate(
+    cfg: Config,
+    store: dict[str, Item],
+    item: Item,
+    *,
+    prioritize_suggestions: bool,
+    suggested_topics: list[str] | None,
+    promote_suggestions: bool,
+) -> list[str]:
+    vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
+    if not vocab_topics:
+        raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
+    selected = _selected_topic_suggestions(item, suggested_topics)
+    if promote_suggestions and not selected:
+        raise ValueError("select at least one suggested topic to promote")
+    promoted_topics = (
+        _promote_topic_suggestions(vocab_topics, selected) if promote_suggestions else []
+    )
+    hints = _topic_suggestion_hints(
+        item,
+        selected,
+        prioritize_suggestions=prioritize_suggestions or promote_suggestions,
+    )
+    executor = ApiExecutor(
+        model=cfg.llm_model,
+        output_language=cfg.output_language,
+        provider=cfg.llm_provider,
+        base_url=cfg.llm_base_url,
+        topic_hints={item.id: hints} if hints else None,
+    )
+    enriched, invalid = enrich_selected_with_executor(store, executor, vocab_topics, [item])
+    save_store(store, cfg.items_path)
+    _report_invalid(invalid)
+    if invalid or enriched != 1:
+        raise RuntimeError(f"topic regenerate no pudo re-enriquecer {item.id}")
+    if promoted_topics:
+        save_vocab(vocab_topics, cfg.data_dir / "vocab.yaml")
+    _run_topics_executor(cfg, "api", resynth=False)
+    _run_generate(cfg, None, None)
+    return promoted_topics
+
+
+def _run_topic_accept_or_reject(
+    cfg: Config, store: dict[str, Item], item: Item, action: str
+) -> None:
+    if item.enriched is None:
+        raise RuntimeError(f"item has no topic assignment: {item.id}")
+    if action == "accept":
+        item.enriched.topic_confidence = "high"
+        item.enriched.suggested_new_topics = []
+    else:
+        item.enriched.primary_topic = "misc"
+        item.enriched.topics = ["misc"]
+        item.enriched.topic_confidence = "high"
+        item.enriched.suggested_new_topics = []
+    save_store(store, cfg.items_path)
+    _refresh_topic_pages_after_delete(cfg, store, item.id)
+    _run_generate(cfg, None, None)
 
 
 def _run_topic_action(
@@ -872,7 +935,9 @@ def _run_topic_action(
     """Apply a per-note taxonomy decision and refresh generated outputs."""
     if action not in {"accept", "reject", "regenerate"}:
         raise ValueError(f"unknown topic action: {action}")
-    if action != "regenerate" and (prioritize_suggestions or promote_suggestions or suggested_topics):
+    if action != "regenerate" and (
+        prioritize_suggestions or promote_suggestions or suggested_topics
+    ):
         raise ValueError("topic suggestions can only be used with regenerate")
     store = load_store(cfg.items_path)
     item = store.get(item_id)
@@ -882,49 +947,16 @@ def _run_topic_action(
     promoted_topics: list[str] = []
 
     if action == "regenerate":
-        vocab_topics = load_vocab(cfg.data_dir / "vocab.yaml")
-        if not vocab_topics:
-            raise RuntimeError("No hay vocabulario — ejecuta `xbrain vocab` antes.")
-        selected = _selected_topic_suggestions(item, suggested_topics)
-        if promote_suggestions and not selected:
-            raise ValueError("select at least one suggested topic to promote")
-        if promote_suggestions:
-            promoted_topics = _promote_topic_suggestions(vocab_topics, selected)
-        hints = _topic_suggestion_hints(
+        promoted_topics = _run_topic_regenerate(
+            cfg,
+            store,
             item,
-            selected,
             prioritize_suggestions=prioritize_suggestions or promote_suggestions,
+            suggested_topics=suggested_topics,
+            promote_suggestions=promote_suggestions,
         )
-        executor = ApiExecutor(
-            model=cfg.llm_model,
-            output_language=cfg.output_language,
-            provider=cfg.llm_provider,
-            base_url=cfg.llm_base_url,
-            topic_hints={item_id: hints} if hints else None,
-        )
-        enriched, invalid = enrich_selected_with_executor(store, executor, vocab_topics, [item])
-        save_store(store, cfg.items_path)
-        _report_invalid(invalid)
-        if invalid or enriched != 1:
-            raise RuntimeError(f"topic regenerate no pudo re-enriquecer {item_id}")
-        if promoted_topics:
-            save_vocab(vocab_topics, cfg.data_dir / "vocab.yaml")
-        _run_topics_executor(cfg, "api", resynth=False)
-        _run_generate(cfg, None, None)
     else:
-        if item.enriched is None:
-            raise RuntimeError(f"item has no topic assignment: {item_id}")
-        if action == "accept":
-            item.enriched.topic_confidence = "high"
-            item.enriched.suggested_new_topics = []
-        else:
-            item.enriched.primary_topic = "misc"
-            item.enriched.topics = ["misc"]
-            item.enriched.topic_confidence = "high"
-            item.enriched.suggested_new_topics = []
-        save_store(store, cfg.items_path)
-        _refresh_topic_pages_after_delete(cfg, store, item_id)
-        _run_generate(cfg, None, None)
+        _run_topic_accept_or_reject(cfg, store, item, action)
 
     store = load_store(cfg.items_path)
     item = store.get(item_id)
@@ -1223,7 +1255,9 @@ def _note_frontmatter_id(markdown: str) -> str | None:
     match = re.match(r"^---\s*\n(?P<body>.*?)\n---\s*\n?", text, flags=re.S)
     if match is None:
         return None
-    id_match = re.search(r"^id:\s*[\"']?(?P<id>[^\"'\n]+)[\"']?\s*$", match.group("body"), flags=re.M)
+    id_match = re.search(
+        r"^id:\s*[\"']?(?P<id>[^\"'\n]+)[\"']?\s*$", match.group("body"), flags=re.M
+    )
     if id_match is None:
         return None
     item_id = id_match.group("id").strip()
@@ -1895,7 +1929,9 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             *,
             include_body: bool = True,
         ) -> None:
-            self._send(status, json.dumps(payload).encode(), "application/json", include_body=include_body)
+            self._send(
+                status, json.dumps(payload).encode(), "application/json", include_body=include_body
+            )
 
         def _read_json(self, *, max_bytes: int = 4096) -> dict[str, object]:
             raw_length = self.headers.get("content-length", "0")
@@ -3057,7 +3093,9 @@ def refresh_all(
     since: str = typer.Option(None, help="ISO date, e.g. 2025-01-01"),
     until: str = typer.Option(None, help="ISO date; whole day inclusive, e.g. 2025-12-31"),
     headless: bool = typer.Option(True, "--headless/--no-headless", help=_HEADLESS_HELP),
-    executor: str = typer.Option("api", help="Actualmente solo api; usa la sección llm para NanoGPT."),
+    executor: str = typer.Option(
+        "api", help="Actualmente solo api; usa la sección llm para NanoGPT."
+    ),
     media_limit: int | None = typer.Option(None, "--media-limit"),
     describe_limit: int | None = typer.Option(None, "--describe-limit"),
     describe_batch_size: int = typer.Option(5, "--describe-batch-size", min=1),
@@ -3125,73 +3163,49 @@ def _pct(part: int, total: int) -> str:
     return f"{part / total * 100:.1f}%"
 
 
-def _taxonomy_health_lines(
-    store: dict[str, Item], vocab: list[Topic], *, top: int = 10
-) -> list[str]:
-    """Read-only diagnostics for taxonomy drift and weak assignments."""
-    vocab_slugs = {topic.slug for topic in vocab}
-    enriched_items = [item for item in store.values() if item.enriched is not None]
-    enriched_total = len(enriched_items)
-    topic_counts: Counter[str] = Counter()
-    primary_counts: Counter[str] = Counter()
-    confidence_counts: Counter[str] = Counter()
-    suggested_counts: Counter[str] = Counter()
-    unknown_topics: Counter[str] = Counter()
-    misc_count = 0
-    single_topic_count = 0
+@dataclass
+class _TaxonomyHealth:
+    enriched_total: int
+    topic_counts: Counter[str] = field(default_factory=Counter)
+    confidence_counts: Counter[str] = field(default_factory=Counter)
+    suggested_counts: Counter[str] = field(default_factory=Counter)
+    unknown_topics: Counter[str] = field(default_factory=Counter)
+    misc_count: int = 0
+    single_topic_count: int = 0
 
+
+def _taxonomy_health_summary(store: dict[str, Item], vocab_slugs: set[str]) -> _TaxonomyHealth:
+    enriched_items = [item for item in store.values() if item.enriched is not None]
+    summary = _TaxonomyHealth(enriched_total=len(enriched_items))
     for item in enriched_items:
         assert item.enriched is not None
         enrichment = item.enriched
         topics = [topic for topic in enrichment.topics if topic]
-        topic_counts.update(topics)
-        if enrichment.primary_topic:
-            primary_counts.update([enrichment.primary_topic])
-        confidence_counts.update([enrichment.topic_confidence or "unknown"])
-        suggested_counts.update(enrichment.suggested_new_topics)
-        if enrichment.primary_topic == "misc" or "misc" in topics:
-            misc_count += 1
-        if len(topics) <= 1:
-            single_topic_count += 1
-        for topic in topics:
-            if topic not in vocab_slugs:
-                unknown_topics.update([topic])
+        summary.topic_counts.update(topics)
+        summary.confidence_counts.update([enrichment.topic_confidence or "unknown"])
+        summary.suggested_counts.update(enrichment.suggested_new_topics)
+        summary.misc_count += int(enrichment.primary_topic == "misc" or "misc" in topics)
+        summary.single_topic_count += int(len(topics) <= 1)
+        unknown = [topic for topic in topics if topic not in vocab_slugs]
         if enrichment.primary_topic and enrichment.primary_topic not in vocab_slugs:
-            unknown_topics.update([enrichment.primary_topic])
+            unknown.append(enrichment.primary_topic)
+        summary.unknown_topics.update(unknown)
+    return summary
 
-    unused_topics = sorted(slug for slug in vocab_slugs if topic_counts[slug] == 0)
-    lines = [
-        "Taxonomy health",
-        f"Items: {len(store)} total · {enriched_total} enriched · {len(store) - enriched_total} pending",
-        f"Vocabulary: {len(vocab)} topics",
-        "",
-        "Assignment signals",
-        f"- misc: {misc_count} ({_pct(misc_count, enriched_total)})",
-        f"- single-topic items: {single_topic_count} ({_pct(single_topic_count, enriched_total)})",
-        f"- confidence high/medium/low/unknown: "
-        f"{confidence_counts['high']}/{confidence_counts['medium']}/"
-        f"{confidence_counts['low']}/{confidence_counts['unknown']}",
-        f"- unused topics: {len(unused_topics)}",
-    ]
 
-    if unknown_topics:
-        lines += ["", "Unknown assigned topics"]
-        lines += [f"- {slug}: {count}" for slug, count in unknown_topics.most_common(top)]
+def _rank_section(title: str, counts: Counter[str], top: int) -> list[str]:
+    lines = ["", title]
+    lines += [f"- {slug}: {count}" for slug, count in counts.most_common(top)] or ["- none"]
+    return lines
 
-    lines += ["", "Top assigned topics"]
-    if topic_counts:
-        lines += [f"- {slug}: {count}" for slug, count in topic_counts.most_common(top)]
-    else:
-        lines.append("- none")
 
-    lines += ["", "Suggested new topics"]
-    if suggested_counts:
-        lines += [f"- {slug}: {count}" for slug, count in suggested_counts.most_common(top)]
-    else:
-        lines.append("- none")
-
-    lines += ["", "Recommendation"]
-    if suggested_counts or confidence_counts["low"] or misc_count > max(3, enriched_total // 10):
+def _taxonomy_recommendations(summary: _TaxonomyHealth, unused_topics: list[str]) -> list[str]:
+    lines = ["", "Recommendation"]
+    if (
+        summary.suggested_counts
+        or summary.confidence_counts["low"]
+        or summary.misc_count > max(3, summary.enriched_total // 10)
+    ):
         lines.append(
             "- Review high `misc`, low confidence and repeated `suggested_new_topics`. "
             "First run `xbrain enrich --taxonomy-risk`, then `xbrain topics --resynth` "
@@ -3204,6 +3218,36 @@ def _taxonomy_health_lines(
         sample = ", ".join(unused_topics[: min(5, len(unused_topics))])
         lines.append(f"- Consider merging/removing unused topics: {sample}")
     return lines
+
+
+def _taxonomy_health_lines(
+    store: dict[str, Item], vocab: list[Topic], *, top: int = 10
+) -> list[str]:
+    """Read-only diagnostics for taxonomy drift and weak assignments."""
+    vocab_slugs = {topic.slug for topic in vocab}
+    summary = _taxonomy_health_summary(store, vocab_slugs)
+    unused_topics = sorted(slug for slug in vocab_slugs if summary.topic_counts[slug] == 0)
+    lines = [
+        "Taxonomy health",
+        f"Items: {len(store)} total · {summary.enriched_total} enriched · "
+        f"{len(store) - summary.enriched_total} pending",
+        f"Vocabulary: {len(vocab)} topics",
+        "",
+        "Assignment signals",
+        f"- misc: {summary.misc_count} ({_pct(summary.misc_count, summary.enriched_total)})",
+        f"- single-topic items: {summary.single_topic_count} "
+        f"({_pct(summary.single_topic_count, summary.enriched_total)})",
+        f"- confidence high/medium/low/unknown: "
+        f"{summary.confidence_counts['high']}/{summary.confidence_counts['medium']}/"
+        f"{summary.confidence_counts['low']}/{summary.confidence_counts['unknown']}",
+        f"- unused topics: {len(unused_topics)}",
+    ]
+    if summary.unknown_topics:
+        lines += ["", "Unknown assigned topics"]
+        lines += [f"- {slug}: {count}" for slug, count in summary.unknown_topics.most_common(top)]
+    lines += _rank_section("Top assigned topics", summary.topic_counts, top)
+    lines += _rank_section("Suggested new topics", summary.suggested_counts, top)
+    return lines + _taxonomy_recommendations(summary, unused_topics)
 
 
 @app.command(name="taxonomy-health")
@@ -3319,7 +3363,9 @@ def drive_roots(
 
 @drive_app.command("select-root")
 @_handle_cli_errors
-def drive_select_root(folder_id: str = typer.Argument(..., help="ID de carpeta de Google Drive")) -> None:
+def drive_select_root(
+    folder_id: str = typer.Argument(..., help="ID de carpeta de Google Drive"),
+) -> None:
     """Select the Drive folder XBrain will use as its remote library root."""
     cfg = _config()
     _write_drive_selection(cfg, folder_id)

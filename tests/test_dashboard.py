@@ -27,6 +27,7 @@ from xbrain.models import (
     MediaPhotoPending,
     MediaVideoDownloaded,
     MediaVideoPending,
+    TopicPage,
 )
 
 DT = datetime(2026, 6, 1, tzinfo=timezone.utc)
@@ -64,7 +65,9 @@ def _item(
     summary="resumen",
     confidence=None,
     suggested_topics=None,
+    topics=None,
 ):
+    assigned_topics = topics if topics is not None else [topic]
     return Item(
         id=item_id,
         source=source,
@@ -81,7 +84,7 @@ def _item(
             executor="claude-code",
             summary=summary,
             primary_topic=topic,
-            topics=[topic],
+            topics=assigned_topics,
             topic_confidence=confidence,
             suggested_new_topics=suggested_topics or [],
         ),
@@ -135,6 +138,97 @@ def test_compute_counts_topics_authors_and_deep_links():
     assert row["url"].startswith("https://x.com/")
     assert row["note"].endswith(".md")
     assert row["confidence"] in {"high", "low"}
+
+
+def test_graph_builds_topic_item_nodes_and_edges():
+    items = [
+        _item(
+            "100",
+            topic="ai-coding",
+            confidence="high",
+            topics=["ai-coding", "ai-agents"],
+            summary="A" * 240,
+            links=[Link(url="https://example.com/a", domain="example.com")],
+            content=Content(
+                fetched_at=DT,
+                sources=[
+                    ContentSourceSuccess(
+                        kind="external_article",
+                        url="https://example.com/a",
+                        text="body",
+                        title="A long-form title",
+                    )
+                ],
+            ),
+        ),
+        _item(
+            "101",
+            topic="ai-agents",
+            confidence="medium",
+            topics=["ai-agents", "productivity"],
+            content=Content(
+                fetched_at=DT,
+                sources=[ContentSourceSuccess(kind="x_video", url="https://x.com/v", text="v")],
+            ),
+        ),
+        _item("102", topic="ai-coding", confidence="low", suggested_topics=["agent-memory"]),
+    ]
+    topic_pages = {
+        "ai-coding": TopicPage(
+            slug="ai-coding",
+            overview="Coding overview",
+            synthesized_at=DT,
+            post_count_at_synth=2,
+        )
+    }
+
+    data = compute_dashboard_data(items, topic_pages, {"100": "/v/items/100.md"}, [], "x")
+    graph = data["graph"]
+
+    assert graph["version"]
+    assert {node["slug"] for node in graph["topics"]} == {
+        "ai-agents",
+        "ai-coding",
+        "productivity",
+    }
+    coding = next(node for node in graph["topics"] if node["slug"] == "ai-coding")
+    assert coding["count"] == 2
+    assert coding["confidence"]["high"] == 1
+    assert coding["confidence"]["low"] == 1
+    assert coding["overview"] == "Coding overview"
+    assert coding["note"] == "topics/ai-coding.md"
+    assert {(edge["source"], edge["target"], edge["weight"]) for edge in graph["topic_edges"]} >= {
+        ("topic:ai-agents", "topic:ai-coding", 1),
+        ("topic:ai-agents", "topic:productivity", 1),
+    }
+    assert {
+        (edge["source"], edge["target"], edge["kind"]) for edge in graph["membership_edges"]
+    } >= {
+        ("topic:ai-coding", "item:100", "primary"),
+        ("topic:ai-agents", "item:100", "secondary"),
+    }
+    item = next(node for node in graph["items"] if node["item_id"] == "100")
+    assert item["label"] == "A long-form title"
+    assert len(item["summary"]) <= 180
+    assert item["domain"] == "example.com"
+    assert item["note"] == "/v/items/100.md"
+    assert item["suggested_topics"] == []
+    assert graph["emerging_topics"][0]["slug"] == "agent-memory"
+    assert graph["facets"]["content_types"]["article"] == 1
+    assert graph["facets"]["content_types"]["video"] == 1
+    assert graph["insights"]["most_connected"]["slug"] == "ai-agents"
+
+
+def test_graph_omits_unenriched_items_and_version_is_deterministic():
+    enriched = _item("100", topic="ai-coding", confidence="high")
+    unenriched = _item("101", topic="misc")
+    unenriched.enriched = None
+
+    first = compute_dashboard_data([enriched, unenriched], {}, {}, [], "x")["graph"]
+    second = compute_dashboard_data([enriched, unenriched], {}, {}, [], "x")["graph"]
+
+    assert [node["item_id"] for node in first["items"]] == ["100"]
+    assert first["version"] == second["version"]
 
 
 def test_taxonomy_triage_omits_manually_accepted_misc():
@@ -339,7 +433,8 @@ def test_render_dashboard_includes_ops_controls():
     assert 'id="ops-retry-failed"' in html
     assert "/api/refresh-all" in html
     assert "/api/retry-failed" in html
-    assert "/api/reprocess-note" not in html
+    assert "/api/reprocess-note" in html
+    assert "/api/topic-action" in html
     assert "data-reprocess" not in html
     assert "Daily refresh" in html
 
@@ -388,12 +483,49 @@ def test_render_dashboard_declares_workspace_navigation_sections():
     assert "viewFromHash" in html
     assert "ask:'chat'" in html
     assert "signal-card" in html
-    assert "style=\"height:" not in html
-    assert "style=\"width:" not in html
-    assert "style=\"color:" not in html
+    assert 'style="height:' not in html
+    assert 'style="width:' not in html
+    assert 'style="color:' not in html
     close_index = html.rfind("</html>")
     assert close_index != -1
     assert not html[close_index + len("</html>") :].strip()
+
+
+def test_render_dashboard_includes_atlas_knowledge_graph_controls():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert "Atlas Knowledge Graph" in html
+    assert 'id="atlas-tabs"' in html
+    assert 'data-atlas-mode="map"' in html
+    assert 'data-atlas-mode="timeline"' in html
+    assert 'data-atlas-mode="list"' in html
+    assert 'id="graph-search"' in html
+    assert 'id="graph-date"' in html
+    assert 'id="graph-date-from"' in html
+    assert 'id="graph-date-to"' in html
+    assert 'id="graph-content"' in html
+    assert 'id="graph-confidence"' in html
+    assert 'id="graph-docs"' in html
+    assert 'id="graph-emerging"' in html
+    assert 'id="graph-hop-1"' in html
+    assert 'id="graph-hop-2"' in html
+    assert 'id="graph-clear-focus"' in html
+    assert 'id="graph-reset"' in html
+    assert 'id="c-graph"' in html
+    assert 'id="c-graph-timeline"' in html
+    assert 'id="graph-list"' in html
+    assert "xbrain.graph.layout.v1" in html
+    assert "hiddenTopics" in html
+    assert "focusSlug" in html
+    assert "datePreset" in html
+    assert "graphApplySearchFocus" in html
+    assert "graphRoam" in html
+    assert "toggleGraphPin" in html
+    assert "data-graph-hide" in html
+    assert "data-graph-promote" in html
+    assert "promote_suggestions" in html
+    assert "All time" in html
+    assert "90 days" in html
+    assert "Topic editing requires the served dashboard." in html
 
 
 def test_render_dashboard_includes_forest_theme_controls_and_tokens():
@@ -422,8 +554,14 @@ def test_dashboard_kpi_and_ops_layout_is_compact():
     assert ".kpi{padding:13px 16px 12px" in html
     assert "min-height:92px" in html
     assert ".kpi .num{font-family:var(--display);font-weight:600;font-size:34px" in html
-    assert ".signal-rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}" in html
-    assert ".signal-card{border:1px solid var(--hairline);border-radius:var(--radius-4);background:var(--color-panel-soft);color:inherit;padding:9px 11px" in html
+    assert (
+        ".signal-rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}"
+        in html
+    )
+    assert (
+        ".signal-card{border:1px solid var(--hairline);border-radius:var(--radius-4);background:var(--color-panel-soft);color:inherit;padding:9px 11px"
+        in html
+    )
     assert ".signal-card .value{font-family:var(--display);font-size:24px" in html
     assert ".ops{margin-top:12px;display:grid" in html
     assert ".ops-list{display:flex;flex-direction:column;gap:6px;max-height:238px" in html
@@ -458,7 +596,7 @@ def test_render_dashboard_uses_accessible_controls_for_theme_topics_and_drawer()
     assert "prefers-reduced-motion" in html
     assert "REDUCED_MOTION" in html
     assert "SCROLL_OPTS" in html
-    assert 'All 45' not in html
+    assert "All 45" not in html
 
 
 def test_render_dashboard_uses_web_note_links_with_obsidian_fallback():
@@ -560,6 +698,7 @@ def test_empty_store_does_not_crash():
     data = compute_dashboard_data([], {}, {}, [], "x")
     assert data["meta"]["total"] == 0
     assert data["topics_sorted"] == [] and data["authors"] == [] and data["months"] == []
+    assert data["graph"]["topics"] == [] and data["graph"]["items"] == []
     assert data["meta"]["longform"]["saved_pct"] == 0.0  # ZeroDivisionError guard
     render_dashboard_html(data)  # must not raise
 
@@ -714,17 +853,15 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         page.goto(dashboard.resolve().as_uri() + "#ask", wait_until="networkidle")
         assert page.locator("#chat-view").evaluate("el => el.classList.contains('on')")
         assert not page.locator("#dashboard-view").evaluate("el => el.classList.contains('on')")
-        assert (
-            page.locator("#dashboard-view").evaluate("el => el.getClientRects().length")
-            == 0
-        )
+        assert page.locator("#dashboard-view").evaluate("el => el.getClientRects().length") == 0
         assert page.locator("[aria-current='page']").evaluate("el => el.id") == "nav-chat"
         assert page.locator("#drawer").evaluate("el => el.inert === true")
 
         page.click("#nav-dashboard")
-        assert page.locator(".chart-actions").first.evaluate(
-            "el => getComputedStyle(el).display"
-        ) == "flex"
+        assert (
+            page.locator(".chart-actions").first.evaluate("el => getComputedStyle(el).display")
+            == "flex"
+        )
         page.click("[data-action='latest-month']")
         page.wait_for_timeout(120)
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "false"

@@ -541,7 +541,9 @@ def _evidence_from_response(data: dict[str, Any], sources: list[ChatSource]) -> 
         if not isinstance(note, str) or not note.strip():
             continue
         seen.add(source_id)
-        evidence.append(EvidenceNote(source_id=source_id, note=note.strip()[:EVIDENCE_NOTE_CHAR_LIMIT]))
+        evidence.append(
+            EvidenceNote(source_id=source_id, note=note.strip()[:EVIDENCE_NOTE_CHAR_LIMIT])
+        )
     return evidence
 
 
@@ -672,9 +674,7 @@ def answer_question(
             evidence = synthesized[:max_sources]
             source_by_id = {source.id: source for source in candidates}
             final_sources = [
-                source_by_id[note.source_id]
-                for note in evidence
-                if note.source_id in source_by_id
+                source_by_id[note.source_id] for note in evidence if note.source_id in source_by_id
             ]
             synthesis_used = bool(final_sources)
         if not final_sources:

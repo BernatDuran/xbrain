@@ -65,7 +65,9 @@ def test_faster_whisper_segments_are_written_as_xbrain_json(monkeypatch, tmp_pat
     fake_module = types.SimpleNamespace(WhisperModel=_Model)
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
 
-    rc = xtfw.main(["--model", "small", "--output-format", "json", "--output-dir", str(out), str(media)])
+    rc = xtfw.main(
+        ["--model", "small", "--output-format", "json", "--output-dir", str(out), str(media)]
+    )
 
     assert rc == 0
     payload = _json_payload(out)
@@ -130,7 +132,9 @@ def test_audio_input_extracts_mono_wav_with_ffmpeg(monkeypatch, tmp_path):
     out = tmp_path / "out"
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(xtfw.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(
+        xtfw.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+    )
 
     def _run(cmd, **_kwargs):
         calls.append(cmd)
@@ -152,7 +156,9 @@ def test_audio_input_can_delete_ephemeral_source_after_extract(monkeypatch, tmp_
     media = _media(tmp_path)
     out = tmp_path / "out"
     monkeypatch.setenv("XBRAIN_WHISPER_DELETE_SOURCE_AFTER_AUDIO", "1")
-    monkeypatch.setattr(xtfw.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(
+        xtfw.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+    )
 
     def _run(cmd, **_kwargs):
         Path(cmd[-1]).write_bytes(b"RIFF" + (b"\0" * 100))

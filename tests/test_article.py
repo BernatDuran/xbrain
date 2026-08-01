@@ -258,7 +258,12 @@ def test_code_block_runs_unwrap_existing_markdown_fence():
                 "entityRanges": [],
             },
             {"key": "c2", "text": "", "type": "code-block", "entityRanges": []},
-            {"key": "c3", "text": "Current task: [User’s request]", "type": "code-block", "entityRanges": []},
+            {
+                "key": "c3",
+                "text": "Current task: [User’s request]",
+                "type": "code-block",
+                "entityRanges": [],
+            },
             {"key": "c4", "text": "```", "type": "code-block", "entityRanges": []},
         ],
         "entityMap": {},

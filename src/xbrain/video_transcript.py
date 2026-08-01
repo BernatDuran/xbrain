@@ -245,9 +245,7 @@ def _fetched_path(report: FetchReport, item_id: str) -> Path:
         raise VideoTranscriptFetchFailed("temporary video fetch produced no result")
     if result.outcome == "skipped":
         reason = result.reason or "skipped"
-        raise VideoTranscriptFetchSkipped(
-            reason, f"temporary video fetch skipped ({reason})"
-        )
+        raise VideoTranscriptFetchSkipped(reason, f"temporary video fetch skipped ({reason})")
     if result.outcome == "failed":
         detail = result.error or result.reason or "unknown error"
         raise VideoTranscriptFetchFailed(f"temporary video fetch failed: {detail}")
@@ -307,12 +305,12 @@ def transcribe_video_temporarily(
         media_path = _fetched_path(report, item.id)
         try:
             transcript = transcribe_fn(
-            media_path,
-            command=transcribe_command,
-            model=transcribe_model,
-            language=language,
-            timeout_seconds=transcribe_timeout_seconds,
-        )
+                media_path,
+                command=transcribe_command,
+                model=transcribe_model,
+                language=language,
+                timeout_seconds=transcribe_timeout_seconds,
+            )
         except TranscribeError as exc:
             raise VideoTranscriptFetchFailed(f"temporary transcription failed: {exc}") from exc
         return _transcript_from_asr(item, transcript, language=language)

@@ -124,9 +124,7 @@ class DriveClient:
             child_relative_path = (*relative_path, item["name"])
             if item["mimeType"] == _FOLDER_MIME:
                 target.mkdir(parents=True, exist_ok=True)
-                child = self._download_folder(
-                    item["id"], target, relative_path=child_relative_path
-                )
+                child = self._download_folder(item["id"], target, relative_path=child_relative_path)
                 report = _merge_reports(report, child)
                 continue
             if target.exists() and item.get("md5Checksum") == _md5(target):
@@ -337,7 +335,7 @@ def _ignored_remote_path(relative_path: tuple[str, ...]) -> bool:
 
 
 def _md5(path: Path) -> str:
-    digest = hashlib.md5()  # noqa: S324 - file identity checksum, not security
+    digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)

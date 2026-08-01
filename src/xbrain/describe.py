@@ -479,7 +479,9 @@ def _validate_judgment_entry(entry: object, *, batch_size: int) -> dict:
         raise ValueError(f"vision response `description` must be str, got {entry['description']!r}")
     extracted_text = entry.get("extracted_text")
     if extracted_text is not None and not isinstance(extracted_text, str):
-        raise ValueError(f"vision response `extracted_text` must be str or null, got {extracted_text!r}")
+        raise ValueError(
+            f"vision response `extracted_text` must be str or null, got {extracted_text!r}"
+        )
     extracted_language = entry.get("extracted_text_language")
     if extracted_language is not None and not isinstance(extracted_language, str):
         raise ValueError(
@@ -545,9 +547,7 @@ def _apply_judgment(
     description = "" if is_decorative else str(judgment["description"])
     extracted_text = None if is_decorative else judgment.get("extracted_text")
     extracted_text_language = None if is_decorative else judgment.get("extracted_text_language")
-    extracted_text_confidence = (
-        None if is_decorative else judgment.get("extracted_text_confidence")
-    )
+    extracted_text_confidence = None if is_decorative else judgment.get("extracted_text_confidence")
     return MediaPhotoDescribed(
         url=candidate.entry.url,
         local_path=candidate.entry.local_path,
@@ -1036,10 +1036,7 @@ def _validate_worksheet_judgment(raw: object) -> tuple[str, str, int, dict] | st
         return f"judgment `extracted_text` must be str or null, got {extracted_text!r}"
     extracted_language = raw.get("extracted_text_language")
     if extracted_language is not None and not isinstance(extracted_language, str):
-        return (
-            "judgment `extracted_text_language` must be str or null, "
-            f"got {extracted_language!r}"
-        )
+        return f"judgment `extracted_text_language` must be str or null, got {extracted_language!r}"
     extracted_confidence = raw.get("extracted_text_confidence")
     if extracted_confidence is not None and extracted_confidence not in {"high", "medium", "low"}:
         return (

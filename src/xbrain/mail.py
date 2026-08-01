@@ -82,11 +82,7 @@ def build_bookmark_update_email(
     store: dict[str, Item],
     updated_item_ids: list[str],
 ) -> BookmarkUpdateEmail:
-    rows = [
-        _row_for_item(cfg, store[item_id])
-        for item_id in updated_item_ids
-        if item_id in store
-    ]
+    rows = [_row_for_item(cfg, store[item_id]) for item_id in updated_item_ids if item_id in store]
     return BookmarkUpdateEmail(
         command=command,
         item_count=len(store),

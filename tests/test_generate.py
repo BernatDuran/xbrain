@@ -1,4 +1,5 @@
 # tests/test_generate.py
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,38 @@ def test_generate_dashboard_updated_stamp_includes_hour_and_minute(tmp_path: Pat
 
     html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
     assert re.search(r'"updated": "[A-Z]{3} \d{1,2}, \d{4} \d{2}:\d{2} UTC"', html)
+
+
+def test_generate_writes_derived_obsidian_canvas_without_overwriting_editable_copy(
+    tmp_path: Path,
+):
+    item = _item("1", with_link=True)
+    item.enriched = Enrichment(
+        enriched_at=datetime(2026, 5, 16, tzinfo=timezone.utc),
+        executor="manual",
+        summary="Agent coding note",
+        primary_topic="ai-coding",
+        topics=["ai-coding", "ai-agents"],
+        topic_confidence="high",
+    )
+    topics_dir = tmp_path / "topics"
+    topics_dir.mkdir()
+    (topics_dir / "ai-coding.md").write_text("# AI Coding", encoding="utf-8")
+    maps_dir = tmp_path / "maps"
+    maps_dir.mkdir()
+    editable = maps_dir / "xbrain-map.canvas"
+    editable.write_text("manual canvas", encoding="utf-8")
+
+    generate({"1": item}, tmp_path)
+
+    canvas_path = maps_dir / "xbrain-map.generated.canvas"
+    assert canvas_path.exists()
+    assert editable.read_text(encoding="utf-8") == "manual canvas"
+    canvas = json.loads(canvas_path.read_text(encoding="utf-8"))
+    files = {node["file"] for node in canvas["nodes"] if node["type"] == "file"}
+    assert "topics/ai-coding.md" in files
+    assert any(path.startswith("items/") and path.endswith("-1.md") for path in files)
+    assert canvas["edges"]
 
 
 def test_generate_removes_stale_item_notes(tmp_path: Path):

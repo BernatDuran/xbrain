@@ -51,7 +51,8 @@ reverse proxy access.
 
    - `/#overview`: workspace navigation, KPI strip, signal rail, and chart
      drill-down buttons.
-   - `/#atlas`: storage overview, topic explorer, source/topic charts.
+   - `/#atlas`: Atlas Knowledge Graph Map/Timeline/List, topic explorer,
+     source/topic charts, and storage overview.
    - `/#ops`: refresh, retry, and command surfaces.
    - `/#ask`: library chat surface.
 
@@ -82,10 +83,13 @@ uv run pytest -q
 
 The dashboard test suite covers workspace routing, theme tokens, compact KPI and
 Ops layout, accessible drawer behavior, chart drill-down controls,
-reduced-motion behavior, and copy consistency. Use a browser or Playwright
-against the served dashboard for final visual checks at desktop and mobile
-widths. Include `/notes?path=...` in visual checks because the web note viewer is
-served by the same process.
+reduced-motion behavior, Atlas Knowledge Graph controls, and copy consistency.
+Use a browser or Playwright against the served dashboard for final visual checks
+at desktop and mobile widths. Include `/notes?path=...` in visual checks because
+the web note viewer is served by the same process.
+
+See `docs/atlas-knowledge-graph.md` for the graph data contract, controls,
+local layout persistence, and served topic-action behavior.
 
 ## Rollback
 

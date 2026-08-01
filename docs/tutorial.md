@@ -99,9 +99,10 @@ uv run xbrain generate
 
 `generate` also writes `dashboard.html` — a self-contained interactive dashboard
 with forest light/dark themes, compact KPIs, workspace navigation
-(`Overview`, `Atlas`, `Ops`, `Ask`), chart drill-downs, source evidence, photo
-thumbnails and deep links back to each post + note. Open it from the **📊
-Dashboard** link at the top of `_index.md`, or directly in your browser:
+(`Overview`, `Atlas`, `Ops`, `Ask`), the Atlas Knowledge Graph
+(`Map`, `Timeline`, `List`), chart drill-downs, source evidence, photo
+thumbnails and deep links back to each post + note. Open it from the
+**Dashboard** link at the top of `_index.md`, or directly in your browser:
 
 ```bash
 # <vault>/<output_subdir>/dashboard.html — from your config.toml [paths]:
@@ -112,9 +113,15 @@ When the dashboard is served with `xbrain serve-dashboard`, note links open a
 themed web note viewer (`/notes?path=...`) so they work from Safari/mobile and
 share the same light/dark preference as the dashboard. The served dashboard can
 also run the daily refresh, retry failed bookmarked article fetches from its
-compact Ops panel, and answer library questions from Ask.
+compact Ops panel, answer library questions from Ask, and run topic review
+actions from Atlas document drawers.
 When the HTML is opened as a local file, those same links fall back to Obsidian
 deep links.
+
+`generate` also emits `maps/xbrain-map.generated.canvas`, a derived Obsidian
+Canvas map of topics, topic relations and representative notes. Duplicate it as
+`maps/xbrain-map.canvas` before making manual Canvas edits; XBrain never
+overwrites that editable copy.
 
 ## Keeping it fresh
 

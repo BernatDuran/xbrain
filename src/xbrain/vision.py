@@ -185,7 +185,11 @@ def _cloud_system_prompt(language: str) -> str:
 
 
 def _response_text(response: object) -> str:
-    blocks = [block for block in getattr(response, "content", []) if getattr(block, "type", None) == "text"]
+    blocks = [
+        block
+        for block in getattr(response, "content", [])
+        if getattr(block, "type", None) == "text"
+    ]
     text = "".join(str(block.text) for block in blocks).strip()
     if not text:
         raise VisionFailed("cloud vision response produced no description")

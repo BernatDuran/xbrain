@@ -92,7 +92,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .viewnav button.on,.viewnav button[aria-current="page"]{background:var(--accent-soft);color:var(--accent)}
 .iconbtn{width:40px;height:40px;border:1px solid var(--hairline);border-radius:var(--radius-4);background:var(--color-panel-soft);color:var(--ink-muted);display:inline-grid;place-items:center;cursor:pointer;transition:background var(--duration-fast),color var(--duration-fast),border-color var(--duration-fast),transform var(--duration-fast)}
 .iconbtn:hover{color:var(--ink);border-color:var(--color-border-strong);transform:translateY(-1px)}
-.iconbtn:focus-visible,.viewnav button:focus-visible,.ops button:focus-visible,.chat button:focus-visible,.dwclose:focus-visible,.toggle:focus-visible,.topic-rank-row:focus-visible,.signal-card:focus-visible{outline:0;box-shadow:var(--shadow-focus)}
+.iconbtn:focus-visible,.viewnav button:focus-visible,.ops button:focus-visible,.chat button:focus-visible,.dwclose:focus-visible,.toggle:focus-visible,.topic-rank-row:focus-visible,.signal-card:focus-visible,.atlas-tabs button:focus-visible,.graph-field:focus-visible,.graph-select:focus-visible{outline:0;box-shadow:var(--shadow-focus)}
 .theme-glyph{width:17px;height:17px;border:1.7px solid currentColor;border-radius:50%;display:block;position:relative;overflow:hidden}
 .theme-glyph::after{content:"";position:absolute;inset:-1px 50% -1px -1px;background:currentColor}
 .stamp{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--ink-faint);text-transform:uppercase;
@@ -238,6 +238,35 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .topic-rank-row .meter{grid-column:1 / -1;height:7px;border-radius:8px;background:var(--color-panel-soft);overflow:hidden}
 .topic-rank-row .meter span{display:block;width:var(--meter-width,0%);height:100%;border-radius:8px;background:linear-gradient(90deg,var(--accent),var(--color-bark))}
 
+/* Atlas knowledge graph */
+.atlas-workbench{padding:0;overflow:hidden}
+.atlas-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:end;padding:20px 22px 14px;border-bottom:1px solid var(--hairline-2)}
+.atlas-top .phead{padding:0;margin:0;border:0}
+.atlas-tabs{display:inline-flex;border:1px solid var(--hairline);border-radius:var(--radius-4);overflow:hidden;background:var(--color-panel-soft)}
+.atlas-tabs button{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;background:transparent;color:var(--ink-muted);border:0;border-right:1px solid var(--hairline);padding:8px 12px;cursor:pointer}
+.atlas-tabs button:last-child{border-right:0}
+.atlas-tabs button.on{background:var(--accent-soft);color:var(--accent)}
+.graph-controls{display:grid;grid-template-columns:minmax(220px,1fr) repeat(2,minmax(128px,auto)) auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--hairline-2);align-items:center}
+.graph-field,.graph-select{height:34px;border:1px solid var(--hairline);border-radius:var(--radius-3);background:var(--color-input);color:var(--ink);font-family:var(--ui);font-size:12.5px;padding:0 10px;min-width:0}
+.graph-select{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase}
+.graph-range{display:none;grid-template-columns:1fr 1fr;gap:6px}
+.graph-range.on{display:grid}
+.graph-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.graph-stage{position:relative;background:var(--surface);background-image:linear-gradient(var(--hairline-2) 1px,transparent 1px),linear-gradient(90deg,var(--hairline-2) 1px,transparent 1px);background-size:36px 36px;min-height:560px}
+.graph-view{display:none}
+.graph-view.on{display:block}
+.graph-chart{height:560px;width:100%}
+.graph-meta{position:absolute;left:14px;bottom:12px;z-index:3;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);background:var(--surface-2);border:1px solid var(--hairline);border-radius:var(--radius-3);padding:6px 8px;pointer-events:none}
+.graph-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--ink-faint);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.12em;pointer-events:none}
+.graph-list{max-height:560px;overflow:auto;padding:4px 22px 18px;background:var(--surface)}
+.graph-topic-row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) repeat(4,auto);gap:9px;align-items:center;border:0;border-top:1px solid var(--hairline-2);background:transparent;color:inherit;text-align:left;padding:11px 0;cursor:pointer;font:inherit}
+.graph-topic-row:first-child{border-top:0}
+.graph-topic-row .name{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.graph-topic-row .metric{font-family:var(--mono);font-size:10px;color:var(--ink-faint);white-space:nowrap}
+.graph-topic-row .metric strong{color:var(--accent);font-weight:500}
+.graph-topic-row:hover .name{color:var(--accent)}
+.graph-disabled{opacity:.54;cursor:not-allowed}
+
 /* drill-down drawer */
 .scrim{position:fixed;inset:0;background:var(--color-overlay);backdrop-filter:blur(2px);z-index:40;opacity:0;visibility:hidden;transition:.28s}
 .scrim.open{opacity:1;visibility:visible}
@@ -293,7 +322,7 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
   font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--ink-faint);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 
 @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-	@media (max-width:900px){.masthead{align-items:flex-start;flex-direction:column}.headtools{justify-content:flex-start;align-items:flex-start}.workspace-intro{grid-template-columns:1fr;gap:8px;margin-top:24px}.workspace-intro .micro{text-align:left;white-space:normal}.signal-rail{grid-template-columns:1fr}.grid,.ops,.chat{grid-template-columns:1fr}.span2{grid-column:auto}.kpis{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px}.kpi{padding:10px 8px;min-height:84px}.kpi .lab{font-size:7.5px;letter-spacing:.06em;line-height:1.2;overflow-wrap:anywhere}.kpi .num{font-size:26px;margin-top:7px}.kpi .ctx{font-size:9.5px;line-height:1.24}.phead{display:block}.phead .sub{text-align:left;white-space:normal;margin-top:6px}.chart-actions{margin-top:8px}.ops{gap:8px}.ops-main,.ops-side{padding:10px}.ops-top{display:block;padding-bottom:7px;margin-bottom:7px}.ops-actions{justify-content:flex-start;margin-top:7px}.ops-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}.ops-metric{padding:5px 4px}.ops-metric .n{font-size:16px}.ops-metric .l{font-size:7px;letter-spacing:.01em;margin-top:3px}.ops-command{font-size:8px;padding:6px}.chat-form{grid-template-columns:1fr}.chat button{height:38px}.chat-model{text-align:left;max-width:100%}.topic-rank{display:block;margin-top:12px}.topic-chart{display:none}.brand h1{font-size:42px}.wrap{padding:38px 18px 52px}}
+	@media (max-width:900px){.masthead{align-items:flex-start;flex-direction:column}.headtools{justify-content:flex-start;align-items:flex-start}.workspace-intro{grid-template-columns:1fr;gap:8px;margin-top:24px}.workspace-intro .micro{text-align:left;white-space:normal}.signal-rail{grid-template-columns:1fr}.grid,.ops,.chat{grid-template-columns:1fr}.span2{grid-column:auto}.kpis{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px}.kpi{padding:10px 8px;min-height:84px}.kpi .lab{font-size:7.5px;letter-spacing:.06em;line-height:1.2;overflow-wrap:anywhere}.kpi .num{font-size:26px;margin-top:7px}.kpi .ctx{font-size:9.5px;line-height:1.24}.phead{display:block}.phead .sub{text-align:left;white-space:normal;margin-top:6px}.chart-actions{margin-top:8px}.atlas-top{grid-template-columns:1fr;padding:16px 14px 12px}.atlas-tabs{width:100%}.atlas-tabs button{flex:1;padding:8px 6px}.graph-controls{grid-template-columns:1fr;padding:10px 14px}.graph-range{grid-template-columns:1fr}.graph-actions{justify-content:flex-start}.graph-stage{min-height:430px}.graph-chart{height:430px}.graph-meta{position:static;margin:0;border-left:0;border-right:0;border-radius:0}.graph-list{max-height:430px;padding:4px 14px 14px}.graph-topic-row{grid-template-columns:minmax(0,1fr) auto}.graph-topic-row .metric:nth-child(n+4){display:none}.ops{gap:8px}.ops-main,.ops-side{padding:10px}.ops-top{display:block;padding-bottom:7px;margin-bottom:7px}.ops-actions{justify-content:flex-start;margin-top:7px}.ops-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}.ops-metric{padding:5px 4px}.ops-metric .n{font-size:16px}.ops-metric .l{font-size:7px;letter-spacing:.01em;margin-top:3px}.ops-command{font-size:8px;padding:6px}.chat-form{grid-template-columns:1fr}.chat button{height:38px}.chat-model{text-align:left;max-width:100%}.topic-rank{display:block;margin-top:12px}.topic-chart{display:none}.brand h1{font-size:42px}.wrap{padding:38px 18px 52px}}
 	@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}.panel,.masthead,.kpis{opacity:1!important;transform:none!important}}
 	</style>
 </head>
@@ -374,8 +403,66 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
       <div class="chart chart-md" id="c-sources"></div>
     </div>
 
+    <div class="panel span2 atlas-workbench" data-workspace-section="atlas">
+      <div class="atlas-top">
+        <div class="phead"><div><span class="kick">04 · Knowledge Map</span><h3>Atlas Knowledge Graph</h3></div><div class="sub">topics first · expand to notes</div></div>
+        <div class="atlas-tabs" id="atlas-tabs" aria-label="Atlas views">
+          <button type="button" class="on" data-atlas-mode="map">Map</button>
+          <button type="button" data-atlas-mode="timeline">Timeline</button>
+          <button type="button" data-atlas-mode="list">List</button>
+        </div>
+      </div>
+      <div class="graph-controls">
+        <input class="graph-field" id="graph-search" type="search" placeholder="Search topics, notes, authors, domains" aria-label="Search graph">
+        <select class="graph-select" id="graph-date" aria-label="Filter graph by date range">
+          <option value="all">All time</option>
+          <option value="12m">12 months</option>
+          <option value="6m">6 months</option>
+          <option value="90d">90 days</option>
+          <option value="30d">30 days</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="graph-range" id="graph-range">
+          <input class="graph-field" id="graph-date-from" type="date" aria-label="Graph start date">
+          <input class="graph-field" id="graph-date-to" type="date" aria-label="Graph end date">
+        </div>
+        <select class="graph-select" id="graph-content" aria-label="Filter graph by content type">
+          <option value="all">All content</option>
+          <option value="article">Articles</option>
+          <option value="video">Videos</option>
+          <option value="article_failed">Failed</option>
+          <option value="post_only">Posts</option>
+        </select>
+        <select class="graph-select" id="graph-confidence" aria-label="Filter graph by confidence">
+          <option value="all">All confidence</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+          <option value="unknown">Unknown</option>
+          <option value="review">Needs review</option>
+          <option value="misc">Misc</option>
+        </select>
+        <div class="graph-actions">
+          <button class="chart-action" id="graph-docs" type="button" aria-pressed="false">Documents</button>
+          <button class="chart-action" id="graph-emerging" type="button" aria-pressed="false">Emerging</button>
+          <button class="chart-action" id="graph-hop-1" type="button" aria-pressed="true">1 hop</button>
+          <button class="chart-action" id="graph-hop-2" type="button" aria-pressed="false">2 hops</button>
+          <button class="chart-action" id="graph-clear-focus" type="button">Clear focus</button>
+          <button class="chart-action" id="graph-pause" type="button" aria-pressed="false">Pause</button>
+          <button class="chart-action" id="graph-reset" type="button">Reset layout</button>
+        </div>
+      </div>
+      <div class="graph-stage">
+        <div class="graph-view on" id="graph-map-view"><div class="chart graph-chart" id="c-graph"></div></div>
+        <div class="graph-view" id="graph-timeline-view"><div class="chart graph-chart" id="c-graph-timeline"></div></div>
+        <div class="graph-view" id="graph-list-view"><div class="graph-list" id="graph-list"></div></div>
+        <div class="graph-meta" id="graph-meta">Topics 0 · Relations 0 · Documents 0</div>
+        <div class="graph-empty" id="graph-empty" hidden>No graph data</div>
+      </div>
+    </div>
+
     <div class="panel span2" data-workspace-section="atlas">
-      <div class="phead"><div><span class="kick">04 · Themes</span><h3>Topics by primary theme</h3></div><div class="sub">one library item counted once</div></div>
+      <div class="phead"><div><span class="kick">05 · Themes</span><h3>Topics by primary theme</h3></div><div class="sub">one library item counted once</div></div>
       <div class="controls">
         <div class="seg" id="seg-top">
           <button data-n="12" class="on">Top 12</button>
@@ -538,11 +625,11 @@ const mlabelFull=m=>{const[y,mm]=m.split('-');return['January','February','March
 const WEB_NOTES=location.protocol==='http:'||location.protocol==='https:';
 const noteHref=n=>WEB_NOTES?'/notes?path='+encodeURIComponent(n):'obsidian://open?path='+encodeURIComponent(n);
 const noteAnchor=(n,label='note ↗',cls='lk',title='Open note')=>n?`<a class="${cls}" href="${esc(noteHref(n))}"${WEB_NOTES?' target="_blank" rel="noopener"':''} title="${esc(title)}">${esc(label)}</a>`:'';
-const chartIds=['c-growth','c-activity','c-sources','c-topics','c-longform','c-media','c-authors','c-domains','c-storage'];
+const chartIds=['c-growth','c-activity','c-sources','c-graph','c-graph-timeline','c-topics','c-longform','c-media','c-authors','c-domains','c-storage'];
 function resizeCharts(){chartIds.forEach(id=>{const el=document.getElementById(id);if(el&&echarts.getInstanceByDom(el))echarts.getInstanceByDom(el).resize();});}
 const WORKSPACES={
  overview:{kick:'Overview',title:'Signal, coverage and momentum.',copy:'A fast read of corpus health: how much is captured, what is ready to use, and where attention is needed next.',micro:'live corpus · local intelligence'},
- atlas:{kick:'Atlas',title:'The shape of the knowledge base.',copy:'Explore themes, authors, domains and storage without losing the thread. Every chart opens into evidence.',micro:'taxonomy · sources · footprint'},
+ atlas:{kick:'Atlas',title:'Knowledge Map, Timeline and Topic List.',copy:'Explore how topics, documents and time connect across the library. Expand from a theme to the notes behind it without changing the source data.',micro:'topics · time · notes'},
  ops:{kick:'Ops',title:'Refresh pipeline and review queue.',copy:'Run ingestion, retry failures and inspect the signals that need a human pass before they decay into noise.',micro:'actions · failures · storage'},
  chat:{kick:'Ask',title:'Interrogate the library with sources.',copy:'Ask direct questions and keep the answer anchored to retrieved notes, excerpts and model metadata.',micro:'retrieval · synthesis · evidence'}
 };
@@ -728,6 +815,435 @@ chSrc.on('click',p=>{
  if(kind==='post_only'){openSource('bookmark');return;}
  openLongform();
 });
+
+/* Atlas Knowledge Graph */
+const GRAPH=DATA.graph||{version:'empty',topics:[],items:[],topic_edges:[],membership_edges:[],emerging_topics:[],facets:{},insights:{}};
+const GRAPH_KEY='xbrain.graph.layout.v1';
+function loadGraphPrefs(){
+ try{
+  const saved=JSON.parse(localStorage.getItem(GRAPH_KEY)||'{}');
+  if(saved.version!==GRAPH.version)return {positions:{},filters:{},hiddenTopics:[]};
+  return {positions:saved.positions||{},filters:saved.filters||{},hiddenTopics:saved.hiddenTopics||[],view:saved.view||{}};
+ }catch(e){return {positions:{},filters:{},hiddenTopics:[]};}
+}
+let graphPrefs=loadGraphPrefs();
+const graphState={
+ mode:'map',
+ query:'',
+ datePreset:graphPrefs.filters.datePreset||'all',
+ dateFrom:graphPrefs.filters.dateFrom||'',
+ dateTo:graphPrefs.filters.dateTo||'',
+ content:graphPrefs.filters.content||'all',
+ confidence:graphPrefs.filters.confidence||'all',
+ showDocs:!!graphPrefs.filters.showDocs,
+ showEmerging:!!graphPrefs.filters.showEmerging,
+ focusSlug:graphPrefs.filters.focusSlug||'',
+ hops:Number(graphPrefs.filters.hops||1),
+ paused:REDUCED_MOTION,
+ expanded:new Set(),
+};
+const graphChart=mk('c-graph');
+let graphTimelineChart=null;
+const graphTopicBySlug=Object.fromEntries((GRAPH.topics||[]).map(t=>[t.slug,t]));
+const graphItemById=Object.fromEntries((GRAPH.items||[]).map(i=>[i.id,i]));
+const graphItemsByTopic={};
+(GRAPH.items||[]).forEach(item=>{
+ (item.topics||[]).forEach(slug=>{
+  if(!graphItemsByTopic[slug])graphItemsByTopic[slug]=[];
+  graphItemsByTopic[slug].push(item);
+ });
+});
+const graphPalette=[C.accent,C.forest,C.sage,C.slate,C.bark,C.stone,C.sienna];
+function graphHash(s){let h=0;for(let i=0;i<String(s).length;i++)h=(h*31+String(s).charCodeAt(i))>>>0;return h;}
+function graphColor(slug){return graphPalette[graphHash(slug)%graphPalette.length];}
+function graphHiddenTopics(){return new Set(graphPrefs.hiddenTopics||[]);}
+function setGraphTopicHidden(slug,hidden){
+ const hiddenTopics=graphHiddenTopics();
+ if(hidden)hiddenTopics.add(slug);else hiddenTopics.delete(slug);
+ graphPrefs.hiddenTopics=[...hiddenTopics].sort();
+ saveGraphPrefs();
+ renderGraph();
+}
+function graphFocusedSlugs(){
+ if(!graphState.focusSlug)return null;
+ const selected=new Set([graphState.focusSlug]);
+ let frontier=new Set([graphState.focusSlug]);
+ for(let depth=0;depth<Math.max(1,graphState.hops);depth++){
+  const next=new Set();
+  for(const edge of GRAPH.topic_edges||[]){
+   const source=String(edge.source||'').replace('topic:','');
+   const target=String(edge.target||'').replace('topic:','');
+   if(frontier.has(source)&&!selected.has(target))next.add(target);
+   if(frontier.has(target)&&!selected.has(source))next.add(source);
+  }
+  next.forEach(slug=>selected.add(slug));
+  frontier=next;
+  if(!frontier.size)break;
+ }
+ return selected;
+}
+const graphMaxDate=(GRAPH.items||[]).map(i=>i.date).sort().at(-1)||null;
+const graphDateToStamp=s=>s?new Date(s+'T00:00:00Z').getTime():null;
+function graphShiftDate(base,days){
+ const stamp=graphDateToStamp(base);
+ if(stamp==null)return '';
+ const d=new Date(stamp);
+ d.setUTCDate(d.getUTCDate()-days);
+ return d.toISOString().slice(0,10);
+}
+function graphRange(){
+ if(graphState.datePreset==='custom')return {from:graphState.dateFrom||null,to:graphState.dateTo||null};
+ if(graphState.datePreset==='12m')return {from:graphShiftDate(graphMaxDate,365),to:graphMaxDate};
+ if(graphState.datePreset==='6m')return {from:graphShiftDate(graphMaxDate,183),to:graphMaxDate};
+ if(graphState.datePreset==='90d')return {from:graphShiftDate(graphMaxDate,90),to:graphMaxDate};
+ if(graphState.datePreset==='30d')return {from:graphShiftDate(graphMaxDate,30),to:graphMaxDate};
+ return {from:null,to:null};
+}
+function graphItemInDate(item){
+ const range=graphRange();
+ if(range.from&&item.date<range.from)return false;
+ if(range.to&&item.date>range.to)return false;
+ return true;
+}
+function graphText(node){
+ return [node.slug,node.label,node.overview,node.summary,node.author,node.author_name,node.domain,node.item_id,(node.topics||[]).join(' ')].join(' ').toLowerCase();
+}
+function graphMatches(node){return !graphState.query||graphText(node).includes(graphState.query);}
+function graphItemPasses(item){
+ if(!graphItemInDate(item))return false;
+ if(graphState.content!=='all'&&item.content_type!==graphState.content)return false;
+ if(graphState.confidence==='review'&&!item.needs_review)return false;
+ else if(graphState.confidence==='misc'&&item.primary_topic!=='misc'&&!(item.topics||[]).includes('misc'))return false;
+ else if(!['all','review','misc'].includes(graphState.confidence)&&item.confidence!==graphState.confidence)return false;
+ return graphMatches(item);
+}
+function graphTopicPasses(topic){
+ if(graphHiddenTopics().has(topic.slug))return false;
+ const focused=graphFocusedSlugs();
+ if(focused&&!focused.has(topic.slug))return false;
+ const items=graphItemsByTopic[topic.slug]||[];
+ const hasFilteredItem=items.some(graphItemPasses);
+ const matchesTopic=graphMatches(topic);
+ return graphState.query?matchesTopic||hasFilteredItem:hasFilteredItem;
+}
+function graphInitialPoint(id,index,total){
+ const h=graphHash(id);
+ const angle=(h%6283)/1000;
+ const ring=180+(h%7)*34+Math.floor(index/Math.max(1,total))*18;
+ return {x:Math.cos(angle)*ring,y:Math.sin(angle)*ring};
+}
+function saveGraphPrefs(){
+ const filters={datePreset:graphState.datePreset,dateFrom:graphState.dateFrom,dateTo:graphState.dateTo,content:graphState.content,confidence:graphState.confidence,showDocs:graphState.showDocs,showEmerging:graphState.showEmerging,focusSlug:graphState.focusSlug,hops:graphState.hops};
+ localStorage.setItem(GRAPH_KEY,JSON.stringify({version:GRAPH.version,positions:graphPrefs.positions||{},hiddenTopics:graphPrefs.hiddenTopics||[],view:graphPrefs.view||{},filters}));
+}
+function graphNodeSize(topic){
+ const max=Math.max(1,...(GRAPH.topics||[]).map(t=>t.count||0));
+ return 18+34*Math.sqrt((topic.count||0)/max);
+}
+function graphVisibleItems(visibleTopicSlugs){
+ const queryActive=!!graphState.query;
+ const items=[];
+ for(const item of GRAPH.items||[]){
+  if(!graphItemPasses(item))continue;
+  const touches=(item.topics||[]).some(slug=>visibleTopicSlugs.has(slug));
+  if(!touches)continue;
+  const expanded=(item.topics||[]).some(slug=>graphState.expanded.has(slug));
+  if(graphState.showDocs||expanded||queryActive)items.push(item);
+  if(queryActive&&items.length>=50)break;
+ }
+ return items.slice(0,graphState.showDocs?260:120);
+}
+function renderGraphList(visibleTopics){
+ document.getElementById('graph-list').innerHTML=visibleTopics.map(t=>{
+  const review=(t.confidence.low||0)+(t.confidence.unknown||0);
+  return `<button type="button" class="graph-topic-row" data-slug="${esc(t.slug)}"><span class="name">${esc(t.label)}</span><span class="metric"><strong>${nf(t.count)}</strong> docs</span><span class="metric">${nf(t.related_count||0)} links</span><span class="metric">${nf(t.recent_count||0)} recent</span><span class="metric">${nf(review)} review</span></button>`;
+ }).join('')||'<div class="sample"><div class="sm-sum empty">No topics match the current filters.</div></div>';
+ document.querySelectorAll('#graph-list [data-slug]').forEach(btn=>btn.onclick=()=>openGraphTopic(btn.dataset.slug));
+}
+function renderGraphTimeline(visibleTopics,visibleTopicSlugs){
+ if(!graphTimelineChart)graphTimelineChart=mk('c-graph-timeline');
+ const topicOrder=visibleTopics.slice(0,24).map(t=>t.slug);
+ const topicLabels=topicOrder.map(slug=>graphTopicBySlug[slug]?.label||slug);
+ const topicIndex=Object.fromEntries(topicOrder.map((slug,i)=>[slug,i]));
+ const points=(GRAPH.items||[]).filter(graphItemPasses).filter(item=>visibleTopicSlugs.has(item.primary_topic)).filter(item=>topicIndex[item.primary_topic]!=null).map(item=>({
+  value:[item.date,topicIndex[item.primary_topic]],
+  item,
+  itemStyle:{color:graphColor(item.primary_topic)},
+  symbolSize:item.content_type==='video'?12:9,
+ }));
+ graphTimelineChart.setOption({
+  ...CHART_MOTION,
+  grid:{left:146,right:24,top:22,bottom:44},
+  tooltip:{...TIP,trigger:'item',formatter:p=>esc(p.data.item.label)+'<br>'+esc(p.data.item.date)+' · '+esc(p.data.item.confidence)},
+  xAxis:{type:'time',...axisX()},
+  yAxis:{type:'category',data:topicLabels,axisLine:{show:false},axisTick:{show:false},axisLabel:{color:C.muted,fontFamily:UI,fontSize:12},inverse:true},
+  dataZoom:[{type:'inside',xAxisIndex:0},{type:'slider',xAxisIndex:0,bottom:8,height:18,borderColor:C.axis,fillerColor:C.hair,handleStyle:{color:C.accent}}],
+  series:[{type:'scatter',data:points,emphasis:{scale:1.5},itemStyle:{opacity:.82}}],
+ },true);
+ graphTimelineChart.off('click');
+ graphTimelineChart.on('click',p=>{if(p.data&&p.data.item)openGraphItem(p.data.item.id);});
+}
+function renderGraph(){
+ const visibleTopics=(GRAPH.topics||[]).filter(graphTopicPasses).sort((a,b)=>(b.count-a.count)||a.label.localeCompare(b.label));
+ const visibleTopicSlugs=new Set(visibleTopics.map(t=>t.slug));
+ const visibleTopicIds=new Set(visibleTopics.map(t=>t.id));
+ const visibleItems=graphVisibleItems(visibleTopicSlugs);
+ const visibleItemIds=new Set(visibleItems.map(i=>i.id));
+ const nodes=[];
+ visibleTopics.forEach((topic,index)=>{
+  const saved=graphPrefs.positions?.[topic.id]||{};
+  const p=saved.x!=null&&saved.y!=null?saved:graphInitialPoint(topic.id,index,visibleTopics.length);
+  nodes.push({id:topic.id,name:topic.label,kind:'topic',slug:topic.slug,value:topic.count,symbolSize:graphNodeSize(topic),x:p.x,y:p.y,fixed:!!saved.pinned,draggable:true,itemStyle:{color:graphColor(topic.slug),borderColor:topic.recent_count?C.accentStrong:C.axis,borderWidth:topic.recent_count?2.2:1},label:{show:true,color:C.ink,fontFamily:UI,fontSize:12,formatter:'{b}'},emphasis:{focus:'adjacency'}});
+ });
+ visibleItems.forEach((item,index)=>{
+  const saved=graphPrefs.positions?.[item.id]||{};
+  const p=saved.x!=null&&saved.y!=null?saved:graphInitialPoint(item.id,index+visibleTopics.length,visibleTopics.length+visibleItems.length);
+  nodes.push({id:item.id,name:item.label,kind:'item',item_id:item.item_id,value:1,symbolSize:item.content_type==='video'?12:10,x:p.x,y:p.y,fixed:!!saved.pinned,draggable:true,itemStyle:{color:item.needs_review?C.failed:C.surface2,borderColor:graphColor(item.primary_topic||'misc'),borderWidth:item.confidence==='low'||item.confidence==='unknown'?2:1},label:{show:false,color:C.muted,fontFamily:UI,fontSize:10,formatter:'{b}'},emphasis:{label:{show:true}}});
+ });
+ if(graphState.showEmerging){
+  (GRAPH.emerging_topics||[]).forEach((topic,index)=>{
+   const id=topic.id;
+   const p=graphInitialPoint(id,index+nodes.length,nodes.length+(GRAPH.emerging_topics||[]).length);
+   nodes.push({id,name:topic.label,kind:'emerging',slug:topic.slug,value:topic.count,symbolSize:12+Math.min(16,topic.count*2),x:p.x,y:p.y,draggable:true,itemStyle:{color:C.surface,borderColor:C.accent,borderWidth:2,borderType:'dashed'},label:{show:true,color:C.faint,fontFamily:UI,fontSize:11,formatter:'{b}'}});
+  });
+ }
+ const links=[
+  ...(GRAPH.topic_edges||[]).filter(e=>visibleTopicIds.has(e.source)&&visibleTopicIds.has(e.target)).map(e=>({source:e.source,target:e.target,value:e.weight,lineStyle:{width:Math.min(5,1+e.weight),color:C.axis,opacity:.72}})),
+  ...(GRAPH.membership_edges||[]).filter(e=>visibleTopicIds.has(e.source)&&visibleItemIds.has(e.target)).map(e=>({source:e.source,target:e.target,value:e.weight,lineStyle:{width:e.kind==='primary'?1.6:1,type:e.kind==='primary'?'solid':'dashed',color:e.kind==='primary'?C.accent:C.axis,opacity:.55}})),
+ ];
+ if(graphState.showEmerging){
+  for(const e of GRAPH.emerging_topics||[]){
+   (e.related_topics||[]).forEach(slug=>{
+    if(visibleTopicIds.has('topic:'+slug))links.push({source:'topic:'+slug,target:e.id,lineStyle:{width:1,type:'dashed',color:C.accent,opacity:.42}});
+   });
+  }
+ }
+ document.getElementById('graph-empty').hidden=nodes.length>0;
+ document.getElementById('graph-meta').textContent='Topics '+nf(visibleTopics.length)+' · Relations '+nf(links.length)+' · Documents '+nf(visibleItems.length)+(graphState.focusSlug?' · Focus '+graphState.hops+' hop':'');
+ renderGraphList(visibleTopics);
+ if(graphState.mode==='timeline')renderGraphTimeline(visibleTopics,visibleTopicSlugs);
+ graphChart.setOption({
+  ...CHART_MOTION,
+  tooltip:{...TIP,trigger:'item',formatter:p=>{
+   if(p.dataType==='edge')return 'Relation · '+nf(p.value||1);
+   if(p.data.kind==='topic')return esc(p.data.name)+' · '+nf(p.data.value)+' documents';
+   if(p.data.kind==='emerging')return esc(p.data.name)+' · suggested '+nf(p.data.value)+' times';
+   const item=graphItemById[p.data.id];return esc(item.label)+'<br>'+esc(item.date)+' · '+esc(item.confidence);
+  }},
+  series:[{type:'graph',layout:graphState.paused?'none':'force',roam:true,draggable:true,data:nodes,links,
+   zoom:graphPrefs.view?.zoom||1,center:graphPrefs.view?.center,
+   force:{repulsion:170,edgeLength:[72,170],friction:.34,layoutAnimation:!REDUCED_MOTION&&!graphState.paused},
+   lineStyle:{curveness:.06},emphasis:{focus:'adjacency'},edgeSymbol:['none','none']}],
+ },true);
+ saveGraphPrefs();
+}
+function setAtlasMode(mode){
+ graphState.mode=mode;
+ document.querySelectorAll('#atlas-tabs [data-atlas-mode]').forEach(btn=>btn.classList.toggle('on',btn.dataset.atlasMode===mode));
+ document.getElementById('graph-map-view').classList.toggle('on',mode==='map');
+ document.getElementById('graph-timeline-view').classList.toggle('on',mode==='timeline');
+ document.getElementById('graph-list-view').classList.toggle('on',mode==='list');
+ setTimeout(()=>{resizeCharts();renderGraph();},30);
+}
+document.querySelectorAll('#atlas-tabs [data-atlas-mode]').forEach(btn=>btn.onclick=()=>setAtlasMode(btn.dataset.atlasMode));
+function graphFirstSearchMatch(){
+ const previousFocus=graphState.focusSlug;
+ graphState.focusSlug='';
+ try{
+  const topic=(GRAPH.topics||[]).find(t=>graphTopicPasses(t)&&graphMatches(t));
+  if(topic)return {kind:'topic',topic};
+  const item=(GRAPH.items||[]).find(graphItemPasses);
+  if(item)return {kind:'item',item};
+  return null;
+ }finally{
+  graphState.focusSlug=previousFocus;
+ }
+}
+function graphApplySearchFocus(){
+ const result=graphFirstSearchMatch();
+ if(!result)return;
+ if(result.kind==='topic'){
+  graphState.focusSlug=result.topic.slug;
+  renderGraph();
+  openGraphTopic(result.topic.slug);
+  return;
+ }
+ const topicSlug=result.item.primary_topic||(result.item.topics||[])[0]||'';
+ if(topicSlug){
+  graphState.focusSlug=topicSlug;
+  graphState.expanded.add(topicSlug);
+ }
+ graphState.showDocs=true;
+ syncGraphButtons();
+ renderGraph();
+ openGraphItem(result.item.id);
+}
+const graphSearch=document.getElementById('graph-search');
+graphSearch.oninput=()=>{graphState.query=graphSearch.value.trim().toLowerCase();renderGraph();};
+graphSearch.onkeydown=e=>{
+ if(e.key!=='Enter')return;
+ e.preventDefault();
+ graphApplySearchFocus();
+};
+document.getElementById('graph-content').value=graphState.content;
+document.getElementById('graph-confidence').value=graphState.confidence;
+const graphDate=document.getElementById('graph-date'),graphDateFrom=document.getElementById('graph-date-from'),graphDateTo=document.getElementById('graph-date-to'),graphRangeEl=document.getElementById('graph-range');
+function syncGraphDateControls(){
+ graphDate.value=graphState.datePreset;
+ graphDateFrom.value=graphState.dateFrom;
+ graphDateTo.value=graphState.dateTo;
+ graphRangeEl.classList.toggle('on',graphState.datePreset==='custom');
+}
+graphDate.onchange=e=>{graphState.datePreset=e.target.value;syncGraphDateControls();renderGraph();};
+graphDateFrom.onchange=e=>{graphState.dateFrom=e.target.value;renderGraph();};
+graphDateTo.onchange=e=>{graphState.dateTo=e.target.value;renderGraph();};
+document.getElementById('graph-content').onchange=e=>{graphState.content=e.target.value;renderGraph();};
+document.getElementById('graph-confidence').onchange=e=>{graphState.confidence=e.target.value;renderGraph();};
+const graphDocs=document.getElementById('graph-docs'),graphEmerging=document.getElementById('graph-emerging'),graphPause=document.getElementById('graph-pause'),graphHop1=document.getElementById('graph-hop-1'),graphHop2=document.getElementById('graph-hop-2');
+function syncGraphButtons(){
+ graphDocs.classList.toggle('on',graphState.showDocs);graphDocs.setAttribute('aria-pressed',String(graphState.showDocs));
+ graphEmerging.classList.toggle('on',graphState.showEmerging);graphEmerging.setAttribute('aria-pressed',String(graphState.showEmerging));
+ graphPause.classList.toggle('on',graphState.paused);graphPause.setAttribute('aria-pressed',String(graphState.paused));
+ graphHop1.classList.toggle('on',graphState.hops===1);graphHop1.setAttribute('aria-pressed',String(graphState.hops===1));
+ graphHop2.classList.toggle('on',graphState.hops===2);graphHop2.setAttribute('aria-pressed',String(graphState.hops===2));
+ graphPause.textContent=graphState.paused?'Resume':'Pause';
+}
+graphDocs.onclick=()=>{graphState.showDocs=!graphState.showDocs;syncGraphButtons();renderGraph();};
+graphEmerging.onclick=()=>{graphState.showEmerging=!graphState.showEmerging;syncGraphButtons();renderGraph();};
+graphPause.onclick=()=>{graphState.paused=!graphState.paused;syncGraphButtons();renderGraph();};
+graphHop1.onclick=()=>{graphState.hops=1;syncGraphButtons();renderGraph();};
+graphHop2.onclick=()=>{graphState.hops=2;syncGraphButtons();renderGraph();};
+document.getElementById('graph-clear-focus').onclick=()=>{graphState.focusSlug='';graphState.query='';graphSearch.value='';renderGraph();};
+document.getElementById('graph-reset').onclick=()=>{graphPrefs={positions:{},filters:{},hiddenTopics:[]};localStorage.removeItem(GRAPH_KEY);graphState.expanded.clear();graphState.focusSlug='';renderGraph();};
+graphChart.on('graphRoam',()=>{
+ const opt=graphChart.getOption();
+ const current=opt.series&&opt.series[0];
+ if(!current)return;
+ graphPrefs.view={zoom:current.zoom||1,center:current.center};
+ saveGraphPrefs();
+});
+graphChart.on('click',p=>{
+ if(p.dataType!=='node')return;
+ if(p.data.kind==='topic')openGraphTopic(p.data.slug);
+ else if(p.data.kind==='item')openGraphItem(p.data.id);
+ else if(p.data.kind==='emerging')openGraphEmerging(p.data.slug);
+});
+graphChart.on('dblclick',p=>{
+ if(p.dataType!=='node')return;
+ if(p.data.kind==='topic'){
+  if(graphState.expanded.has(p.data.slug))graphState.expanded.delete(p.data.slug);else graphState.expanded.add(p.data.slug);
+  renderGraph();return;
+ }
+ if(p.data.kind==='item'){
+  const item=graphItemById[p.data.id];if(item&&item.note)window.open(noteHref(item.note),WEB_NOTES?'_blank':'_self');
+ }
+});
+graphChart.on('mouseup',p=>{
+ if(p.dataType!=='node'||!p.data||!p.data.id)return;
+ const opt=graphChart.getOption();
+ const current=opt.series&&opt.series[0]&&opt.series[0].data&&opt.series[0].data[p.dataIndex];
+ if(!current||current.x==null||current.y==null)return;
+ graphPrefs.positions[p.data.id]={x:current.x,y:current.y,pinned:true};
+ saveGraphPrefs();
+});
+function toggleGraphPin(id){
+ const current=graphPrefs.positions[id]||{};
+ if(current.pinned){
+  graphPrefs.positions[id]={...current,pinned:false};
+  saveGraphPrefs();renderGraph();return false;
+ }
+ const opt=graphChart.getOption();
+ const node=(opt.series&&opt.series[0]&&opt.series[0].data||[]).find(n=>n.id===id);
+ graphPrefs.positions[id]={x:node&&node.x!=null?node.x:current.x,y:node&&node.y!=null?node.y:current.y,pinned:true};
+ saveGraphPrefs();renderGraph();return true;
+}
+function openGraphTopic(slug){
+ const topic=graphTopicBySlug[slug];if(!topic)return;
+ const related=(GRAPH.topic_edges||[]).filter(e=>e.source===topic.id||e.target===topic.id).sort((a,b)=>b.weight-a.weight).slice(0,8).map(e=>{
+  const other=(e.source===topic.id?e.target:e.source).replace('topic:','');
+  return {label:graphTopicBySlug[other]?.label||other,count:e.weight};
+ });
+ const docs=(graphItemsByTopic[slug]||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8);
+ const review=(topic.confidence.low||0)+(topic.confidence.unknown||0);
+ openDrawer('Topic',topic.label,nf(topic.count)+' DOCUMENTS · '+nf(topic.related_count||0)+' RELATED · '+nf(review)+' REVIEW',
+  `<p class="ov">${esc(topic.overview||'')}</p>`+
+  `<div class="chart-actions">${noteAnchor(topic.note,'Open topic note','chart-action','Open topic note')}<button class="chart-action" type="button" data-graph-expand="${esc(slug)}">Show documents</button><button class="chart-action" type="button" data-graph-focus="${esc(slug)}">Focus graph</button><button class="chart-action" type="button" data-graph-hide="${esc(slug)}">Hide topic</button><button class="chart-action" type="button" data-graph-pin="${esc(topic.id)}">${graphPrefs.positions[topic.id]?.pinned?'Unpin':'Pin'}</button></div>`+
+  `<div class="dwsec">Related topics</div>${related.length?miniBars(related):'<div class="sample"><div class="sm-sum empty">No strong topic relations.</div></div>'}`+
+  sampleSec(docs.map(graphItemToRow),'Recent documents'));
+ document.querySelectorAll('[data-graph-expand]').forEach(btn=>btn.onclick=()=>{graphState.expanded.add(btn.dataset.graphExpand);syncGraphButtons();renderGraph();closeDrawer();});
+ document.querySelectorAll('[data-graph-focus]').forEach(btn=>btn.onclick=()=>{graphState.focusSlug=btn.dataset.graphFocus;graphState.query='';graphSearch.value='';renderGraph();closeDrawer();});
+ document.querySelectorAll('[data-graph-hide]').forEach(btn=>btn.onclick=()=>{setGraphTopicHidden(btn.dataset.graphHide,true);closeDrawer();});
+ document.querySelectorAll('[data-graph-pin]').forEach(btn=>btn.onclick=()=>{const pinned=toggleGraphPin(btn.dataset.graphPin);btn.textContent=pinned?'Unpin':'Pin';});
+}
+function graphItemToRow(item){
+ return {id:item.item_id,handle:item.author,name:item.author_name,source:'graph',content_type:item.content_type,date:item.date,topic:graphTopicBySlug[item.primary_topic]?.label||item.primary_topic,topic_slug:item.primary_topic,confidence:item.confidence,suggested_topics:item.suggested_topics||[],summary:item.summary,url:item.url,note:item.note};
+}
+const graphSleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function graphPostItemAction(endpoint,itemId,extra={}){
+ const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({item_id:itemId,...extra})});
+ const payload=await response.json();
+ if(!response.ok)throw new Error(payload.error||'request failed');
+ return payload;
+}
+async function graphWaitForAction(actionName,statusEl){
+ for(let i=0;i<180;i++){
+  await graphSleep(1000);
+  const response=await fetch('/api/status');
+  const state=await response.json();
+  if(state.running){statusEl.textContent='updating...';continue;}
+  if(state.last_action===actionName&&state.last_error)throw new Error(String(state.last_error).split('\n')[0]);
+  if(state.last_action===actionName){location.reload();return;}
+ }
+ throw new Error('operation timed out');
+}
+function bindGraphItemActions(item){
+ const statusEl=document.getElementById('graph-action-status');
+ if(!statusEl)return;
+ document.querySelectorAll('[data-graph-topic-action]').forEach(btn=>btn.onclick=async()=>{
+  const action=btn.dataset.graphTopicAction;
+  const prioritize=btn.dataset.graphPrioritize==='true';
+  const promote=btn.dataset.graphPromote==='true';
+  btn.disabled=true;statusEl.textContent='topic '+action+' started...';
+  try{
+   await graphPostItemAction('/api/topic-action',item.item_id,{action,prioritize_suggestions:prioritize,promote_suggestions:promote,suggested_topics:(prioritize||promote)?(item.suggested_topics||[]):[]});
+   await graphWaitForAction('topic-'+action+':'+item.item_id,statusEl);
+  }catch(error){
+   btn.disabled=false;statusEl.textContent='could not update topics: '+error.message;
+  }
+ });
+ document.querySelectorAll('[data-graph-reprocess]').forEach(btn=>btn.onclick=async()=>{
+  btn.disabled=true;statusEl.textContent='reprocess started...';
+  try{
+   await graphPostItemAction('/api/reprocess-note',item.item_id);
+   await graphWaitForAction('reprocess-note:'+item.item_id,statusEl);
+  }catch(error){
+   btn.disabled=false;statusEl.textContent='could not reprocess: '+error.message;
+  }
+ });
+}
+function openGraphItem(id){
+ const item=graphItemById[id];if(!item)return;
+ const topicLinks=(item.topics||[]).map(slug=>badge(graphTopicBySlug[slug]?.label||slug,slug===item.primary_topic?'kind':'topic')).join('');
+ const served=WEB_NOTES;
+ const suggestions=(item.suggested_topics||[]).map(s=>badge('+'+s)).join('');
+ const servedActions=served
+  ? `<button class="chart-action" type="button" data-graph-topic-action="accept">Accept</button><button class="chart-action" type="button" data-graph-topic-action="reject">Reject</button><button class="chart-action" type="button" data-graph-topic-action="regenerate">Regenerate</button>${(item.suggested_topics||[]).length?'<button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true">Prioritize</button><button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true" data-graph-promote="true">Promote</button>':''}<button class="chart-action" type="button" data-graph-reprocess>Reprocess</button><span class="ops-status" id="graph-action-status" aria-live="polite"></span>`
+  : `<button class="chart-action graph-disabled" type="button" disabled>Review topics</button><button class="chart-action graph-disabled" type="button" disabled>Reprocess</button>`;
+ openDrawer('Document',item.label,(item.content_type||'item')+' · '+item.date+' · @'+item.author,
+  `<p class="ov">${esc(item.summary||'')}</p>`+
+  `<div class="badges">${topicLinks}${badge(item.confidence,item.confidence)}${item.needs_review?badge('needs review','low'):''}${suggestions}</div>`+
+  `<div class="dwsec">Actions</div><div class="chart-actions">${noteAnchor(item.note,'Open note','chart-action','Open note')}${lk(item.url,'Open original')}<button class="chart-action" type="button" data-graph-pin="${esc(item.id)}">${graphPrefs.positions[item.id]?.pinned?'Unpin':'Pin'}</button>${servedActions}</div>`+
+  `${served?'':'<p class="ov">Topic editing requires the served dashboard.</p>'}`);
+ document.querySelectorAll('[data-graph-pin]').forEach(btn=>btn.onclick=()=>{const pinned=toggleGraphPin(btn.dataset.graphPin);btn.textContent=pinned?'Unpin':'Pin';});
+ if(served)bindGraphItemActions(item);
+}
+function openGraphEmerging(slug){
+ const topic=(GRAPH.emerging_topics||[]).find(t=>t.slug===slug);if(!topic)return;
+ openDrawer('Emerging topic',topic.label,nf(topic.count)+' SUGGESTIONS',`<p class="ov">Suggested by current item enrichments. It has not been promoted into the controlled vocabulary.</p><div class="badges">${(topic.related_topics||[]).map(s=>badge(graphTopicBySlug[s]?.label||s,'topic')).join('')}</div>`);
+}
+syncGraphButtons();
+syncGraphDateControls();
+renderGraph();
 
 /* 04 topics — filterable + drill-down */
 const topicsChart=mk('c-topics');

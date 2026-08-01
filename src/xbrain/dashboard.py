@@ -10,10 +10,12 @@ together and writes `<output_dir>/dashboard.html`; nothing here touches a browse
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
 from collections import Counter, defaultdict
+from itertools import combinations
 from importlib import resources
 from pathlib import Path
 from typing import Any, Callable
@@ -66,12 +68,12 @@ def _article_image_blocks(item: Item) -> list[ArticleImageBlock]:
     ]
 
 
-def _downloaded_image_entries(item: Item) -> list[tuple[MediaPhotoDownloaded | MediaPhotoDescribed, str]]:
+def _downloaded_image_entries(
+    item: Item,
+) -> list[tuple[MediaPhotoDownloaded | MediaPhotoDescribed, str]]:
     """Downloaded images for thumbnailing: post photos first, then article images."""
     entries: list[tuple[MediaPhotoDownloaded | MediaPhotoDescribed, str]] = [
-        (entry, "post")
-        for entry in item.media
-        if isinstance(entry, _DOWNLOADED_PHOTO_TYPES)
+        (entry, "post") for entry in item.media if isinstance(entry, _DOWNLOADED_PHOTO_TYPES)
     ]
     entries.extend(
         (block.media, "article")
@@ -135,6 +137,14 @@ def _suggested_topics(item: Item) -> list[str]:
     return item.enriched.suggested_new_topics if item.enriched else []
 
 
+def _topics(item: Item) -> list[str]:
+    """Unique topic slugs assigned to an item, primary first when present."""
+    if item.enriched is None:
+        return []
+    topics = [topic for topic in [item.enriched.primary_topic, *item.enriched.topics] if topic]
+    return list(dict.fromkeys(topics))
+
+
 def _recent(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
     """The `n` most recent rows by their ``date`` field."""
     return sorted(rows, key=lambda r: r["date"], reverse=True)[:n]
@@ -180,15 +190,11 @@ def _article_sources(item: Item) -> list[ContentSourceSuccess | ContentSourceFai
 
 
 def _saved_article_sources(item: Item) -> list[ContentSourceSuccess]:
-    return [
-        source for source in _article_sources(item) if isinstance(source, ContentSourceSuccess)
-    ]
+    return [source for source in _article_sources(item) if isinstance(source, ContentSourceSuccess)]
 
 
 def _failed_article_sources(item: Item) -> list[ContentSourceFailure]:
-    return [
-        source for source in _article_sources(item) if isinstance(source, ContentSourceFailure)
-    ]
+    return [source for source in _article_sources(item) if isinstance(source, ContentSourceFailure)]
 
 
 def _has_processed_content(item: Item) -> bool:
@@ -369,10 +375,7 @@ def _article_failure_count(items: list[Item]) -> int:
 def _failed_bookmark_count(items: list[Item]) -> int:
     """Bookmarks with article failures that still block useful processing."""
     return sum(
-        1
-        for item in items
-        if item.source == "bookmark"
-        and _blocking_article_failures(item)
+        1 for item in items if item.source == "bookmark" and _blocking_article_failures(item)
     )
 
 
@@ -402,10 +405,7 @@ def _media_counts(items: list[Item]) -> dict[str, int]:
 def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, Any]:
     """Mobile-first operational status for the ingestion workflow."""
     downloaded_undescribed = sum(
-        1
-        for item in items
-        for entry in item.media
-        if isinstance(entry, MediaPhotoDownloaded)
+        1 for item in items for entry in item.media if isinstance(entry, MediaPhotoDownloaded)
     )
     article_pending = article_undescribed = 0
     for item in items:
@@ -571,9 +571,7 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
     confidence = Counter(_confidence(item) or "unknown" for item in items)
     misc_items = [item for item in items if _primary(item) == "misc"]
     low_items = [item for item in items if _confidence(item) == "low"]
-    suggested = Counter(
-        suggestion for item in items for suggestion in _suggested_topics(item)
-    )
+    suggested = Counter(suggestion for item in items for suggestion in _suggested_topics(item))
     review_items = {
         item.id: item
         for item in sorted(
@@ -591,9 +589,7 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
         },
         "misc": len(misc_items),
         "low": len(low_items),
-        "suggested": [
-            {"slug": slug, "count": count} for slug, count in suggested.most_common(20)
-        ],
+        "suggested": [{"slug": slug, "count": count} for slug, count in suggested.most_common(20)],
         "review_items": rows(list(review_items.values()))[:12],
     }
 
@@ -609,6 +605,286 @@ def _needs_topic_review(item: Item) -> bool:
     return (enrichment.primary_topic == "misc" or "misc" in enrichment.topics) and (
         enrichment.topic_confidence != "high"
     )
+
+
+def _compact_text(value: str | None, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _graph_domain(item: Item) -> str | None:
+    for link in item.links:
+        if link.domain != "x.com":
+            return link.domain
+    return item.links[0].domain if item.links else None
+
+
+def _graph_item_label(item: Item) -> str:
+    for source in _saved_article_sources(item):
+        if source.title:
+            return _compact_text(source.title, 74)
+    return _compact_text(_summary(item) or item.text or item.id, 74) or item.id
+
+
+def _graph_topic_nodes(
+    by_topic: dict[str, list[Item]],
+    topic_edges: list[dict[str, Any]],
+    topic_pages: dict[str, TopicPage],
+    latest_date: str | None,
+) -> list[dict[str, Any]]:
+    neighbours: dict[str, set[str]] = defaultdict(set)
+    for edge in topic_edges:
+        source = edge["source"].removeprefix("topic:")
+        target = edge["target"].removeprefix("topic:")
+        neighbours[source].add(target)
+        neighbours[target].add(source)
+
+    out: list[dict[str, Any]] = []
+    for slug in sorted(by_topic):
+        group = by_topic[slug]
+        confidence = Counter(_confidence(item) or "unknown" for item in group)
+        content_types = Counter(_content_type(item) for item in group)
+        last_activity = max((_date(item) for item in group), default=None)
+        recent_count = 0
+        if latest_date is not None:
+            latest_month = latest_date[:7]
+            recent_count = sum(1 for item in group if _date(item)[:7] == latest_month)
+        out.append(
+            {
+                "id": f"topic:{slug}",
+                "slug": slug,
+                "label": humanize_topic(slug),
+                "count": len(group),
+                "related_count": len(neighbours[slug]),
+                "recent_count": recent_count,
+                "last_activity": last_activity,
+                "confidence": {
+                    "high": confidence["high"],
+                    "medium": confidence["medium"],
+                    "low": confidence["low"],
+                    "unknown": confidence["unknown"],
+                },
+                "content_types": {
+                    "article": content_types["article"],
+                    "video": content_types["video"],
+                    "article_failed": content_types["article_failed"],
+                    "post_only": content_types["post_only"],
+                },
+                "overview": topic_pages[slug].overview if slug in topic_pages else "",
+                "note": f"topics/{slug}.md" if slug in topic_pages else None,
+            }
+        )
+    return out
+
+
+def _graph_item_nodes(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in sorted(items, key=lambda i: (i.created_at, i.id), reverse=True):
+        topics = _topics(item)
+        if not topics:
+            continue
+        out.append(
+            {
+                "id": f"item:{item.id}",
+                "item_id": item.id,
+                "label": _graph_item_label(item),
+                "summary": _compact_text(_summary(item), 180),
+                "date": _date(item),
+                "primary_topic": _primary(item),
+                "topics": topics,
+                "content_type": _content_type(item),
+                "confidence": _confidence(item) or "unknown",
+                "author": item.author.handle,
+                "author_name": item.author.name,
+                "domain": _graph_domain(item),
+                "note": id2note.get(item.id),
+                "url": item.url,
+                "needs_review": _needs_topic_review(item),
+                "suggested_topics": _suggested_topics(item),
+            }
+        )
+    return out
+
+
+def _graph_topic_edges(items: list[Item], limit: int = 200) -> list[dict[str, Any]]:
+    weights: Counter[tuple[str, str]] = Counter()
+    for item in items:
+        topics = sorted(_topics(item))
+        for source, target in combinations(topics, 2):
+            weights[(source, target)] += 1
+
+    candidates: list[dict[str, Any]] = [
+        {"source": f"topic:{s}", "target": f"topic:{t}", "kind": "cooccurrence", "weight": w}
+        for (s, t), w in weights.items()
+        if w >= 1
+    ]
+    candidates.sort(key=lambda e: (-int(e["weight"]), str(e["source"]), str(e["target"])))
+
+    per_topic: Counter[str] = Counter()
+    selected: list[dict[str, Any]] = []
+    for edge in candidates:
+        source = str(edge["source"])
+        target = str(edge["target"])
+        if per_topic[source] >= 5 and per_topic[target] >= 5:
+            continue
+        selected.append(edge)
+        per_topic[source] += 1
+        per_topic[target] += 1
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _graph_membership_edges(items: list[Item], per_topic_limit: int = 40) -> list[dict[str, Any]]:
+    used: Counter[str] = Counter()
+    out: list[dict[str, Any]] = []
+    for item in sorted(items, key=lambda i: (i.created_at, i.id), reverse=True):
+        primary = _primary(item)
+        for slug in _topics(item):
+            if used[slug] >= per_topic_limit:
+                continue
+            out.append(
+                {
+                    "source": f"topic:{slug}",
+                    "target": f"item:{item.id}",
+                    "kind": "primary" if slug == primary else "secondary",
+                    "weight": 2 if slug == primary else 1,
+                }
+            )
+            used[slug] += 1
+    return out
+
+
+def _graph_emerging_topics(items: list[Item]) -> list[dict[str, Any]]:
+    suggested: dict[str, set[str]] = defaultdict(set)
+    related: dict[str, set[str]] = defaultdict(set)
+    for item in items:
+        for suggestion in _suggested_topics(item):
+            suggested[suggestion].add(item.id)
+            related[suggestion].update(_topics(item))
+    return [
+        {
+            "id": f"emerging:{slug}",
+            "slug": slug,
+            "label": humanize_topic(slug),
+            "count": len(item_ids),
+            "item_ids": sorted(item_ids),
+            "related_topics": sorted(related[slug]),
+        }
+        for slug, item_ids in sorted(
+            suggested.items(), key=lambda entry: (-len(entry[1]), entry[0])
+        )
+    ]
+
+
+def _graph_facets(items: list[Item]) -> dict[str, Any]:
+    content_types = Counter(_content_type(item) for item in items if _topics(item))
+    confidence = Counter(_confidence(item) or "unknown" for item in items if _topics(item))
+    months = Counter(_month(item) for item in items if _topics(item))
+    return {
+        "content_types": dict(sorted(content_types.items())),
+        "confidence": {
+            "high": confidence["high"],
+            "medium": confidence["medium"],
+            "low": confidence["low"],
+            "unknown": confidence["unknown"],
+        },
+        "months": [{"month": month, "count": count} for month, count in sorted(months.items())],
+    }
+
+
+def _graph_insights(
+    topic_nodes: list[dict[str, Any]],
+    topic_edges: list[dict[str, Any]],
+    emerging_topics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    by_slug = {node["slug"]: node for node in topic_nodes}
+    by_degree: Counter[str] = Counter()
+    by_weight: Counter[str] = Counter()
+    for edge in topic_edges:
+        for key in ("source", "target"):
+            slug = edge[key].removeprefix("topic:")
+            by_degree[slug] += 1
+            by_weight[slug] += edge["weight"]
+
+    connected_slug = by_weight.most_common(1)[0][0] if by_weight else None
+    isolated = [node for node in topic_nodes if by_degree[node["slug"]] <= 1]
+    review = sorted(
+        topic_nodes,
+        key=lambda node: (
+            node["confidence"]["low"]
+            + node["confidence"]["unknown"]
+            + (node["count"] if node["slug"] == "misc" else 0),
+            node["count"],
+        ),
+        reverse=True,
+    )
+    active = sorted(topic_nodes, key=lambda node: node["last_activity"] or "", reverse=True)
+    fastest = sorted(
+        topic_nodes, key=lambda node: (node["recent_count"], node["count"]), reverse=True
+    )
+    return {
+        "most_connected": by_slug.get(connected_slug) if connected_slug else None,
+        "fastest_growing": fastest[0] if fastest else None,
+        "isolated": isolated[:8],
+        "needs_review": review[:8],
+        "recently_active": active[:8],
+        "emerging_count": sum(topic["count"] for topic in emerging_topics),
+    }
+
+
+def _graph_version(graph: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {
+            "topics": graph["topics"],
+            "items": [
+                {
+                    "id": item["id"],
+                    "date": item["date"],
+                    "primary_topic": item["primary_topic"],
+                    "topics": item["topics"],
+                    "confidence": item["confidence"],
+                }
+                for item in graph["items"]
+            ],
+            "topic_edges": graph["topic_edges"],
+            "membership_edges": graph["membership_edges"],
+            "emerging_topics": graph["emerging_topics"],
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _graph_section(
+    items: list[Item], topic_pages: dict[str, TopicPage], id2note: dict[str, str]
+) -> dict[str, Any]:
+    by_topic: dict[str, list[Item]] = defaultdict(list)
+    for item in items:
+        for slug in _topics(item):
+            by_topic[slug].append(item)
+
+    topic_edges = _graph_topic_edges(items)
+    latest_date = max((_date(item) for item in items), default=None)
+    emerging_topics = _graph_emerging_topics(items)
+    topic_nodes = _graph_topic_nodes(by_topic, topic_edges, topic_pages, latest_date)
+    graph = {
+        "version": "",
+        "topics": topic_nodes,
+        "items": _graph_item_nodes(items, id2note),
+        "topic_edges": topic_edges,
+        "membership_edges": _graph_membership_edges(items),
+        "emerging_topics": emerging_topics,
+        "facets": _graph_facets(items),
+        "insights": {},
+    }
+    graph["insights"] = _graph_insights(topic_nodes, topic_edges, emerging_topics)
+    graph["version"] = _graph_version(graph)
+    return graph
 
 
 def _meta(
@@ -672,6 +948,7 @@ def compute_dashboard_data(
     media = _media_counts(items)
     library = _library_section(items)
     taxonomy = _taxonomy_section(items, rows)
+    graph = _graph_section(items, topic_pages, id2note)
     bookmark_items = [i for i in items if i.source == "bookmark"]
     own_items = [i for i in items if i.source == "own_tweet"]
     photo_posts = [i for i in items if _downloaded_image_entries(i)]
@@ -699,6 +976,7 @@ def compute_dashboard_data(
         "months_data": months_data,
         "longform_full": longform,
         "taxonomy": taxonomy,
+        "graph": graph,
         "photos": {
             "downloaded": media["photos_downloaded"],
             "pending": media["photos_pending"],

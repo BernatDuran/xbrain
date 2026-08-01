@@ -66,8 +66,9 @@ own, you already have the raw material.
 
 ## What you get
 
-A **three-layer wiki** inside your Obsidian vault. Each layer is denser than the
-one below it — read top-down for the map, or bottom-up for a single post.
+A **three-layer wiki** inside your Obsidian vault, plus an interactive Atlas
+dashboard. Read top-down for the map, bottom-up for a single post, or use the
+Atlas Knowledge Graph to move across related topics, notes and time.
 
 All three layers are markdown notes inside a single Obsidian vault, under
 `learnings/x-knowledge/`. Each layer is denser than the one below it: many
@@ -694,8 +695,8 @@ uv run xbrain <command> [options]
 | `enrich` | Enrich items with a summary + topics. `--executor`, `--apply <file>`, `--taxonomy-risk` to re-enrich only items flagged by taxonomy diagnostics (`misc`, low/unknown confidence, suggested missing topics, or stale content). |
 | `taxonomy-health` | Read-only diagnostics for taxonomy drift: `misc` usage, confidence counts, single-topic assignments, unused topics and repeated `suggested_new_topics`. |
 | `topics` | Synthesise topic pages. `--executor`, `--apply <file>`, `--resynth`. |
-| `generate` | Render the wiki into the vault. |
-| `serve-dashboard` | Serve the generated dashboard with the note viewer plus Ops/Ask endpoints. Defaults to `127.0.0.1:8765`; keep it behind local access or an authenticated reverse proxy. See [Dashboard production runbook](docs/dashboard-production-runbook.md). |
+| `generate` | Render the wiki into the vault, including `dashboard.html` and the derived Obsidian Canvas map at `maps/xbrain-map.generated.canvas`. |
+| `serve-dashboard` | Serve the generated dashboard with the Atlas Knowledge Graph, note viewer, Ops/Ask endpoints, and served topic actions. Defaults to `127.0.0.1:8765`; keep it behind local access or an authenticated reverse proxy. See [Dashboard production runbook](docs/dashboard-production-runbook.md). |
 | `sync` | `extract` + `fetch` + `generate`, in order. |
 | `status` | Counts and last-run timestamps. |
 | `drive` | Manage Google Drive login, root-folder selection, sync and status. |
@@ -1185,6 +1186,7 @@ client. Respect X's Terms of Service.
 | Document | Description |
 |----------|-------------|
 | [docs/tutorial.md](docs/tutorial.md) | **Start here** — end-to-end walkthrough from install to a searchable wiki. |
+| [docs/atlas-knowledge-graph.md](docs/atlas-knowledge-graph.md) | Atlas Knowledge Graph data contract, Map/Timeline/List controls, local layout persistence, served actions, and Obsidian Canvas export. |
 | [docs/dashboard-style-guide.md](docs/dashboard-style-guide.md) | Design tokens and UX rules for the forest dashboard, workspaces, Ops, KPIs and served note viewer. |
 | [docs/dashboard-production-runbook.md](docs/dashboard-production-runbook.md) | Production serving, smoke checks, Basic Auth proxy notes and rollback for the dashboard service. |
 | [docs/digest-video.md](docs/digest-video.md) | Worked example: turn a bookmarked video caption into transcript + executive summary artifacts. |

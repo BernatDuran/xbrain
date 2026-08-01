@@ -123,6 +123,31 @@ class Config:
         return self.repo_root / "auth" / "storage_state.json"
 
 
+@dataclass(frozen=True)
+class _DriveSettings:
+    enabled: bool
+    root_folder_id: str
+    cache_dir: Path
+    credentials_path: Path
+    token_path: Path
+    scopes: tuple[str, ...]
+    vault: Path
+    data_dir: Path
+
+
+@dataclass(frozen=True)
+class _EmailSettings:
+    enabled: bool
+    recipient: str
+    sender: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_starttls: bool
+    smtp_ssl: bool
+
+
 def _resolve_repo_path(repo_root: Path, value: str, *, setting: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"config.toml: {setting} must be a non-empty string")
@@ -274,6 +299,97 @@ def _configured_base_url(provider: LlmProvider, settings: dict) -> str:
     )
 
 
+def _drive_settings(repo_root: Path, paths: dict, settings: dict) -> _DriveSettings:
+    drive = settings.get("drive", {})
+    enabled = bool(drive.get("enabled", False))
+    cache_dir = _resolve_repo_path(
+        repo_root,
+        drive.get("cache_dir", ".xbrain-cache/google-drive"),
+        setting="[drive].cache_dir",
+    )
+    credentials_path = _resolve_repo_path(
+        repo_root,
+        drive.get("credentials_path", "auth/google_drive_credentials.json"),
+        setting="[drive].credentials_path",
+    )
+    token_path = _resolve_repo_path(
+        repo_root,
+        drive.get("token_path", "auth/google_drive_token.json"),
+        setting="[drive].token_path",
+    )
+    scopes_raw = drive.get("scopes", list(DEFAULT_DRIVE_SCOPES))
+    if not isinstance(scopes_raw, list) or not all(
+        isinstance(scope, str) and scope for scope in scopes_raw
+    ):
+        raise ValueError("config.toml: [drive].scopes must be a list of non-empty strings")
+    root_folder_id = (
+        os.environ.get("XBRAIN_DRIVE_ROOT_FOLDER_ID")
+        or str(drive.get("root_folder_id", ""))
+        or _drive_selected_root(repo_root)
+    )
+    if enabled and not root_folder_id:
+        raise ValueError("config.toml: [drive].root_folder_id is required when drive.enabled=true")
+    vault = Path(paths["vault"]).expanduser()
+    data_dir = repo_root / paths["data_dir"]
+    if enabled:
+        vault = cache_dir / "vault"
+        data_dir = cache_dir / "data"
+    return _DriveSettings(
+        enabled=enabled,
+        root_folder_id=root_folder_id,
+        cache_dir=cache_dir,
+        credentials_path=credentials_path,
+        token_path=token_path,
+        scopes=tuple(scopes_raw),
+        vault=vault,
+        data_dir=data_dir,
+    )
+
+
+def _email_settings(settings: dict) -> _EmailSettings:
+    email = settings.get("email", {})
+    enabled = _bool_setting(
+        os.environ.get("XBRAIN_EMAIL_ENABLED", email.get("enabled", False)),
+        setting="[email].enabled",
+    )
+    smtp_username = os.environ.get("XBRAIN_SMTP_USERNAME") or str(email.get("smtp_username", ""))
+    sender = os.environ.get("XBRAIN_EMAIL_FROM") or str(email.get("sender", "")) or smtp_username
+    out = _EmailSettings(
+        enabled=enabled,
+        recipient=os.environ.get("XBRAIN_EMAIL_RECIPIENT") or str(email.get("recipient", "")),
+        sender=sender,
+        smtp_host=os.environ.get("XBRAIN_SMTP_HOST") or str(email.get("smtp_host", "")),
+        smtp_port=int(os.environ.get("XBRAIN_SMTP_PORT") or email.get("smtp_port", 587)),
+        smtp_username=smtp_username,
+        smtp_password=os.environ.get("XBRAIN_SMTP_PASSWORD") or str(email.get("smtp_password", "")),
+        smtp_starttls=_bool_setting(
+            os.environ.get("XBRAIN_SMTP_STARTTLS", email.get("smtp_starttls", True)),
+            setting="[email].smtp_starttls",
+        ),
+        smtp_ssl=_bool_setting(
+            os.environ.get("XBRAIN_SMTP_SSL", email.get("smtp_ssl", False)),
+            setting="[email].smtp_ssl",
+        ),
+    )
+    if out.smtp_port < 1:
+        raise ValueError("config.toml: [email].smtp_port must be >= 1")
+    if out.enabled:
+        missing = [
+            name
+            for name, value in (
+                ("recipient", out.recipient),
+                ("sender", out.sender),
+                ("smtp_host", out.smtp_host),
+                ("smtp_username", out.smtp_username),
+                ("smtp_password", out.smtp_password),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"config.toml: [email] missing required settings: {missing}")
+    return out
+
+
 def load_config(repo_root: Path) -> Config:
     """Load config.toml from a repo root into a Config."""
     _load_dotenv(repo_root)
@@ -282,83 +398,8 @@ def load_config(repo_root: Path) -> Config:
     x_settings = settings["x"]
     if not x_settings.get("handle"):
         raise ValueError("config.toml: [x].handle is empty — set your X handle")
-    drive = settings.get("drive", {})
-    drive_enabled = bool(drive.get("enabled", False))
-    drive_cache_dir = _resolve_repo_path(
-        repo_root,
-        drive.get("cache_dir", ".xbrain-cache/google-drive"),
-        setting="[drive].cache_dir",
-    )
-    drive_credentials_path = _resolve_repo_path(
-        repo_root,
-        drive.get("credentials_path", "auth/google_drive_credentials.json"),
-        setting="[drive].credentials_path",
-    )
-    drive_token_path = _resolve_repo_path(
-        repo_root,
-        drive.get("token_path", "auth/google_drive_token.json"),
-        setting="[drive].token_path",
-    )
-    drive_scopes_raw = drive.get("scopes", list(DEFAULT_DRIVE_SCOPES))
-    if not isinstance(drive_scopes_raw, list) or not all(
-        isinstance(scope, str) and scope for scope in drive_scopes_raw
-    ):
-        raise ValueError("config.toml: [drive].scopes must be a list of non-empty strings")
-    drive_root_folder_id = (
-        os.environ.get("XBRAIN_DRIVE_ROOT_FOLDER_ID")
-        or str(drive.get("root_folder_id", ""))
-        or _drive_selected_root(repo_root)
-    )
-    if drive_enabled and not drive_root_folder_id:
-        raise ValueError("config.toml: [drive].root_folder_id is required when drive.enabled=true")
-    vault = Path(paths["vault"]).expanduser()
-    data_dir = repo_root / paths["data_dir"]
-    if drive_enabled:
-        vault = drive_cache_dir / "vault"
-        data_dir = drive_cache_dir / "data"
-    email = settings.get("email", {})
-    email_enabled = _bool_setting(
-        os.environ.get("XBRAIN_EMAIL_ENABLED", email.get("enabled", False)),
-        setting="[email].enabled",
-    )
-    email_recipient = os.environ.get("XBRAIN_EMAIL_RECIPIENT") or str(email.get("recipient", ""))
-    email_smtp_username = os.environ.get("XBRAIN_SMTP_USERNAME") or str(
-        email.get("smtp_username", "")
-    )
-    email_sender = (
-        os.environ.get("XBRAIN_EMAIL_FROM")
-        or str(email.get("sender", ""))
-        or email_smtp_username
-    )
-    email_smtp_host = os.environ.get("XBRAIN_SMTP_HOST") or str(email.get("smtp_host", ""))
-    email_smtp_port = int(os.environ.get("XBRAIN_SMTP_PORT") or email.get("smtp_port", 587))
-    if email_smtp_port < 1:
-        raise ValueError("config.toml: [email].smtp_port must be >= 1")
-    email_smtp_password = os.environ.get("XBRAIN_SMTP_PASSWORD") or str(
-        email.get("smtp_password", "")
-    )
-    email_smtp_starttls = _bool_setting(
-        os.environ.get("XBRAIN_SMTP_STARTTLS", email.get("smtp_starttls", True)),
-        setting="[email].smtp_starttls",
-    )
-    email_smtp_ssl = _bool_setting(
-        os.environ.get("XBRAIN_SMTP_SSL", email.get("smtp_ssl", False)),
-        setting="[email].smtp_ssl",
-    )
-    if email_enabled:
-        missing = [
-            name
-            for name, value in (
-                ("recipient", email_recipient),
-                ("sender", email_sender),
-                ("smtp_host", email_smtp_host),
-                ("smtp_username", email_smtp_username),
-                ("smtp_password", email_smtp_password),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError(f"config.toml: [email] missing required settings: {missing}")
+    drive = _drive_settings(repo_root, paths, settings)
+    email = _email_settings(settings)
     snapshots = settings.get("snapshots", {})
     snapshot_auto_prune_keep_last = int(snapshots.get("auto_prune_keep_last", 25))
     if snapshot_auto_prune_keep_last < 0:
@@ -404,24 +445,24 @@ def load_config(repo_root: Path) -> Config:
     llm_vision_model = _configured_vision_model(llm_provider, settings)
     return Config(
         repo_root=repo_root,
-        vault=vault,
-        output_dir=vault / paths["output_subdir"],
-        data_dir=data_dir,
-        drive_enabled=drive_enabled,
-        drive_root_folder_id=drive_root_folder_id,
-        drive_cache_dir=drive_cache_dir,
-        drive_credentials_path=drive_credentials_path,
-        drive_token_path=drive_token_path,
-        drive_scopes=tuple(drive_scopes_raw),
-        email_enabled=email_enabled,
-        email_recipient=email_recipient,
-        email_sender=email_sender,
-        email_smtp_host=email_smtp_host,
-        email_smtp_port=email_smtp_port,
-        email_smtp_username=email_smtp_username,
-        email_smtp_password=email_smtp_password,
-        email_smtp_starttls=email_smtp_starttls,
-        email_smtp_ssl=email_smtp_ssl,
+        vault=drive.vault,
+        output_dir=drive.vault / paths["output_subdir"],
+        data_dir=drive.data_dir,
+        drive_enabled=drive.enabled,
+        drive_root_folder_id=drive.root_folder_id,
+        drive_cache_dir=drive.cache_dir,
+        drive_credentials_path=drive.credentials_path,
+        drive_token_path=drive.token_path,
+        drive_scopes=drive.scopes,
+        email_enabled=email.enabled,
+        email_recipient=email.recipient,
+        email_sender=email.sender,
+        email_smtp_host=email.smtp_host,
+        email_smtp_port=email.smtp_port,
+        email_smtp_username=email.smtp_username,
+        email_smtp_password=email.smtp_password,
+        email_smtp_starttls=email.smtp_starttls,
+        email_smtp_ssl=email.smtp_ssl,
         snapshot_auto_prune_keep_last=snapshot_auto_prune_keep_last,
         x_handle=x_settings["handle"],
         llm_provider=llm_provider,

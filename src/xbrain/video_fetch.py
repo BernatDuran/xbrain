@@ -194,7 +194,11 @@ def _stream_response_to_path(
     max_size_bytes: int | None,
 ) -> FetchResult:
     content_length = _response_content_length(response)
-    if max_size_bytes is not None and content_length is not None and content_length > max_size_bytes:
+    if (
+        max_size_bytes is not None
+        and content_length is not None
+        and content_length > max_size_bytes
+    ):
         return FetchResult(item_id, "skipped", reason="too_large")
 
     content_type = _content_type_of(response)
@@ -244,10 +248,14 @@ def _stream_response_to_path(
         return FetchResult(item_id, "failed", reason="timeout", error=_format_error(exc, None))
     except requests.RequestException as exc:
         part.unlink(missing_ok=True)
-        return FetchResult(item_id, "failed", reason="unknown_error", error=_format_error(exc, None))
+        return FetchResult(
+            item_id, "failed", reason="unknown_error", error=_format_error(exc, None)
+        )
     except OSError as exc:
         part.unlink(missing_ok=True)
-        return FetchResult(item_id, "failed", reason="unknown_error", error=f"local write failed: {exc}")
+        return FetchResult(
+            item_id, "failed", reason="unknown_error", error=f"local write failed: {exc}"
+        )
 
     if total <= 0:
         part.unlink(missing_ok=True)
@@ -256,7 +264,9 @@ def _stream_response_to_path(
         part.replace(path)
     except OSError as exc:
         part.unlink(missing_ok=True)
-        return FetchResult(item_id, "failed", reason="unknown_error", error=f"local rename failed: {exc}")
+        return FetchResult(
+            item_id, "failed", reason="unknown_error", error=f"local rename failed: {exc}"
+        )
     return FetchResult(item_id, "fetched", path=str(path), size_bytes=total)
 
 

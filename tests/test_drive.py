@@ -19,11 +19,7 @@ class _Files:
     def list(self, **kwargs):
         self.calls.append(("list", kwargs))
         return _Call(
-            {
-                "files": [
-                    {"id": "1", "name": "xbrain-root", "modifiedTime": "2026-07-30T00:00:00Z"}
-                ]
-            }
+            {"files": [{"id": "1", "name": "xbrain-root", "modifiedTime": "2026-07-30T00:00:00Z"}]}
         )
 
     def create(self, **kwargs):

@@ -95,7 +95,9 @@ def _caption_nodes(obj: Any) -> list[dict[str, Any]]:
     return found
 
 
-def _best_transcript_track(entry: dict[str, Any]) -> tuple[str, str | None, TranscriptFormat] | None:
+def _best_transcript_track(
+    entry: dict[str, Any],
+) -> tuple[str, str | None, TranscriptFormat] | None:
     """Return the best available caption/text-track URL from a media entry."""
     for node in _caption_nodes(entry):
         url = _candidate_url(node)

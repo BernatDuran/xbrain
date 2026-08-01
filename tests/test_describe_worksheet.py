@@ -274,6 +274,8 @@ def test_generate_renders_photo_description_as_caption(tmp_path):
 
     note2 = next((tmp_path / "items").glob("*-2.md")).read_text(encoding="utf-8")
     caption_lines = [
-        line for line in note2.splitlines() if line.startswith("> ") and not line.startswith("> XBrain storage:")
+        line
+        for line in note2.splitlines()
+        if line.startswith("> ") and not line.startswith("> XBrain storage:")
     ]
     assert caption_lines == []  # decorative photo → no caption line

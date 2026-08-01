@@ -54,7 +54,9 @@ def test_policy_keeps_bookmarked_articles_and_videos():
 
 def test_policy_discards_own_tweets_and_plain_bookmarked_posts():
     assert not should_keep_item(
-        _item("1", source="own_tweet", links=[Link(url="https://example.com/a", domain="example.com")])
+        _item(
+            "1", source="own_tweet", links=[Link(url="https://example.com/a", domain="example.com")]
+        )
     )
     assert not should_keep_item(_item("2"))
     assert not should_keep_item(_item("3", media=[Media(type="photo", url="https://img/3.jpg")]))

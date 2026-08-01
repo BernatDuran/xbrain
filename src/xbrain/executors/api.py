@@ -143,9 +143,7 @@ def _article_sections(item: Item) -> list[str]:
     for src in item.content.sources:
         # Narrow to the success variant — only those carry `title`/`text`.
         if isinstance(src, ContentSourceSuccess) and src.kind != "x_video":
-            image_descriptions = (
-                _article_image_descriptions(src) if src.kind == "x_article" else []
-            )
+            image_descriptions = _article_image_descriptions(src) if src.kind == "x_article" else []
             if not src.text and not image_descriptions:
                 continue
             lines += [

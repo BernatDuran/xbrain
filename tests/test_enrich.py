@@ -1,7 +1,11 @@
 # tests/test_enrich.py
 from datetime import datetime, timezone
 
-from xbrain.enrich import apply_enrichment, items_for_taxonomy_reenrichment, items_pending_enrichment
+from xbrain.enrich import (
+    apply_enrichment,
+    items_for_taxonomy_reenrichment,
+    items_pending_enrichment,
+)
 from xbrain.models import Author, Enrichment, Item
 
 

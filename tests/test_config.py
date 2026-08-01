@@ -143,7 +143,7 @@ def test_load_config_reads_email_from_env(tmp_path: Path, monkeypatch):
     assert cfg.email_sender == "sender@example.com"
     assert cfg.email_smtp_host == "smtp.example.com"
     assert cfg.email_smtp_username == "smtp-user"
-    assert cfg.email_smtp_password == "smtp-pass"
+    assert cfg.email_smtp_password == "smtp-pass"  # pragma: allowlist secret
 
 
 def test_load_config_rejects_enabled_email_without_smtp(tmp_path: Path):

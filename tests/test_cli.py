@@ -119,9 +119,7 @@ def test_serve_dashboard_supports_head_smoke_checks(tmp_path: Path, monkeypatch)
         response = conn.getresponse()
         assert response.status == 200
         assert response.getheader("content-type") == "text/html; charset=utf-8"
-        assert int(response.getheader("content-length") or "0") == len(
-            dashboard.read_bytes()
-        )
+        assert int(response.getheader("content-length") or "0") == len(dashboard.read_bytes())
         assert response.read() == b""
         conn.close()
 
@@ -447,7 +445,9 @@ def test_run_topic_action_regenerate_reenriches_item_and_refreshes_outputs(
             ]
 
     monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
-    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics"))
+    monkeypatch.setattr(
+        cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics")
+    )
     monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: calls.append("generate"))
 
     report = _run_topic_action(cfg, "42", "regenerate")
@@ -457,12 +457,13 @@ def test_run_topic_action_regenerate_reenriches_item_and_refreshes_outputs(
     assert report.primary_topic == "ai-coding"
     assert store["42"].enriched.summary == "new summary"
     assert calls == ["executor", "enrich:['42']", "topics", "generate"]
-    assert any(path.name.endswith("-pre-topic-regenerate-42") for path, _ in snapshot.snapshot_list(cfg.data_dir))
+    assert any(
+        path.name.endswith("-pre-topic-regenerate-42")
+        for path, _ in snapshot.snapshot_list(cfg.data_dir)
+    )
 
 
-def test_run_topic_action_regenerate_prioritizes_selected_suggestions(
-    tmp_path: Path, monkeypatch
-):
+def test_run_topic_action_regenerate_prioritizes_selected_suggestions(tmp_path: Path, monkeypatch):
     from xbrain.executors.base import EnrichmentJudgment
     import xbrain.cli as cli
 
@@ -650,7 +651,9 @@ def test_run_reprocess_note_refreshes_single_item_pipeline(tmp_path: Path, monke
     monkeypatch.setattr(cli, "_run_media", lambda *_args, **_kwargs: calls.append("media"))
     monkeypatch.setattr(cli, "_run_describe", lambda *_args, **_kwargs: calls.append("describe"))
     monkeypatch.setattr(cli, "ApiExecutor", _FakeApiExecutor)
-    monkeypatch.setattr(cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics"))
+    monkeypatch.setattr(
+        cli, "_run_topics_executor", lambda *_args, **_kwargs: calls.append("topics")
+    )
     monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: calls.append("generate"))
 
     report = _run_reprocess_note(cfg, "42", headless=True)
@@ -672,12 +675,13 @@ def test_run_reprocess_note_refreshes_single_item_pipeline(tmp_path: Path, monke
         "topics",
         "generate",
     ]
-    assert any(path.name.endswith("-pre-reprocess-note-42") for path, _ in snapshot.snapshot_list(cfg.data_dir))
+    assert any(
+        path.name.endswith("-pre-reprocess-note-42")
+        for path, _ in snapshot.snapshot_list(cfg.data_dir)
+    )
 
 
-def test_run_delete_bookmark_removes_store_note_media_and_regenerates(
-    tmp_path: Path, monkeypatch
-):
+def test_run_delete_bookmark_removes_store_note_media_and_regenerates(tmp_path: Path, monkeypatch):
     vault = _setup_repo(tmp_path, monkeypatch)
     output_dir = vault / "x-knowledge"
     save_store(
@@ -1720,7 +1724,9 @@ def test_retry_failed_retries_only_failed_bookmarks(tmp_path: Path, monkeypatch)
     ok = _linked_item("ok")
     ok.content = Content(
         fetched_at=datetime(2026, 5, 17, tzinfo=timezone.utc),
-        sources=[ContentSourceSuccess(kind="external_article", url="https://example.com/p", text="ok")],
+        sources=[
+            ContentSourceSuccess(kind="external_article", url="https://example.com/p", text="ok")
+        ],
     )
     save_store(
         {"ext": failed_external, "x": failed_x, "own": own_failed, "ok": ok},
@@ -1728,14 +1734,15 @@ def test_retry_failed_retries_only_failed_bookmarks(tmp_path: Path, monkeypatch)
     )
 
     calls: list[tuple] = []
-    monkeypatch.setattr(cli, "_auto_snapshot", lambda _cfg, command: calls.append(("snapshot", command)))
+    monkeypatch.setattr(
+        cli, "_auto_snapshot", lambda _cfg, command: calls.append(("snapshot", command))
+    )
     monkeypatch.setattr(
         cli,
         "fetch_pending",
-        lambda store, *args, **kwargs: calls.append(
-            ("fetch_pending", sorted(store), kwargs["force"])
-        )
-        or len(store),
+        lambda store, *args, **kwargs: (
+            calls.append(("fetch_pending", sorted(store), kwargs["force"])) or len(store)
+        ),
     )
 
     def _fake_fetch_x_articles(store, _state, force, *args, headless=False, **kwargs):
@@ -1743,7 +1750,9 @@ def test_retry_failed_retries_only_failed_bookmarks(tmp_path: Path, monkeypatch)
         return len(store)
 
     monkeypatch.setattr(cli, "fetch_x_articles", _fake_fetch_x_articles)
-    monkeypatch.setattr(cli, "_run_generate", lambda _cfg, since, until: calls.append(("generate", since, until)))
+    monkeypatch.setattr(
+        cli, "_run_generate", lambda _cfg, since, until: calls.append(("generate", since, until))
+    )
 
     result = runner.invoke(app, ["retry-failed"])
 
@@ -1762,7 +1771,9 @@ def test_retry_failed_noops_without_failed_bookmarks(tmp_path: Path, monkeypatch
     save_store({"1": _linked_item("1")}, tmp_path / "data" / "items.json")
     monkeypatch.setattr(cli, "_auto_snapshot", lambda *_args, **_kwargs: pytest.fail("no snapshot"))
     monkeypatch.setattr(cli, "fetch_pending", lambda *_args, **_kwargs: pytest.fail("no fetch"))
-    monkeypatch.setattr(cli, "fetch_x_articles", lambda *_args, **_kwargs: pytest.fail("no x fetch"))
+    monkeypatch.setattr(
+        cli, "fetch_x_articles", lambda *_args, **_kwargs: pytest.fail("no x fetch")
+    )
     monkeypatch.setattr(cli, "_run_generate", lambda *_args, **_kwargs: pytest.fail("no generate"))
 
     result = runner.invoke(app, ["retry-failed"])
@@ -2674,9 +2685,7 @@ def test_refresh_all_runs_daily_pipeline_in_order(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         cli,
         "_run_extract",
-        lambda cfg, source, since, until, *, headless: calls.append(
-            ("extract", source, headless)
-        ),
+        lambda cfg, source, since, until, *, headless: calls.append(("extract", source, headless)),
     )
     monkeypatch.setattr(
         cli,
@@ -2962,7 +2971,9 @@ def test_digest_video_dedups_same_video(tmp_path: Path, monkeypatch):
         items_path,
     )
     calls: list[str] = []
-    _wire_caption_digest(monkeypatch, summary_markdown="### Executive Summary\n\nShared.", calls=calls)
+    _wire_caption_digest(
+        monkeypatch, summary_markdown="### Executive Summary\n\nShared.", calls=calls
+    )
 
     result = runner.invoke(app, ["digest-video", "--ids", "a,b"])
     assert result.exit_code == 0, result.output
@@ -3119,9 +3130,7 @@ def test_digest_video_limit_caps_items(tmp_path: Path, monkeypatch):
     save_store(
         {
             "a": _video_item("a", url=_AMPLIFY_URL_1, transcript_url=_TRANSCRIPT_URL),
-            "b": _video_item(
-                "b", url=_DISTINCT_VIDEO_URL, transcript_url=_DISTINCT_TRANSCRIPT_URL
-            ),
+            "b": _video_item("b", url=_DISTINCT_VIDEO_URL, transcript_url=_DISTINCT_TRANSCRIPT_URL),
         },
         items_path,
     )
@@ -3255,7 +3264,11 @@ def test_digest_video_then_generate_writes_summary_and_transcript_artifacts(
     vault = _setup_repo(tmp_path, monkeypatch)
     items_path = tmp_path / "data" / "items.json"
     save_store(
-        {"42": _enriched_video_item("42", "ai", url=_AMPLIFY_URL_1, transcript_url=_TRANSCRIPT_URL)},
+        {
+            "42": _enriched_video_item(
+                "42", "ai", url=_AMPLIFY_URL_1, transcript_url=_TRANSCRIPT_URL
+            )
+        },
         items_path,
     )
     _wire_caption_digest(

@@ -308,8 +308,7 @@ def test_snapshot_prune_auto_keeps_manual_snapshots(tmp_path: Path) -> None:
     data_dir.mkdir()
     manual = snapshot_create(data_dir, command="manual", dir_label="checkpoint")[0]
     auto_paths = [
-        snapshot_create(data_dir, command="media", dir_label=f"pre-media-{i}")[0]
-        for i in range(3)
+        snapshot_create(data_dir, command="media", dir_label=f"pre-media-{i}")[0] for i in range(3)
     ]
 
     deleted = snapshot_prune_auto(data_dir, keep_last=1)

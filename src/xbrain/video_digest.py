@@ -137,7 +137,9 @@ def group_items_by_video(store: dict[str, Item], item_ids: list[str]) -> dict[Vi
     return groups
 
 
-def _representative_video(store: dict[str, Item], item_ids: list[str]) -> tuple[Item, VideoEntry] | None:
+def _representative_video(
+    store: dict[str, Item], item_ids: list[str]
+) -> tuple[Item, VideoEntry] | None:
     """Pick a needing video item, preferring one that already has captions."""
     fallback: tuple[Item, VideoEntry] | None = None
     for item_id in item_ids:

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import assert_never
+from typing import Any, assert_never
 
 from xbrain.config import SUPPORTED_TOPIC_STYLES
 from xbrain.dashboard import collect_thumbnails, compute_dashboard_data, render_dashboard_html
@@ -188,6 +189,190 @@ def _write_dashboard(
         item_storage=item_storage,
     )
     (output_dir / "dashboard.html").write_text(render_dashboard_html(data), encoding="utf-8")
+    _write_canvas(data, output_dir, items)
+
+
+def _canvas_color(seed: str) -> str:
+    return str(sum(ord(char) for char in seed) % 6 + 1)
+
+
+def _canvas_node_id(kind: str, identifier: str) -> str:
+    safe = "".join(char if char.isalnum() else "-" for char in identifier).strip("-")
+    return f"{kind}-{safe[:48]}"
+
+
+def _canvas_topic_file(output_dir: Path, slug: str) -> str | None:
+    rel = Path("topics") / f"{slug}.md"
+    return rel.as_posix() if (output_dir / rel).exists() else None
+
+
+def _canvas_graph_parts(
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
+    graph = data.get("graph")
+    if not isinstance(graph, dict):
+        return None
+    topics = [topic for topic in graph.get("topics", []) if isinstance(topic, dict)]
+    if not topics:
+        return None
+    graph_items = [item for item in graph.get("items", []) if isinstance(item, dict)]
+    topic_edges = [edge for edge in graph.get("topic_edges", []) if isinstance(edge, dict)]
+    topics = sorted(topics, key=lambda t: (-int(t.get("count", 0)), str(t.get("slug", ""))))[:40]
+    return topics, graph_items, topic_edges
+
+
+def _canvas_items_by_topic(
+    graph_items: list[dict[str, Any]], topics: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    topic_by_slug = {str(topic["slug"]): topic for topic in topics if topic.get("slug")}
+    items_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for item in graph_items:
+        primary = item.get("primary_topic")
+        if isinstance(primary, str) and primary in topic_by_slug:
+            items_by_topic.setdefault(primary, []).append(item)
+    for rows in items_by_topic.values():
+        rows.sort(
+            key=lambda item: (str(item.get("date", "")), str(item.get("item_id", ""))), reverse=True
+        )
+    return items_by_topic
+
+
+def _canvas_topic_node(output_dir: Path, topic: dict[str, Any], x: int, y: int) -> dict[str, Any]:
+    slug = str(topic.get("slug", "topic"))
+    node_id = _canvas_node_id("topic", slug)
+    base: dict[str, Any] = {
+        "id": node_id,
+        "x": x,
+        "y": y,
+        "width": 300,
+        "height": 120,
+        "color": _canvas_color(slug),
+    }
+    topic_file = _canvas_topic_file(output_dir, slug)
+    if topic_file:
+        return {**base, "type": "file", "file": topic_file}
+    text = f"{topic.get('label', slug)}\n{topic.get('count', 0)} documents"
+    return {**base, "type": "text", "text": text}
+
+
+def _canvas_document_nodes(
+    topic_node_id: str,
+    slug: str,
+    topic_items: list[dict[str, Any]],
+    item_note_names: dict[str, str],
+    x: int,
+    y: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    item_node_ids: set[str] = set()
+    for doc_index, item in enumerate(topic_items[:3]):
+        item_id = str(item.get("item_id", ""))
+        note_name = item_note_names.get(item_id)
+        if not note_name:
+            continue
+        doc_node_id = _canvas_node_id("item", item_id)
+        item_node_ids.add(doc_node_id)
+        nodes.append(
+            {
+                "id": doc_node_id,
+                "type": "file",
+                "file": (Path("items") / note_name).as_posix(),
+                "x": x + 340,
+                "y": y + doc_index * 130,
+                "width": 300,
+                "height": 108,
+                "color": _canvas_color(slug),
+            }
+        )
+        edges.append(
+            {
+                "id": f"edge-{topic_node_id}-{doc_node_id}",
+                "fromNode": topic_node_id,
+                "fromSide": "right",
+                "toNode": doc_node_id,
+                "toSide": "left",
+            }
+        )
+    return nodes, edges, item_node_ids
+
+
+def _canvas_topic_edges(
+    topic_edges: list[dict[str, Any]], topics: list[dict[str, Any]], included_topic_nodes: set[str]
+) -> list[dict[str, Any]]:
+    topic_by_id = {str(topic["id"]): topic for topic in topics if topic.get("id")}
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for edge in topic_edges[:160]:
+        source = topic_by_id.get(str(edge.get("source")))
+        target = topic_by_id.get(str(edge.get("target")))
+        if source is None or target is None:
+            continue
+        source_id = _canvas_node_id("topic", str(source.get("slug", "")))
+        target_id = _canvas_node_id("topic", str(target.get("slug", "")))
+        if source_id not in included_topic_nodes or target_id not in included_topic_nodes:
+            continue
+        edge_id = f"edge-{source_id}-{target_id}"
+        if edge_id in seen:
+            continue
+        seen.add(edge_id)
+        edges.append(
+            {
+                "id": edge_id,
+                "fromNode": source_id,
+                "fromSide": "right",
+                "toNode": target_id,
+                "toSide": "left",
+            }
+        )
+    return edges
+
+
+def _write_canvas(data: dict[str, Any], output_dir: Path, items: list[Item]) -> None:
+    """Write a derived Obsidian Canvas map without touching user-editable copies."""
+    parts = _canvas_graph_parts(data)
+    if parts is None:
+        return
+    topics, graph_items, topic_edges = parts
+    maps_dir = output_dir / "maps"
+    maps_dir.mkdir(parents=True, exist_ok=True)
+    item_note_names = {item.id: note_filename(item) for item in items if _has_note(item)}
+    items_by_topic = _canvas_items_by_topic(graph_items, topics)
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    included_topic_nodes: set[str] = set()
+    included_item_nodes: set[str] = set()
+    columns = 5
+    for index, topic in enumerate(topics):
+        slug = str(topic.get("slug", "topic"))
+        node_id = _canvas_node_id("topic", slug)
+        x = (index % columns) * 520
+        y = (index // columns) * 430
+        included_topic_nodes.add(node_id)
+        nodes.append(_canvas_topic_node(output_dir, topic, x, y))
+        doc_nodes, doc_edges, doc_ids = _canvas_document_nodes(
+            node_id, slug, items_by_topic.get(slug, []), item_note_names, x, y
+        )
+        nodes.extend(doc_nodes)
+        edges.extend(doc_edges)
+        included_item_nodes.update(doc_ids)
+
+    edges.extend(_canvas_topic_edges(topic_edges, topics, included_topic_nodes))
+
+    canvas = {
+        "nodes": nodes,
+        "edges": [
+            edge
+            for edge in edges
+            if edge["fromNode"] in included_topic_nodes | included_item_nodes
+            and edge["toNode"] in included_topic_nodes | included_item_nodes
+        ],
+    }
+    (maps_dir / "xbrain-map.generated.canvas").write_text(
+        json.dumps(canvas, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _storage_labels(storage: dict[str, dict[str, int | str]]) -> dict[str, tuple[str, ...]]:
@@ -384,71 +569,49 @@ def _sum_files(paths: list[Path]) -> int:
     return sum(_path_size(path) for path in paths)
 
 
-def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int | str | list[dict[str, int | str]]]:
-    """Global storage footprint shown in the dashboard.
+def _partition_data_files(data_dir: Path | None) -> dict[str, list[Path]]:
+    buckets: dict[str, list[Path]] = {"media": [], "snapshots": [], "store": [], "other": []}
+    if data_dir is None or not data_dir.exists():
+        return buckets
+    for path in _iter_regular_files(data_dir):
+        rel = path.relative_to(data_dir)
+        first = rel.parts[0] if rel.parts else ""
+        if first == "media":
+            buckets["media"].append(path)
+        elif first == "snapshots":
+            buckets["snapshots"].append(path)
+        elif path.suffix in {".json", ".yaml", ".yml"}:
+            buckets["store"].append(path)
+        else:
+            buckets["other"].append(path)
+    return buckets
 
-    `data_dir` carries JSON/YAML records and snapshots. Media may live there in
-    local mode (`data/media`) or directly in the generated vault in Drive mode
-    (`<output_dir>/_media`) to avoid duplicate Drive storage.
-    """
-    data_files = _iter_regular_files(data_dir)
-    data_media_files: list[Path] = []
-    snapshot_files: list[Path] = []
-    store_files: list[Path] = []
-    other_data_files: list[Path] = []
-    if data_dir is not None and data_dir.exists():
-        for path in data_files:
-            rel = path.relative_to(data_dir)
-            first = rel.parts[0] if rel.parts else ""
-            if first == "media":
-                data_media_files.append(path)
-            elif first == "snapshots":
-                snapshot_files.append(path)
-            elif path.suffix in {".json", ".yaml", ".yml"}:
-                store_files.append(path)
-            else:
-                other_data_files.append(path)
-    output_files = _iter_regular_files(output_dir)
-    output_media_root = (output_dir / _VAULT_MEDIA_SUBDIR).resolve(strict=False)
-    output_media_files = [
-        path
-        for path in output_files
-        if path.resolve(strict=False).is_relative_to(output_media_root)
-    ]
-    media_files = data_media_files if data_media_files else output_media_files
-    mirrored_media_files = output_media_files if data_media_files else []
-    media_storage = "data/media" if data_media_files else "vault/_media"
-    if not media_files:
-        media_storage = "none"
-    output_media_paths = set(output_media_files)
-    note_files = [
-        path
-        for path in output_files
-        if path.suffix == ".md" and path not in output_media_paths
-    ]
-    dashboard_files = [
-        path
-        for path in output_files
-        if path.name == "dashboard.html" and path not in output_media_paths
-    ]
-    store_bytes = _sum_files(store_files)
-    media_bytes = _sum_files(media_files)
-    mirrored_media_bytes = _sum_files(mirrored_media_files)
-    snapshot_bytes = _sum_files(snapshot_files)
-    other_data_bytes = _sum_files(other_data_files)
-    note_bytes = _sum_files(note_files)
-    dashboard_bytes = _sum_files(dashboard_files)
-    data_media_bytes = _sum_files(data_media_files)
-    output_media_bytes = _sum_files(output_media_files)
-    data_bytes = store_bytes + data_media_bytes + snapshot_bytes + other_data_bytes
-    vault_bytes = note_bytes + dashboard_bytes + output_media_bytes
-    total_bytes = data_bytes + vault_bytes
+
+def _output_media_files(output_files: list[Path], output_dir: Path) -> list[Path]:
+    media_root = (output_dir / _VAULT_MEDIA_SUBDIR).resolve(strict=False)
+    return [path for path in output_files if path.resolve(strict=False).is_relative_to(media_root)]
+
+
+def _storage_categories(
+    *,
+    store_bytes: int,
+    media_bytes: int,
+    snapshot_bytes: int,
+    note_bytes: int,
+    dashboard_bytes: int,
+    mirrored_media_bytes: int,
+    other_data_bytes: int,
+) -> list[dict[str, int | str]]:
     categories: list[dict[str, int | str]] = [
         {"label": "Store JSON/YAML", "bytes": store_bytes, "value": _human_bytes(store_bytes)},
         {"label": "Stored media", "bytes": media_bytes, "value": _human_bytes(media_bytes)},
         {"label": "Snapshots", "bytes": snapshot_bytes, "value": _human_bytes(snapshot_bytes)},
         {"label": "Generated notes", "bytes": note_bytes, "value": _human_bytes(note_bytes)},
-        {"label": "Dashboard HTML", "bytes": dashboard_bytes, "value": _human_bytes(dashboard_bytes)},
+        {
+            "label": "Dashboard HTML",
+            "bytes": dashboard_bytes,
+            "value": _human_bytes(dashboard_bytes),
+        },
     ]
     if mirrored_media_bytes:
         categories.append(
@@ -460,8 +623,63 @@ def _storage_summary(data_dir: Path | None, output_dir: Path) -> dict[str, int |
         )
     if other_data_bytes:
         categories.append(
-            {"label": "Other data", "bytes": other_data_bytes, "value": _human_bytes(other_data_bytes)}
+            {
+                "label": "Other data",
+                "bytes": other_data_bytes,
+                "value": _human_bytes(other_data_bytes),
+            }
         )
+    return categories
+
+
+def _storage_summary(
+    data_dir: Path | None, output_dir: Path
+) -> dict[str, int | str | list[dict[str, int | str]]]:
+    """Global storage footprint shown in the dashboard.
+
+    `data_dir` carries JSON/YAML records and snapshots. Media may live there in
+    local mode (`data/media`) or directly in the generated vault in Drive mode
+    (`<output_dir>/_media`) to avoid duplicate Drive storage.
+    """
+    data_files = _partition_data_files(data_dir)
+    output_files = _iter_regular_files(output_dir)
+    output_media_files = _output_media_files(output_files, output_dir)
+    data_media_files = data_files["media"]
+    media_files = data_media_files if data_media_files else output_media_files
+    mirrored_media_files = output_media_files if data_media_files else []
+    media_storage = "data/media" if data_media_files else "vault/_media"
+    if not media_files:
+        media_storage = "none"
+    output_media_paths = set(output_media_files)
+    note_files = [
+        path for path in output_files if path.suffix == ".md" and path not in output_media_paths
+    ]
+    dashboard_files = [
+        path
+        for path in output_files
+        if path.name == "dashboard.html" and path not in output_media_paths
+    ]
+    store_bytes = _sum_files(data_files["store"])
+    media_bytes = _sum_files(media_files)
+    mirrored_media_bytes = _sum_files(mirrored_media_files)
+    snapshot_bytes = _sum_files(data_files["snapshots"])
+    other_data_bytes = _sum_files(data_files["other"])
+    note_bytes = _sum_files(note_files)
+    dashboard_bytes = _sum_files(dashboard_files)
+    data_media_bytes = _sum_files(data_media_files)
+    output_media_bytes = _sum_files(output_media_files)
+    data_bytes = store_bytes + data_media_bytes + snapshot_bytes + other_data_bytes
+    vault_bytes = note_bytes + dashboard_bytes + output_media_bytes
+    total_bytes = data_bytes + vault_bytes
+    categories = _storage_categories(
+        store_bytes=store_bytes,
+        media_bytes=media_bytes,
+        snapshot_bytes=snapshot_bytes,
+        note_bytes=note_bytes,
+        dashboard_bytes=dashboard_bytes,
+        mirrored_media_bytes=mirrored_media_bytes,
+        other_data_bytes=other_data_bytes,
+    )
     return {
         "total_bytes": total_bytes,
         "data_bytes": data_bytes,
@@ -515,7 +733,9 @@ def _write_video_artifacts(items: list[Item], videos_dir: Path, strings: Strings
             if not source.raw_transcript:
                 continue
             folder = videos_dir / _video_folder_name(item, source)
-            _write_text_artifact(folder / "summary.md", _render_video_summary_artifact(item, source))
+            _write_text_artifact(
+                folder / "summary.md", _render_video_summary_artifact(item, source)
+            )
             _write_text_artifact(
                 folder / "transcript.md",
                 _render_video_transcript_artifact(item, source, strings),
@@ -784,9 +1004,7 @@ def _video_folder_name(item: Item, source: ContentSourceSuccess) -> str:
     return f"{item.created_at.date().isoformat()}-{slugify(title)}-{item.id}"
 
 
-def _video_digest_lines(
-    item: Item, source: ContentSourceSuccess, strings: Strings
-) -> list[str]:
+def _video_digest_lines(item: Item, source: ContentSourceSuccess, strings: Strings) -> list[str]:
     """Render an `x_video` source as an executive-summary section.
 
     `source.text` is the summary used by dashboard/enrich/topics. The raw
