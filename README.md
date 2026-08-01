@@ -1185,6 +1185,8 @@ client. Respect X's Terms of Service.
 | Document | Description |
 |----------|-------------|
 | [docs/tutorial.md](docs/tutorial.md) | **Start here** — end-to-end walkthrough from install to a searchable wiki. |
+| [docs/dashboard-style-guide.md](docs/dashboard-style-guide.md) | Design tokens and UX rules for the forest dashboard, workspaces, Ops, KPIs and served note viewer. |
+| [docs/dashboard-production-runbook.md](docs/dashboard-production-runbook.md) | Production serving, smoke checks, Basic Auth proxy notes and rollback for the dashboard service. |
 | [docs/digest-video.md](docs/digest-video.md) | Worked example: turn a bookmarked video caption into transcript + executive summary artifacts. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common failures & fixes (auth, PATH, digest-video, iCloud). |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How XBrain is shaped: pipeline stages, artifacts, rubrics, executors, invariants. |
@@ -1196,4 +1198,4 @@ code. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-*Last updated: 2026-05-19*
+*Last updated: 2026-08-01*

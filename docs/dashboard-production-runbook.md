@@ -1,7 +1,8 @@
 # Dashboard Production Runbook
 
-This runbook is for replacing the served XBrain dashboard with the redesigned
-forest dashboard on branch `redesign-dashboard-forest`.
+This runbook is for operating the served XBrain dashboard from `main`. The
+current production dashboard is the forest light/dark workspace UI served behind
+Basic Auth at `brainxterminal.duckdns.org`.
 
 ## Scope
 
@@ -20,10 +21,11 @@ reverse proxy access.
 
 ## Release Steps
 
-1. Check out the release branch.
+1. Check out the production branch and pull the latest GitHub state.
 
    ```bash
-   git switch redesign-dashboard-forest
+   git switch main
+   git pull --ff-only origin main
    ```
 
 2. Generate the latest dashboard artifact from the current XBrain data.
@@ -32,7 +34,7 @@ reverse proxy access.
    uv run xbrain generate
    ```
 
-3. Run the local served dashboard.
+3. Restart the local served dashboard.
 
    ```bash
    systemctl restart xbrain-dashboard.service
@@ -71,21 +73,23 @@ should include `WWW-Authenticate: Basic realm="BrainX Dashboard"`.
 
 ## Validation Evidence
 
-Before promoting the branch, run:
+Before restarting production after code changes, run:
 
 ```bash
 uv run pytest tests/test_dashboard.py -q
 uv run pytest -q
 ```
 
-The dashboard test suite covers workspace routing, theme tokens, accessible
-drawer behavior, chart drill-down controls, reduced-motion behavior, and copy
-consistency. Use a browser or Playwright against the served dashboard for final
-visual checks at desktop and mobile widths.
+The dashboard test suite covers workspace routing, theme tokens, compact KPI and
+Ops layout, accessible drawer behavior, chart drill-down controls,
+reduced-motion behavior, and copy consistency. Use a browser or Playwright
+against the served dashboard for final visual checks at desktop and mobile
+widths. Include `/notes?path=...` in visual checks because the web note viewer is
+served by the same process.
 
 ## Rollback
 
-1. Switch back to the previous known-good branch or tag.
+1. Switch back to the previous known-good commit or tag on `main`.
 2. Regenerate the dashboard with `uv run xbrain generate`.
 3. Restart `xbrain-dashboard.service` and reload Nginx if proxy settings changed.
 4. Re-run the smoke checks above.
