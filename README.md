@@ -25,6 +25,7 @@ it through a worksheet hand-off (see [Execution modes](#execution-modes)).
 
 - [Why XBrain](#why-xbrain)
 - [What you get](#what-you-get)
+- [Screenshots](#screenshots)
 - [Quick start](#quick-start)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
@@ -290,6 +291,18 @@ of truth is `data/items.json`.
 > (summaries, overviews, section headers like "Topics" / "Content") is fixed by
 > the rubrics in `src/xbrain/rubrics/` — Spanish on the live system; a config
 > parameter to switch languages is on the roadmap ([#16](https://github.com/VGonPa/xbrain/issues/16)).
+
+---
+
+## Screenshots
+
+The screenshots below use synthetic demo data, not a real XBrain corpus.
+
+![XBrain dashboard overview](docs/assets/screenshots/dashboard-overview.png)
+
+![Atlas Knowledge Graph map](docs/assets/screenshots/atlas-knowledge-graph.png)
+
+![Dashboard Ops and triage panels](docs/assets/screenshots/dashboard-ops.png)
 
 ---
 
