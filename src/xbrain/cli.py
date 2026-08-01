@@ -1313,11 +1313,11 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
         delete_modal = """
 <div class="modal" id="delete-modal" hidden>
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-    <h2 id="delete-title">Eliminar bookmark</h2>
-    <p>Se borrará la nota, el item del store y los ficheros generados de este bookmark.</p>
+    <h2 id="delete-title">Delete bookmark</h2>
+    <p>This removes the note, the store item, and generated files for this bookmark.</p>
     <div class="modal-actions">
-      <button class="modal-btn" id="delete-cancel" type="button">Cancelar</button>
-      <button class="modal-btn danger" id="delete-confirm" type="button">Eliminar</button>
+      <button class="modal-btn" id="delete-cancel" type="button">Cancel</button>
+      <button class="modal-btn danger" id="delete-confirm" type="button">Delete</button>
     </div>
   </div>
 </div>"""
@@ -1328,12 +1328,12 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     <div class="topic-state" id="topic-state">Loading...</div>
     <div class="topic-suggestions" id="topic-suggestions" hidden></div>
     <div class="modal-actions">
-      <button class="modal-btn" id="topic-cancel" type="button">Cerrar</button>
-      <button class="modal-btn" id="topic-accept" type="button">Aceptar</button>
-      <button class="modal-btn" id="topic-reject" type="button">Rechazar</button>
-      <button class="modal-btn" id="topic-regenerate" type="button">Regenerar</button>
-      <button class="modal-btn" id="topic-prioritize" type="button">Priorizar</button>
-      <button class="modal-btn primary" id="topic-promote" type="button">Promover + regenerar</button>
+      <button class="modal-btn" id="topic-cancel" type="button">Close</button>
+      <button class="modal-btn" id="topic-accept" type="button">Accept</button>
+      <button class="modal-btn" id="topic-reject" type="button">Reject</button>
+      <button class="modal-btn" id="topic-regenerate" type="button">Regenerate</button>
+      <button class="modal-btn" id="topic-prioritize" type="button">Prioritize</button>
+      <button class="modal-btn primary" id="topic-promote" type="button">Promote + regenerate</button>
     </div>
   </div>
 </div>"""
@@ -1433,7 +1433,7 @@ if (topicButton && topicModal && topicState) {{
       if (suggestions.length) {{
         topicSuggestions.hidden = false;
         topicSuggestions.innerHTML =
-          '<div class="topic-suggestions-title">Sugerencias a revisar</div>' +
+          '<div class="topic-suggestions-title">Suggestions to review</div>' +
           suggestions.map(slug =>
             '<label class="topic-suggestion">' +
             '<input type="checkbox" value="' + escapeHtml(slug) + '" checked>' +
@@ -1497,7 +1497,7 @@ if (topicButton && topicModal && topicState) {{
   if (topicPromote) topicPromote.addEventListener('click', () => {{
     const selected = selectedSuggestions();
     if (!selected.length) {{
-      setStatus('selecciona al menos una sugerencia');
+      setStatus('select at least one suggestion');
       return;
     }}
     runTopicAction('regenerate', {{
@@ -1541,91 +1541,151 @@ if (deleteButton && deleteModal && deleteCancel && deleteConfirm) {{
   }});
 }}
 </script>"""
+    theme_script = """
+<script>
+try {
+  const savedTheme = localStorage.getItem('xbrain.theme');
+  const prefersLight = matchMedia('(prefers-color-scheme: light)').matches;
+  document.documentElement.dataset.theme = savedTheme || (prefersLight ? 'light' : 'dark');
+} catch (error) {
+  document.documentElement.dataset.theme = 'dark';
+}
+</script>"""
+    note_theme_script = """
+<script>
+document.getElementById('note-theme')?.addEventListener('click', () => {
+  const root = document.documentElement;
+  const next = root.dataset.theme === 'light' ? 'dark' : 'light';
+  root.dataset.theme = next;
+  try { localStorage.setItem('xbrain.theme', next); } catch (error) {}
+});
+</script>"""
     page = f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="content-security-policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self';">
 <title>{escaped_title}</title>
+{theme_script}
 <style>
 :root {{
-  color-scheme: dark;
-  --bg:#0E0C08; --surface:#17130D; --surface-2:#211B12; --ink:#ECE6DA;
-  --muted:#BEB4A3; --faint:#8F8373; --hair:rgba(236,230,218,.13); --accent:#E0A233;
+  color-scheme:dark;
+  --radius-1:2px; --radius-2:4px; --radius-3:6px; --radius-4:8px; --radius-5:10px; --radius-panel:12px;
+  --color-bg:#07110D; --color-bg-wash:#0A1711; --color-panel:#0F1C16; --color-panel-raised:#14241C; --color-panel-soft:#102018;
+  --color-input:#08140F; --color-text:#EDF4E8; --color-text-muted:#AEBBAB; --color-text-faint:#6F806F;
+  --color-border:rgba(237,244,232,.11); --color-border-soft:rgba(237,244,232,.06); --color-border-strong:rgba(237,244,232,.2);
+  --color-accent:#D7B56D; --color-accent-soft:rgba(215,181,109,.15); --color-forest:#2E6B4E; --color-danger:#D66A57;
+  --color-danger-soft:rgba(214,106,87,.15); --color-overlay:rgba(3,8,5,.68);
+  --shadow-panel:0 1px 0 rgba(0,0,0,.45), 0 22px 60px -42px rgba(0,0,0,.95);
+  --shadow-focus:0 0 0 3px rgba(215,181,109,.16);
+  --bg:var(--color-bg); --surface:var(--color-panel); --surface-2:var(--color-panel-raised);
+  --muted:var(--color-text-muted); --faint:var(--color-text-faint); --ink:var(--color-text);
+  --hair:var(--color-border); --accent:var(--color-accent);
+  --display:Georgia, "Times New Roman", serif; --ui:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }}
-* {{ box-sizing:border-box; }}
+[data-theme="light"] {{
+  color-scheme:light;
+  --color-bg:#F4F6EF; --color-bg-wash:#E9EFE3; --color-panel:#FFFFFF; --color-panel-raised:#F9FBF5; --color-panel-soft:#EDF3E9;
+  --color-input:#FBFDF8; --color-text:#142219; --color-text-muted:#52614F; --color-text-faint:#7B8977;
+  --color-border:rgba(20,34,25,.12); --color-border-soft:rgba(20,34,25,.07); --color-border-strong:rgba(20,34,25,.2);
+  --color-accent:#806226; --color-accent-soft:rgba(128,98,38,.12); --color-forest:#24563D; --color-danger:#B44D3E;
+  --color-danger-soft:rgba(180,77,62,.13); --color-overlay:rgba(20,34,25,.22);
+  --shadow-panel:0 1px 0 rgba(20,34,25,.04), 0 22px 60px -46px rgba(20,34,25,.35);
+  --shadow-focus:0 0 0 3px rgba(128,98,38,.15);
+  --bg:var(--color-bg); --surface:var(--color-panel); --surface-2:var(--color-panel-raised);
+  --muted:var(--color-text-muted); --faint:var(--color-text-faint); --ink:var(--color-text);
+  --hair:var(--color-border); --accent:var(--color-accent);
+}}
+* {{ box-sizing:border-box; margin:0; padding:0; }}
+html {{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }}
 body {{
-  margin:0; background:var(--bg); color:var(--ink);
-  font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin:0; background:var(--bg); color:var(--ink); min-height:100vh; overflow-x:hidden; position:relative;
+  font-family:var(--ui); font-size:15px; line-height:1.55;
 }}
-.wrap {{ max-width:920px; margin:0 auto; padding:22px 16px 46px; }}
-.top {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }}
+.note-glow {{
+  position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    linear-gradient(115deg, transparent 0 34%, color-mix(in srgb,var(--color-forest) 12%, transparent) 34% 35%, transparent 35% 100%),
+    repeating-linear-gradient(90deg, color-mix(in srgb,var(--color-text) 2.5%, transparent) 0 1px, transparent 1px 72px),
+    linear-gradient(180deg, var(--color-bg-wash), var(--color-bg) 42%);
+}}
+.wrap {{ position:relative; z-index:1; max-width:1040px; margin:0 auto; padding:38px 22px 56px; }}
+.top {{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:18px;
+  padding-bottom:16px; border-bottom:1px solid var(--hair);
+}}
 .btn {{
-  color:var(--ink); text-decoration:none; border:1px solid var(--hair);
-  background:var(--surface-2); border-radius:7px; padding:9px 11px; font-size:13px;
+  color:var(--muted); text-decoration:none; border:1px solid var(--hair);
+  background:var(--color-panel-soft); border-radius:var(--radius-3); padding:8px 10px;
+  font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  min-height:34px; display:inline-flex; align-items:center; justify-content:center;
 }}
-.btn.primary {{ border-color:rgba(224,162,51,.38); color:var(--accent); }}
+.btn.primary {{ border-color:var(--color-border-strong); color:var(--accent); background:var(--color-accent-soft); }}
 .btn.subtle {{ color:var(--faint); background:transparent; }}
-button.btn {{ font:inherit; cursor:pointer; }}
+.btn.icon {{ width:34px; padding:0; margin-left:auto; font-size:14px; line-height:1; }}
+button.btn {{ cursor:pointer; }}
+.btn:hover {{ color:var(--ink); border-color:var(--color-border-strong); }}
+.btn:focus-visible,.note-icon:focus-visible,.modal-btn:focus-visible {{ outline:0; box-shadow:var(--shadow-focus); }}
 button.btn:disabled {{ opacity:.52; cursor:wait; }}
-.note-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:-12px 0 18px; }}
+.note-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:-4px 0 18px; }}
 .note-icon {{
-  width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center;
-  color:var(--faint); background:transparent; border:1px solid var(--hair);
-  border-radius:5px; font:600 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center;
+  color:var(--faint); background:var(--color-panel-soft); border:1px solid var(--hair);
+  border-radius:var(--radius-3); font:600 13px/1 var(--mono);
   cursor:pointer; padding:0;
 }}
-.note-icon:hover {{ color:var(--accent); border-color:rgba(224,162,51,.44); }}
-.note-icon.danger:hover {{ color:#F0A29A; border-color:rgba(240,122,109,.46); }}
+.note-icon:hover {{ color:var(--accent); border-color:var(--color-border-strong); }}
+.note-icon.danger:hover {{ color:var(--color-danger); border-color:color-mix(in srgb,var(--color-danger) 44%, transparent); }}
 .note-icon:disabled {{ opacity:.45; cursor:wait; }}
-.action-status {{ align-self:center; color:var(--faint); font-size:12px; min-height:1em; }}
+.action-status {{ align-self:center; color:var(--faint); font-size:11px; min-height:1em; }}
 .modal[hidden] {{ display:none; }}
 .modal {{
   position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
-  padding:18px; background:rgba(7,6,4,.72);
+  padding:18px; background:var(--color-overlay); backdrop-filter:blur(2px);
 }}
 .modal-card {{
   width:min(360px, 100%); background:var(--surface); border:1px solid var(--hair);
-  border-radius:8px; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.42);
+  border-radius:var(--radius-4); padding:18px; box-shadow:var(--shadow-panel);
 }}
 .modal-card h2 {{ margin:0 0 8px; font-size:18px; line-height:1.2; }}
 .modal-card p {{ margin:0; color:var(--muted); font-size:13.5px; line-height:1.5; }}
 .modal-actions {{ display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:16px; }}
 .modal-btn {{
-  color:var(--ink); background:var(--surface-2); border:1px solid var(--hair);
-  border-radius:6px; padding:8px 10px; font:inherit; font-size:13px; cursor:pointer;
+  color:var(--ink); background:var(--color-panel-soft); border:1px solid var(--hair);
+  border-radius:var(--radius-3); padding:8px 10px; font:inherit; font-size:13px; cursor:pointer;
 }}
-.modal-btn.primary {{ color:var(--accent); border-color:rgba(224,162,51,.42); }}
-.modal-btn.danger {{ color:#F0A29A; border-color:rgba(240,122,109,.42); }}
+.modal-btn.primary {{ color:var(--accent); border-color:var(--color-border-strong); }}
+.modal-btn.danger {{ color:var(--color-danger); border-color:color-mix(in srgb,var(--color-danger) 44%, transparent); }}
 .modal-btn:disabled {{ opacity:.52; cursor:wait; }}
 .topic-state {{
   color:var(--muted); font-size:12.5px; line-height:1.5; border:1px solid var(--hair);
-  background:#100E0A; border-radius:7px; padding:10px; overflow-wrap:anywhere;
+  background:var(--color-input); border-radius:var(--radius-3); padding:10px; overflow-wrap:anywhere;
 }}
 .topic-suggestions {{
   margin-top:10px; color:var(--muted); font-size:12.5px; line-height:1.4;
-  border:1px solid var(--hair); background:#100E0A; border-radius:7px; padding:10px;
+  border:1px solid var(--hair); background:var(--color-input); border-radius:var(--radius-3); padding:10px;
   max-height:190px; overflow:auto;
 }}
 .topic-suggestions-title {{ color:var(--ink); font-weight:650; margin-bottom:8px; }}
 .topic-suggestion {{ display:flex; align-items:center; gap:8px; margin:6px 0; overflow-wrap:anywhere; }}
 .topic-suggestion input {{ margin:0; accent-color:var(--accent); flex:0 0 auto; }}
 article {{
-  background:var(--surface); border:1px solid var(--hair); border-radius:10px;
-  padding:22px; overflow:hidden;
+  background:var(--surface); border:1px solid var(--hair); border-radius:var(--radius-panel);
+  padding:28px 32px; overflow:hidden; box-shadow:var(--shadow-panel);
 }}
 .eyebrow {{
-  color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.12em;
+  color:var(--accent); font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.16em;
   margin:0 0 8px;
 }}
-h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-weight:650; }}
-.path {{ color:var(--faint); font-size:12px; word-break:break-word; margin-bottom:22px; }}
+h1 {{ margin:0 0 10px; font-family:var(--display); font-size:clamp(28px, 7vw, 48px); line-height:1.04; font-weight:650; }}
+.path {{ color:var(--faint); font-family:var(--mono); font-size:11px; letter-spacing:.04em; word-break:break-word; margin-bottom:20px; }}
 .note-body {{ color:var(--muted); font-size:15.5px; line-height:1.68; overflow-wrap:anywhere; }}
 .note-body > *:first-child {{ margin-top:0; }}
 .note-body > *:last-child {{ margin-bottom:0; }}
 .note-body h1,.note-body h2,.note-body h3,.note-body h4 {{
-  color:var(--ink); line-height:1.18; margin:1.35em 0 .55em; font-weight:650;
+  color:var(--ink); font-family:var(--display); line-height:1.18; margin:1.35em 0 .55em; font-weight:650;
 }}
 .note-body h1 {{ font-size:30px; }}
 .note-body h2 {{ font-size:24px; border-top:1px solid var(--hair); padding-top:20px; }}
@@ -1635,29 +1695,30 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
 .note-body ul,.note-body ol {{ padding-left:1.35em; margin:.85em 0; }}
 .note-body li {{ margin:.35em 0; }}
 .note-body blockquote {{
-  margin:1em 0; padding:.1em 0 .1em 1em; border-left:3px solid rgba(224,162,51,.55);
+  margin:1em 0; padding:.1em 0 .1em 1em; border-left:3px solid var(--accent);
   color:var(--ink);
 }}
 .note-body img {{
-  display:block; max-width:100%; height:auto; margin:1.15em auto; border-radius:8px;
-  border:1px solid var(--hair); background:#100E0A;
+  display:block; max-width:100%; height:auto; margin:1.15em auto; border-radius:var(--radius-4);
+  border:1px solid var(--hair); background:var(--color-input);
 }}
 .note-body code {{
-  font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em;
-  background:#100E0A; color:var(--ink); border:1px solid var(--hair); border-radius:5px;
+  font-family:var(--mono); font-size:.92em;
+  background:var(--color-input); color:var(--ink); border:1px solid var(--hair); border-radius:var(--radius-2);
   padding:.08em .32em;
 }}
 .note-body pre {{
-  background:#100E0A; border:1px solid var(--hair); border-radius:8px; padding:13px;
+  background:var(--color-input); border:1px solid var(--hair); border-radius:var(--radius-4); padding:13px;
   overflow:auto; white-space:pre; margin:1em 0;
 }}
 .note-body pre code {{ border:0; padding:0; background:transparent; }}
 .note-body hr {{ border:0; border-top:1px solid var(--hair); margin:1.4em 0; }}
 @media (max-width:640px) {{
-  .wrap {{ padding:14px 10px 34px; }}
-  article {{ padding:16px 14px; border-radius:8px; }}
-  .top {{ position:sticky; top:0; z-index:2; background:rgba(14,12,8,.94); padding:8px 0; }}
+  .wrap {{ padding:18px 18px 38px; }}
+  article {{ padding:18px 16px; border-radius:var(--radius-4); }}
+  .top {{ position:sticky; top:0; z-index:2; background:color-mix(in srgb,var(--bg) 92%, transparent); padding:8px 0; backdrop-filter:blur(8px); }}
   .btn {{ flex:1 1 auto; text-align:center; }}
+  .btn.icon {{ flex:0 0 34px; margin-left:0; }}
   .action-status {{ flex:1 0 100%; }}
   .note-body {{ font-size:14.5px; line-height:1.64; }}
   .note-body h1 {{ font-size:25px; }}
@@ -1666,11 +1727,13 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
 </style>
 </head>
 <body>
+<div class="note-glow"></div>
 <main class="wrap">
   <nav class="top">
     <a class="btn primary" href="/#chat">Ask XBrain</a>
     <a class="btn" href="/">Dashboard</a>
     <a class="btn" href="{html.escape(obsidian_href)}">Obsidian</a>
+    <button class="btn icon" id="note-theme" type="button" aria-label="Toggle light and dark theme" title="Toggle theme">◐</button>
   </nav>
   <article>
     <p class="eyebrow">XBrain note</p>
@@ -1682,6 +1745,7 @@ h1 {{ margin:0 0 8px; font-size:clamp(26px, 7vw, 46px); line-height:1.08; font-w
 </main>
 {topic_modal}
 {delete_modal}
+{note_theme_script}
 {note_actions_script}
 </body>
 </html>
@@ -1809,15 +1873,29 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
         def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib API name
             logging.getLogger(__name__).info("dashboard: " + fmt, *args)
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
+        def _send(
+            self,
+            status: int,
+            body: bytes,
+            content_type: str,
+            *,
+            include_body: bool = True,
+        ) -> None:
             self.send_response(status)
             self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            if include_body:
+                self.wfile.write(body)
 
-        def _send_json(self, status: int, payload: dict[str, object]) -> None:
-            self._send(status, json.dumps(payload).encode(), "application/json")
+        def _send_json(
+            self,
+            status: int,
+            payload: dict[str, object],
+            *,
+            include_body: bool = True,
+        ) -> None:
+            self._send(status, json.dumps(payload).encode(), "application/json", include_body=include_body)
 
         def _read_json(self, *, max_bytes: int = 4096) -> dict[str, object]:
             raw_length = self.headers.get("content-length", "0")
@@ -1837,6 +1915,25 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             if not isinstance(payload, dict):
                 raise ValueError("request body must be a JSON object")
             return payload
+
+        def do_HEAD(self) -> None:  # noqa: N802 - stdlib API name
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path == "/api/status":
+                self._send_json(200, state_payload(), include_body=False)
+                return
+            if path in ("/", "/dashboard.html"):
+                try:
+                    self._send(
+                        200,
+                        dashboard_bytes(),
+                        "text/html; charset=utf-8",
+                        include_body=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
+                    self._send_json(500, {"error": str(exc)}, include_body=False)
+                return
+            self._send_json(404, {"error": "not found"}, include_body=False)
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib API name
             parsed = urlparse(self.path)

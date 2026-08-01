@@ -695,6 +695,7 @@ uv run xbrain <command> [options]
 | `taxonomy-health` | Read-only diagnostics for taxonomy drift: `misc` usage, confidence counts, single-topic assignments, unused topics and repeated `suggested_new_topics`. |
 | `topics` | Synthesise topic pages. `--executor`, `--apply <file>`, `--resynth`. |
 | `generate` | Render the wiki into the vault. |
+| `serve-dashboard` | Serve the generated dashboard with the note viewer plus Ops/Ask endpoints. Defaults to `127.0.0.1:8765`; keep it behind local access or an authenticated reverse proxy. See [Dashboard production runbook](docs/dashboard-production-runbook.md). |
 | `sync` | `extract` + `fetch` + `generate`, in order. |
 | `status` | Counts and last-run timestamps. |
 | `drive` | Manage Google Drive login, root-folder selection, sync and status. |

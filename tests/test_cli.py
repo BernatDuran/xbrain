@@ -1,4 +1,10 @@
 # tests/test_cli.py
+import http.client
+import os
+import socket
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +67,78 @@ def test_status_runs_on_empty_store(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "Items: 0" in result.stdout
+
+
+def test_serve_dashboard_supports_head_smoke_checks(tmp_path: Path, monkeypatch):
+    _setup_repo(tmp_path, monkeypatch)
+    dashboard = tmp_path / "vault" / "x-knowledge" / "dashboard.html"
+    dashboard.parent.mkdir(parents=True)
+    dashboard.write_text("<!doctype html><title>XBrain</title>", encoding="utf-8")
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    env = os.environ.copy()
+    env["XBRAIN_REPO_ROOT"] = str(tmp_path)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "xbrain.cli",
+            "serve-dashboard",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+                conn.request("GET", "/api/status")
+                response = conn.getresponse()
+                response.read()
+                conn.close()
+                if response.status == 200:
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(f"serve-dashboard did not start: {stderr}")
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("HEAD", "/dashboard.html")
+        response = conn.getresponse()
+        assert response.status == 200
+        assert response.getheader("content-type") == "text/html; charset=utf-8"
+        assert int(response.getheader("content-length") or "0") == len(
+            dashboard.read_bytes()
+        )
+        assert response.read() == b""
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("HEAD", "/api/status")
+        response = conn.getresponse()
+        assert response.status == 200
+        assert response.getheader("content-type") == "application/json"
+        assert response.read() == b""
+        conn.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def test_drive_select_root_writes_local_selection(tmp_path: Path, monkeypatch):
@@ -219,6 +297,14 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert "items/source.md" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "obsidian://open?path=" in html
+    assert '<html lang="en" data-theme="dark">' in html
+    assert "xbrain.theme" in html
+    assert 'id="note-theme"' in html
+    assert "note-glow" in html
+    assert "--color-bg" in html
+    assert "Forest" not in html  # note titles stay source-driven, not dashboard-branded
+    assert "Sugerencias" not in html
+    assert "selecciona" not in html
     assert 'id="topics-note"' in html
     assert 'id="topic-modal"' in html
     assert 'id="topic-suggestions"' in html
@@ -274,6 +360,8 @@ def test_render_note_page_omits_reprocess_without_item_id(tmp_path: Path):
     assert 'id="topics-note"' not in html
     assert "/api/topic-state" not in html
     assert "/api/topic-action" not in html
+    assert 'id="note-theme"' in html
+    assert "xbrain.theme" in html
 
 
 def test_run_topic_action_accepts_and_rejects_topic_assignment(tmp_path: Path, monkeypatch):

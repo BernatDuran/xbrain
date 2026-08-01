@@ -1,5 +1,6 @@
 # tests/test_dashboard.py
 import json
+import re
 from datetime import datetime, timezone
 
 from PIL import Image
@@ -368,10 +369,96 @@ def test_render_dashboard_includes_library_chat():
     html = render_dashboard_html({"meta": {"total": 1}})
     assert 'id="chat-form"' in html
     assert 'id="nav-chat"' in html
+    assert 'id="nav-atlas"' in html
+    assert 'id="nav-ops"' in html
     assert 'id="dashboard-view"' in html
     assert 'id="chat-view"' in html
     assert "/api/chat" in html
     assert "Ask XBrain" in html
+
+
+def test_render_dashboard_declares_workspace_navigation_sections():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert 'data-workspace="overview"' in html
+    assert 'data-workspace="atlas"' in html
+    assert 'data-workspace="ops"' in html
+    assert 'id="signal-rail"' in html
+    assert 'data-workspace-section="overview atlas ops"' in html
+    assert "const WORKSPACES=" in html
+    assert "viewFromHash" in html
+    assert "ask:'chat'" in html
+    assert "signal-card" in html
+    assert "style=\"height:" not in html
+    assert "style=\"width:" not in html
+    assert "style=\"color:" not in html
+    close_index = html.rfind("</html>")
+    assert close_index != -1
+    assert not html[close_index + len("</html>") :].strip()
+
+
+def test_render_dashboard_includes_forest_theme_controls_and_tokens():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert 'data-theme="dark"' in html
+    assert 'id="theme-toggle"' in html
+    assert "xbrain.theme" in html
+    assert "--color-forest" in html
+    assert "--color-bark" in html
+    assert "--color-stone" in html
+    assert "--shadow-panel" in html
+    assert "--mauve" not in html
+    assert "--sand" not in html
+
+
+def test_dashboard_component_css_uses_tokens_after_theme_declarations():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    component_css = html.split("*{box-sizing", 1)[1].split("</style>", 1)[0]
+    assert not re.search(r"#[0-9A-Fa-f]{3,8}|rgba\(", component_css)
+
+
+def test_dashboard_kpi_and_ops_layout_is_compact():
+    html = render_dashboard_html({"meta": {"total": 1}})
+
+    assert ".kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))" in html
+    assert ".kpi{padding:13px 16px 12px" in html
+    assert "min-height:92px" in html
+    assert ".kpi .num{font-family:var(--display);font-weight:600;font-size:34px" in html
+    assert ".signal-rail{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}" in html
+    assert ".signal-card{border:1px solid var(--hairline);border-radius:var(--radius-4);background:var(--color-panel-soft);color:inherit;padding:9px 11px" in html
+    assert ".signal-card .value{font-family:var(--display);font-size:24px" in html
+    assert ".ops{margin-top:12px;display:grid" in html
+    assert ".ops-list{display:flex;flex-direction:column;gap:6px;max-height:238px" in html
+
+
+def test_dashboard_copy_is_language_consistent():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    for phrase in (
+        "Pregunta sobre tu biblioteca",
+        "Sin consulta",
+        "Escribe una pregunta",
+        "Buscando fuentes",
+        "Sin respuesta",
+        "Sin fuentes",
+        "Abre este dashboard",
+    ):
+        assert phrase not in html
+
+
+def test_render_dashboard_uses_accessible_controls_for_theme_topics_and_drawer():
+    html = render_dashboard_html({"meta": {"total": 1}})
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'aria-labelledby="dw-title"' in html
+    assert 'aria-hidden="true" inert' in html
+    assert 'aria-label="Close detail drawer"' in html
+    assert 'aria-live="polite"' in html
+    assert 'aria-label="Question for XBrain"' in html
+    assert 'id="tg-misc" type="button" aria-pressed="false"' in html
+    assert 'class="topic-rank-row"' in html
+    assert 'class="chart-action"' in html
+    assert "prefers-reduced-motion" in html
+    assert "REDUCED_MOTION" in html
+    assert "SCROLL_OPTS" in html
+    assert 'All 45' not in html
 
 
 def test_render_dashboard_uses_web_note_links_with_obsidian_fallback():
@@ -611,3 +698,68 @@ def test_generate_writes_dashboard_with_valid_blob_and_links_it(tmp_path):
     data = json.loads(blob)
     assert data["meta"]["total"] == 2
     assert data["meta"]["bookmarks"] == 1 and data["meta"]["own"] == 1
+
+
+def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    items = [_item("1"), _item("2", media=[MediaVideoPending(url="https://v")])]
+    data = compute_dashboard_data(items, {}, {"1": "/v/1.md", "2": "/v/2.md"}, [], "x")
+    dashboard = tmp_path / "dashboard.html"
+    dashboard.write_text(render_dashboard_html(data), encoding="utf-8")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 900, "height": 700})
+        page.goto(dashboard.resolve().as_uri() + "#ask", wait_until="networkidle")
+        assert page.locator("#chat-view").evaluate("el => el.classList.contains('on')")
+        assert not page.locator("#dashboard-view").evaluate("el => el.classList.contains('on')")
+        assert (
+            page.locator("#dashboard-view").evaluate("el => el.getClientRects().length")
+            == 0
+        )
+        assert page.locator("[aria-current='page']").evaluate("el => el.id") == "nav-chat"
+        assert page.locator("#drawer").evaluate("el => el.inert === true")
+
+        page.click("#nav-dashboard")
+        assert page.locator(".chart-actions").first.evaluate(
+            "el => getComputedStyle(el).display"
+        ) == "flex"
+        page.click("[data-action='latest-month']")
+        page.wait_for_timeout(120)
+        assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "false"
+        assert page.locator("#drawer").evaluate("el => el.inert === false")
+        assert page.evaluate("document.activeElement.id") == "dwclose"
+
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(120)
+        assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "true"
+        assert page.locator("#drawer").evaluate("el => el.inert === true")
+
+        page.click("[data-signal='readiness']")
+        page.wait_for_timeout(120)
+        assert page.evaluate("location.hash") == "#overview"
+        browser.close()
+
+
+def test_dashboard_runtime_reduced_motion_disables_topics_animation(tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    items = [_item("1"), _item("2", topic="agentic-engineering")]
+    data = compute_dashboard_data(items, {}, {}, [], "x")
+    dashboard = tmp_path / "dashboard.html"
+    dashboard.write_text(render_dashboard_html(data), encoding="utf-8")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 900, "height": 700})
+        page.emulate_media(reduced_motion="reduce")
+        page.goto(dashboard.resolve().as_uri() + "#atlas", wait_until="networkidle")
+        assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        assert (
+            page.evaluate(
+                "echarts.getInstanceByDom(document.getElementById('c-topics')).getOption().animation"
+            )
+            is False
+        )
+        browser.close()
