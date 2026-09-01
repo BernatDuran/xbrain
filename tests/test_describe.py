@@ -474,6 +474,66 @@ def test_describe_all_transitions_downloaded_article_image_to_described(tmp_path
     assert report.photos_described == 1
 
 
+def test_describe_all_repairs_decorative_article_cover_without_force(tmp_path: Path):
+    """A lead image with no caption is stale even when its rubric version is current."""
+    media_root = tmp_path / "media"
+    downloaded = _downloaded(item_id="1", index=0, media_root=media_root)
+    cover = MediaPhotoDescribed(
+        url=downloaded.url,
+        local_path=downloaded.local_path,
+        width=downloaded.width,
+        height=downloaded.height,
+        bytes_size=downloaded.bytes_size,
+        downloaded_at=downloaded.downloaded_at,
+        is_decorative=True,
+        description="",
+        description_lang="English",
+        description_version="v1",
+        described_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc),
+    )
+    block = ArticleImageBlock(media=cover)
+    item = _article_item("1", block)
+    client = _FakeVisionClient(
+        [[_judgment(0, description="A white profile with an exposed red brain.")]]
+    )
+
+    report = describe_all(
+        {"1": item},
+        media_root,
+        model="xiaomi/mimo-v2.5",
+        output_language="English",
+        description_version="v1",
+        client=client,
+    )
+
+    assert report.photos_described == 1
+    assert isinstance(block.media, MediaPhotoDescribed)
+    assert block.media.is_decorative is False
+    assert block.media.description == "A white profile with an exposed red brain."
+    directive = client.messages.calls[0]["messages"][0]["content"][-1]["text"]
+    assert "article lead/cover" in directive
+    assert "Always set is_decorative=false" in directive
+
+
+def test_describe_all_rejects_empty_article_cover_description(tmp_path: Path):
+    media_root = tmp_path / "media"
+    block = ArticleImageBlock(media=_downloaded(item_id="1", index=0, media_root=media_root))
+    item = _article_item("1", block)
+    client = _FakeVisionClient([[_judgment(0, decorative=True)]])
+
+    with pytest.raises(RuntimeError, match="describe batches failed"):
+        describe_all(
+            {"1": item},
+            media_root,
+            model="xiaomi/mimo-v2.5",
+            output_language="English",
+            description_version="v1",
+            client=client,
+        )
+
+    assert isinstance(block.media, MediaPhotoDownloaded)
+
+
 def test_describe_all_persists_extracted_text_fields(tmp_path: Path):
     """Vision OCR fields are stored separately from the visual description."""
     media_root = tmp_path / "media"

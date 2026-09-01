@@ -1023,11 +1023,9 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "false"
         assert page.locator("#drawer").evaluate("el => el.inert === false")
         assert page.evaluate("document.activeElement.id") == "dwclose"
-        assert page.locator(".article-media-card img").count() == 1
-        assert page.locator(".article-media-card img").evaluate("image => image.naturalWidth") == 3
-        assert page.locator(".article-media-card figcaption").inner_text() == (
-            "Diagrama <clave> & seguro."
-        )
+        assert page.locator("#drawer img").count() == 0
+        assert page.locator("#drawer").get_by_text("Article images").count() == 0
+        assert "Diagrama <clave> & seguro." not in page.locator("#drawer").inner_text()
         drawer_actions = page.locator("#drawer .drawer-actions .drawer-action")
         assert drawer_actions.count() == 4
         assert (

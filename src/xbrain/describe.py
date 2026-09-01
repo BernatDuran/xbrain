@@ -144,6 +144,7 @@ class _Candidate:
     entry: MediaPhotoDownloaded | MediaPhotoDescribed
     location: str = "post"
     block: ArticleImageBlock | None = None
+    requires_description: bool = False
 
 
 def _recoverable_errors() -> tuple[type[Exception], ...]:
@@ -291,9 +292,15 @@ def _iter_item_candidates(
         yield _Candidate(item_id=item_id, item=item, index=index, entry=entry)
     for image_index, block in _article_image_blocks(item):
         entry = block.media
+        requires_description = image_index == 0
+        missing_required_description = (
+            requires_description
+            and isinstance(entry, MediaPhotoDescribed)
+            and (entry.is_decorative or not entry.description.strip())
+        )
         if not _is_eligible(
             entry,
-            force=force,
+            force=force or missing_required_description,
             current_version=current_version,
             current_language=current_language,
         ):
@@ -312,6 +319,7 @@ def _iter_item_candidates(
             entry=entry,
             location="article",
             block=block,
+            requires_description=requires_description,
         )
 
 
@@ -777,6 +785,7 @@ def _run_one_batch(
             return
         try:
             judgments = _parse_batch_response(response, batch_size=len(batch))
+            _validate_required_descriptions(batch, judgments)
         except json.JSONDecodeError as exc:
             # Surface stop_reason so a `max_tokens` truncation is
             # diagnosable from the warning line alone — otherwise the
@@ -860,16 +869,51 @@ def _build_user_blocks(batch: list[_Candidate], media_root: Path) -> list[dict]:
     # Trailing text directive: tell the model the index range so its JSON
     # list is contractually one-to-one with the input order. Indices are
     # zero-based to match Python and the rubric's example.
+    required = [
+        str(index) for index, candidate in enumerate(batch) if candidate.requires_description
+    ]
+    required_instruction = ""
+    if required:
+        required_instruction = (
+            f" Images {', '.join(required)} are article lead/cover images. "
+            "Always set is_decorative=false and provide a concrete visual description for each "
+            "of them, even when the artwork is primarily aesthetic."
+        )
     blocks.append(
         {
             "type": "text",
             "text": (
                 f"Describe images 0 through {len(batch) - 1}. "
                 "Return a JSON list with one entry per image, in the order received."
+                f"{required_instruction}"
             ),
         }
     )
     return blocks
+
+
+def _required_description_error(candidate: _Candidate, judgment: dict) -> str | None:
+    """Explain why a required cover judgment is unusable, if it is."""
+    if not candidate.requires_description:
+        return None
+    if judgment["is_decorative"] or not judgment["description"].strip():
+        return "article cover images must be non-decorative and have a visual description"
+    return None
+
+
+def _validate_required_descriptions(batch: list[_Candidate], judgments: list[dict]) -> None:
+    """Reject an empty/decorative judgment for an article lead image."""
+    by_index = {entry["index"]: entry for entry in judgments}
+    for index, candidate in enumerate(batch):
+        judgment = by_index.get(index)
+        if judgment is None:
+            continue
+        error = _required_description_error(candidate, judgment)
+        if error:
+            raise ValueError(
+                f"vision response omitted the required article cover description at index "
+                f"{index}: {error}"
+            )
 
 
 def _apply_batch_judgments(
@@ -964,6 +1008,7 @@ def export_describe_worksheet(
             "item_id": candidate.item_id,
             "location": candidate.location,
             "index": candidate.index,
+            "requires_description": candidate.requires_description,
             "local_path": candidate.entry.local_path,
             "image_path": str((media_root / candidate.entry.local_path).resolve()),
             "text": candidate.item.text,
@@ -987,7 +1032,9 @@ def export_describe_worksheet(
             "For each entry in `photos`, READ the image at its `image_path` and append "
             "one object to `judgments` with keys {item_id, location, index, is_decorative, "
             "description, extracted_text, extracted_text_language, extracted_text_confidence}. "
-            "Follow `rubric`. Mark avatars, reaction memes and abstract "
+            "Follow `rubric`. Entries with `requires_description=true` are article cover images: "
+            "always mark them non-decorative and describe their visible content. Mark other "
+            "avatars, reaction memes and abstract "
             "backgrounds as is_decorative=true with an empty description. Then run: "
             "xbrain describe --apply <this file>."
         ),
@@ -1134,7 +1181,14 @@ def apply_describe_worksheet(
                 entry=entry,
                 location="article",
                 block=block,
+                requires_description=index == 0,
             )
+            error = _required_description_error(candidate, hit)
+            if error:
+                label = f"{item.id}#article:{index}"
+                invalid.append((label, [error]))
+                matched.add((item.id, "article", index))
+                continue
             block.media = _apply_judgment(
                 candidate, hit, language=language, version=version, described_at=now
             )

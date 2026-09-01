@@ -88,6 +88,7 @@ def test_export_and_apply_article_image_judgment(tmp_path):
     ws = json.loads(ws_path.read_text(encoding="utf-8"))
     assert n == 1
     assert ws["photos"][0]["location"] == "article"
+    assert ws["photos"][0]["requires_description"] is True
     ws["judgments"] = [
         {
             "item_id": "1",
@@ -104,6 +105,41 @@ def test_export_and_apply_article_image_judgment(tmp_path):
     assert invalid == []
     assert isinstance(block.media, MediaPhotoDescribed)
     assert block.media.description == "Un diagrama dentro del articulo."
+
+
+def test_apply_rejects_decorative_article_cover_judgment(tmp_path):
+    block = ArticleImageBlock(media=_photo("1/article/0.png"))
+    store = {"1": _article_item("1", block)}
+    ws_path = tmp_path / "ws.json"
+    ws_path.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "language": "Spanish",
+                "judgments": [
+                    {
+                        "item_id": "1",
+                        "location": "article",
+                        "index": 0,
+                        "is_decorative": True,
+                        "description": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    applied, invalid = apply_describe_worksheet(store, ws_path)
+
+    assert applied == 0
+    assert isinstance(block.media, MediaPhotoDownloaded)
+    assert invalid == [
+        (
+            "1#article:0",
+            ["article cover images must be non-decorative and have a visual description"],
+        )
+    ]
 
 
 def test_apply_transitions_to_described_and_enforces_decorative_empty(tmp_path):

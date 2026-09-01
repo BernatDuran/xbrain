@@ -30,6 +30,11 @@ For every image you receive, decide one of two buckets:
   scenes whose content is the point (e.g. a queue at a launch event,
   a protest sign, a hardware close-up).
 
+- **Article cover exception:** when the task identifies an image as an article
+  lead/cover image, always use `is_decorative: false` and provide a concrete
+  visual description. Covers are visible reading context even when their
+  artwork is primarily aesthetic.
+
 When in doubt, prefer **`is_decorative: false`**: a description is
 cheap, missing topic signal is not.
 
