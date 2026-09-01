@@ -329,6 +329,17 @@ def test_long_form_and_media_counts():
         md["article_images_pending"],
         md["videos"],
     ) == (1, 1, 1, 1, 1)
+    article_row = next(row for row in data["library_items"] if row["id"] == "5")
+    assert article_row["article_images"] == [
+        {
+            "path": "_media/5/article/0.png",
+            "description": "Un gráfico de barras.",
+            "alt": "Article image 1",
+            "width": 3,
+            "height": 3,
+            "decorative": False,
+        }
+    ]
 
 
 def test_ops_section_counts_pending_work_and_article_failures():
@@ -941,7 +952,32 @@ def test_generate_writes_dashboard_with_valid_blob_and_links_it(tmp_path):
 def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
     from playwright.sync_api import sync_playwright
 
-    items = [_item("1"), _item("2", media=[MediaVideoPending(url="https://v")])]
+    items = [
+        _item(
+            "1",
+            content=Content(
+                fetched_at=DT,
+                sources=[
+                    ContentSourceSuccess(
+                        kind="x_article",
+                        url="https://x.com/i/article/1",
+                        text="body",
+                        blocks=[
+                            ArticleTextBlock(text="body"),
+                            ArticleImageBlock(
+                                media=_described_photo(
+                                    "1/article/0.png", description="Diagrama <clave> & seguro."
+                                )
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ),
+        _item("2", media=[MediaVideoPending(url="https://v")]),
+    ]
+    (tmp_path / "_media" / "1" / "article").mkdir(parents=True)
+    Image.new("RGB", (3, 3), "green").save(tmp_path / "_media" / "1" / "article" / "0.png")
     data = compute_dashboard_data(items, {}, {"1": "/v/1.md", "2": "/v/2.md"}, [], "x")
     dashboard = tmp_path / "dashboard.html"
     dashboard.write_text(render_dashboard_html(data), encoding="utf-8")
@@ -968,11 +1004,16 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         assert page.locator("#filter-date-to").input_value() == "2026-06-30"
 
         page.click("#nav-library")
-        page.click(".library-title")
+        page.click('[data-library-id="1"]')
         page.wait_for_timeout(120)
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "false"
         assert page.locator("#drawer").evaluate("el => el.inert === false")
         assert page.evaluate("document.activeElement.id") == "dwclose"
+        assert page.locator(".article-media-card img").count() == 1
+        assert page.locator(".article-media-card img").evaluate("image => image.naturalWidth") == 3
+        assert page.locator(".article-media-card figcaption").inner_text() == (
+            "Diagrama <clave> & seguro."
+        )
 
         page.keyboard.press("Escape")
         page.wait_for_timeout(120)

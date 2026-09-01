@@ -97,6 +97,33 @@ def _article_media_counts(item: Item) -> tuple[int, int, int]:
     return downloaded, pending, undescribed
 
 
+def _article_image_rows(item: Item) -> list[dict[str, Any]]:
+    """Downloaded inline Article images exposed to document detail views.
+
+    Keep the dashboard payload lightweight: image bytes remain in the canonical
+    ``_media`` tree and the UI receives only the safe relative path plus the
+    already-persisted description metadata.
+    """
+    rows: list[dict[str, Any]] = []
+    for index, block in enumerate(_article_image_blocks(item), start=1):
+        entry = block.media
+        if not isinstance(entry, _DOWNLOADED_PHOTO_TYPES):
+            continue
+        description = entry.description.strip() if isinstance(entry, MediaPhotoDescribed) else ""
+        alt = (block.alt or "").strip()
+        rows.append(
+            {
+                "path": f"_media/{entry.local_path}",
+                "description": description or alt,
+                "alt": alt or f"Article image {index}",
+                "width": entry.width,
+                "height": entry.height,
+                "decorative": isinstance(entry, MediaPhotoDescribed) and entry.is_decorative,
+            }
+        )
+    return rows
+
+
 def humanize_topic(slug: str) -> str:
     """Turn a topic slug into a display label (``ai-coding`` → ``AI Coding``)."""
     out: list[str] = []
@@ -161,11 +188,13 @@ def _row(
     id2note: dict[str, str],
     slug2label: dict[str, str],
     item_storage: dict[str, dict[str, Any]],
+    *,
+    include_article_images: bool = False,
 ) -> dict[str, Any]:
     """A drill-down post row: who/when/what plus deep links to X and the vault."""
     topic = _primary(item)
     suggestions = _suggested_topics(item)
-    return {
+    row: dict[str, Any] = {
         "id": item.id,
         "title": _graph_item_label(item),
         "handle": item.author.handle,
@@ -193,6 +222,9 @@ def _row(
         "note": id2note.get(item.id),
         "storage": item_storage.get(item.id),
     }
+    if include_article_images:
+        row["article_images"] = _article_image_rows(item)
+    return row
 
 
 def _article_sources(item: Item) -> list[ContentSourceSuccess | ContentSourceFailure]:
@@ -1062,7 +1094,18 @@ def compute_dashboard_data(
     own_items = [i for i in items if i.source == "own_tweet"]
     photo_posts = [i for i in items if _downloaded_image_entries(i)]
     library_items = sorted(
-        rows(items), key=lambda row: (str(row["captured_date"]), str(row["id"])), reverse=True
+        [
+            _row(
+                item,
+                id2note,
+                slug2label,
+                item_storage,
+                include_article_images=True,
+            )
+            for item in items
+        ],
+        key=lambda row: (str(row["captured_date"]), str(row["id"])),
+        reverse=True,
     )
 
     return {

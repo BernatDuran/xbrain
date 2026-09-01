@@ -340,6 +340,13 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .chart{cursor:pointer}
 .chart:focus-visible{outline:0;box-shadow:var(--shadow-focus);border-radius:var(--radius-3)}
 .dwsec{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);margin:26px 0 12px}
+.article-media{display:grid;gap:14px}
+.article-media-card{margin:0;border:1px solid var(--hairline);border-radius:9px;background:var(--color-panel-soft);overflow:hidden}
+.article-media-card a{display:block;background:var(--color-input)}
+.article-media-card img{display:block;width:100%;height:auto;max-height:360px;object-fit:contain;background:var(--color-input)}
+.article-media-card figcaption{padding:11px 13px;border-top:1px solid var(--hairline-2);font-size:12.5px;line-height:1.5;color:var(--ink-muted);white-space:pre-line}
+.article-media-error{padding:22px 13px;text-align:center;color:var(--failed);font-family:var(--mono);font-size:10px;letter-spacing:.04em}
+.article-media-status{margin-top:10px;color:var(--ink-faint);font-family:var(--mono);font-size:10px;line-height:1.45}
 .thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .thumb{position:relative;display:block}
 .thumb img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:7px;border:1px solid var(--hairline);display:block}
@@ -716,6 +723,7 @@ const mk=id=>{
 const mlabelFull=m=>{const[y,mm]=m.split('-');return['January','February','March','April','May','June','July','August','September','October','November','December'][+mm-1]+' '+y};
 const WEB_NOTES=location.protocol==='http:'||location.protocol==='https:';
 const noteHref=n=>WEB_NOTES?'/notes?path='+encodeURIComponent(n):'obsidian://open?path='+encodeURIComponent(n);
+const mediaHref=path=>WEB_NOTES?'/media?path='+encodeURIComponent(path):path;
 const noteAnchor=(n,label='note ↗',cls='lk',title='Open note')=>n?`<a class="${cls}" href="${esc(noteHref(n))}"${WEB_NOTES?' target="_blank" rel="noopener"':''} title="${esc(title)}">${esc(label)}</a>`:'';
 const chartIds=['c-growth','c-activity','c-sources','c-graph','c-graph-timeline','c-topics','c-longform','c-media','c-authors','c-domains','c-storage'];
 function resizeCharts(){chartIds.forEach(id=>{const el=document.getElementById(id);if(el&&echarts.getInstanceByDom(el))echarts.getInstanceByDom(el).resize();});}
@@ -763,7 +771,7 @@ let searchPaths=null,searchScores=new Map(),searchTimer=0,searchRequest=0;
 const normalized=value=>String(value||'').toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 function metadataMatches(item){
  if(!sharedState.query)return true;
- const haystack=[item.title,item.summary,item.post_text,item.handle,item.name,item.domain,item.topic,(item.topic_labels||[]).join(' '),(item.suggested_topics||[]).join(' ')].map(normalized).join(' ');
+ const haystack=[item.title,item.summary,item.post_text,item.handle,item.name,item.domain,item.topic,(item.topic_labels||[]).join(' '),(item.suggested_topics||[]).join(' '),(item.article_images||[]).map(image=>image.description||image.alt||'').join(' ')].map(normalized).join(' ');
  return normalized(sharedState.query).split(/\s+/).filter(Boolean).every(token=>haystack.includes(token));
 }
 function itemPassesShared(item,{includeQuery=true}={}){
@@ -826,11 +834,23 @@ function renderLibrary(){
  host.innerHTML=`<table class="library-table"><thead><tr><th>Document</th><th>Topic</th><th>Type</th><th>Dates</th><th>Status</th></tr></thead><tbody>${rows.map(item=>`<tr><td><button class="library-title" type="button" data-library-id="${esc(item.id)}">${esc(item.title||item.summary||item.id)}</button><div class="library-summary">${esc(item.summary||'')}</div></td><td><div>${esc(item.topic||'—')}</div><div class="library-meta">${esc((item.topic_labels||[]).slice(1,3).join(' · '))}</div></td><td>${esc(contentLabel(item.content_type))}</td><td><div class="library-meta">Added ${esc(item.captured_date||item.date)}</div><div class="library-meta">Published ${esc(item.published_date||'—')}</div></td><td>${badge(item.confidence||'unknown',item.confidence||'unknown')}${item.needs_review?badge('review','low'):''}</td></tr>`).join('')}</tbody></table>`;
  host.querySelectorAll('[data-library-id]').forEach(button=>button.onclick=()=>openLibraryItem(button.dataset.libraryId));
 }
+function articleMedia(item){
+ const images=item?.article_images||[];
+ const pending=Number(item?.media_counts?.article_images_pending||0);
+ if(!images.length&&!pending)return '';
+ const cards=images.map((entry,index)=>{
+  const caption=entry.description||(entry.decorative?'Decorative image.':'Description pending.');
+  const captionId='article-caption-'+index;
+  return `<figure class="article-media-card"><a href="${esc(mediaHref(entry.path))}" target="_blank" rel="noopener" title="Open full-size image"><img data-article-image src="${esc(mediaHref(entry.path))}" alt="${esc(entry.alt||'Article image '+(index+1))}" aria-describedby="${captionId}" loading="lazy" decoding="async"><div class="article-media-error" data-article-image-error hidden>Image could not be loaded.</div></a><figcaption id="${captionId}">${esc(caption)}</figcaption></figure>`;
+ }).join('');
+ const status=pending?`<p class="article-media-status">${nf(pending)} additional ${pending===1?'image is':'images are'} pending download and will appear after media processing.</p>`:'';
+ return `<div class="dwsec">Article images · ${nf(images.length)}</div><div class="article-media">${cards}</div>${status}`;
+}
 function openLibraryItem(id){
  const item=libraryById[String(id)];if(!item)return;
  const reading=Math.max(1,Math.round((item.word_count||0)/220));
  const topicLinks=(item.topic_labels||[]).map((label,index)=>badge(label,index===0?'kind':'topic')).join('');
- openDrawer('Document',item.title||item.id,contentLabel(item.content_type)+' · '+nf(item.word_count||0)+' words · ~'+reading+' min',`<p class="ov">${esc(item.summary||item.post_text||'')}</p><div class="badges">${topicLinks}${badge(item.confidence,item.confidence)}${item.needs_review?badge('needs review','low'):''}</div><div class="dwsec">Dates and source</div><p class="ov">Added ${esc(item.captured_date||item.date)} · published ${esc(item.published_date||'—')} · @${esc(item.handle||'—')}${item.domain?' · '+esc(item.domain):''}</p><div class="chart-actions">${noteAnchor(item.note,'Open note','chart-action','Open note')}${lk(item.url,'Open original')}<button class="chart-action" type="button" data-item-atlas="${esc(item.id)}">Show in Atlas</button><button class="chart-action" type="button" data-item-ask="${esc(item.id)}">Ask about this</button></div>`);
+ openDrawer('Document',item.title||item.id,contentLabel(item.content_type)+' · '+nf(item.word_count||0)+' words · ~'+reading+' min',`<p class="ov">${esc(item.summary||item.post_text||'')}</p><div class="badges">${topicLinks}${badge(item.confidence,item.confidence)}${item.needs_review?badge('needs review','low'):''}</div>${articleMedia(item)}<div class="dwsec">Dates and source</div><p class="ov">Added ${esc(item.captured_date||item.date)} · published ${esc(item.published_date||'—')} · @${esc(item.handle||'—')}${item.domain?' · '+esc(item.domain):''}</p><div class="chart-actions">${noteAnchor(item.note,'Open note','chart-action','Open note')}${lk(item.url,'Open original')}<button class="chart-action" type="button" data-item-atlas="${esc(item.id)}">Show in Atlas</button><button class="chart-action" type="button" data-item-ask="${esc(item.id)}">Ask about this</button></div>`);
  document.querySelectorAll('[data-item-atlas]').forEach(button=>button.onclick=()=>{closeDrawer();setView('atlas');const current=libraryById[button.dataset.itemAtlas];if(current&&current.topic_slug){graphState.focusSlug=current.topic_slug;graphState.showDocs=true;graphState.expanded.add(current.topic_slug);syncGraphButtons();renderGraph();setTimeout(()=>openGraphItem('item:'+current.id),80)}});
  document.querySelectorAll('[data-item-ask]').forEach(button=>button.onclick=()=>{const current=libraryById[button.dataset.itemAsk];closeDrawer();openAsk(current?[current.id]:null);chatQuestion.value='What are the most useful ideas in this document?';document.getElementById('chat-scope').checked=true;chatQuestion.focus()});
 }
@@ -1484,6 +1504,7 @@ function bindGraphItemActions(item){
 }
 function openGraphItem(id){
  const item=graphItemById[id];if(!item)return;
+ const libraryItem=libraryById[String(item.item_id)]||{};
  const topicLinks=(item.topics||[]).map(slug=>badge(graphTopicBySlug[slug]?.label||slug,slug===item.primary_topic?'kind':'topic')).join('');
  const served=WEB_NOTES;
  const suggestions=(item.suggested_topics||[]).map(s=>badge('+'+s)).join('');
@@ -1493,6 +1514,7 @@ function openGraphItem(id){
  openDrawer('Document',item.label,contentLabel(item.content_type)+' · '+graphDateValue(item)+' · @'+item.author,
   `<p class="ov">${esc(item.summary||'')}</p>`+
   `<div class="badges">${topicLinks}${badge(item.confidence,item.confidence)}${item.needs_review?badge('needs review','low'):''}${suggestions}</div>`+
+  articleMedia(libraryItem)+
   `<div class="dwsec">Actions</div><div class="chart-actions">${noteAnchor(item.note,'Open note','chart-action','Open note')}${lk(item.url,'Open original')}<button class="chart-action" type="button" data-graph-pin="${esc(item.id)}">${graphPrefs.positions[item.id]?.pinned?'Unpin':'Pin'}</button>${servedActions}</div>`+
   `${served?'':'<p class="ov">Topic editing requires the served dashboard.</p>'}`);
  document.querySelectorAll('[data-graph-pin]').forEach(btn=>btn.onclick=()=>{const pinned=toggleGraphPin(btn.dataset.graphPin);btn.textContent=pinned?'Unpin':'Pin';});
@@ -1679,6 +1701,7 @@ function openDrawer(kick,title,meta,html){
  document.getElementById('dw-title').textContent=title;
  document.getElementById('dw-meta').textContent=meta;
  const c=document.getElementById('dw-content');c.innerHTML=html;c.scrollTop=0;
+ c.querySelectorAll('[data-article-image]').forEach(image=>image.addEventListener('error',()=>{image.hidden=true;const error=image.parentElement?.querySelector('[data-article-image-error]');if(error)error.hidden=false;}));
  drawer.setAttribute('aria-hidden','false');
  drawer.inert=false;
  if(shell) shell.inert=true;
