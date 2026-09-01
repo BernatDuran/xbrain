@@ -97,11 +97,12 @@ uv run xbrain generate
 
 ## 6. See the whole corpus at a glance
 
-`generate` also writes `dashboard.html` — a self-contained interactive dashboard
-with forest light/dark themes, compact KPIs, workspace navigation
-(`Overview`, `Atlas`, `Ops`, `Ask`), the Atlas Knowledge Graph
-(`Map`, `Timeline`, `List`), chart drill-downs, source evidence, photo
-thumbnails and deep links back to each post + note. Open it from the
+`generate` also writes `dashboard.html` — a self-contained interactive workspace
+with forest light/dark themes and navigation for `Library`, `Atlas`,
+`Analytics`, `Operations`, plus a global `Ask` drawer. Library provides search,
+combined filters, sorting, quick views and document drawers. The same selection
+drives the Atlas `Map`, `Timeline` and keyboard-friendly `Documents` view and
+every Analytics chart/table. Open it from the
 **Dashboard** link at the top of `_index.md`, or directly in your browser:
 
 ```bash
@@ -109,12 +110,12 @@ thumbnails and deep links back to each post + note. Open it from the
 open ~/Documents/Vault/vault/learnings/x-knowledge/dashboard.html
 ```
 
-When the dashboard is served with `xbrain serve-dashboard`, note links open a
-themed web note viewer (`/notes?path=...`) so they work from Safari/mobile and
-share the same light/dark preference as the dashboard. The served dashboard can
-also run the daily refresh, retry failed bookmarked article fetches from its
-compact Ops panel, answer library questions from Ask, and run topic review
-actions from Atlas document drawers.
+When the dashboard is served with `xbrain serve-dashboard`, search also scans the
+full generated note text and note links open a themed web viewer
+(`/notes?path=...`) so they work from Safari/mobile. The served dashboard can run
+the daily refresh, retry failed article sources from Operations, answer a
+question against the current filtered selection, and run topic review actions
+from Atlas document drawers.
 When the HTML is opened as a local file, those same links fall back to Obsidian
 deep links.
 

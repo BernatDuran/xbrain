@@ -67,9 +67,9 @@ own, you already have the raw material.
 
 ## What you get
 
-A **three-layer wiki** inside your Obsidian vault, plus an interactive Atlas
-dashboard. Read top-down for the map, bottom-up for a single post, or use the
-Atlas Knowledge Graph to move across related topics, notes and time.
+A **three-layer wiki** inside your Obsidian vault, plus an interactive knowledge
+workspace. Start in Library to search and filter what you saved, move to Atlas
+to follow relationships, or use Analytics to understand composition and quality.
 
 All three layers are markdown notes inside a single Obsidian vault, under
 `learnings/x-knowledge/`. Each layer is denser than the one below it: many
@@ -304,6 +304,26 @@ The screenshots below use synthetic demo data, not a real XBrain corpus.
 
 ![Dashboard Ops and triage panels](docs/assets/screenshots/dashboard-ops.png)
 
+The dashboard is organized around four low-friction workspaces:
+
+- **Library** combines metadata search, served full-note search, topic/content/
+  confidence/author/domain/date filters, useful quick views, sorting, and a
+  document drawer.
+- **Atlas** puts the mind map first and adds a publication/acquisition timeline
+  plus a keyboard-friendly Documents view. Relation width can represent either
+  affinity or shared-document volume.
+- **Analytics** recalculates every KPI, chart, and table from the same selection.
+  Clicking a chart segment applies a filter that is immediately visible in
+  Library and Atlas.
+- **Operations** owns refresh/retry controls, failure evidence, and storage.
+  **Ask** is a global drawer that can use either the whole library or the current
+  filtered selection.
+
+Filter state is stored locally and reflected in the URL, so analytical views can
+be bookmarked or shared between your own devices. Open the generated file
+directly for metadata search; use `xbrain serve-dashboard` for full-note search,
+Ask, note viewing, and operational actions.
+
 ---
 
 ## Quick start
@@ -487,6 +507,9 @@ Google Drive mode is optional. In local mode (`[drive].enabled = false`),
 XBrain behaves as before: `data/` and the generated Obsidian vault are local.
 In Drive mode, XBrain uses a local cache for the current run and synchronizes
 that cache with the selected Drive folder before and after write commands.
+Uploads now happen only after a command succeeds. XBrain also fingerprints the
+remote tree before and after the command, refuses to upload over concurrent
+Drive changes, and will not mirror an empty or structurally invalid cache.
 
 There is no extra LLM cost. Drive API calls use Google Drive API quota, and the
 uploaded files count against your Google Drive storage. If your Google account
@@ -709,7 +732,7 @@ uv run xbrain <command> [options]
 | `taxonomy-health` | Read-only diagnostics for taxonomy drift: `misc` usage, confidence counts, single-topic assignments, unused topics and repeated `suggested_new_topics`. |
 | `topics` | Synthesise topic pages. `--executor`, `--apply <file>`, `--resynth`. |
 | `generate` | Render the wiki into the vault, including `dashboard.html` and the derived Obsidian Canvas map at `maps/xbrain-map.generated.canvas`. |
-| `serve-dashboard` | Serve the generated dashboard with the Atlas Knowledge Graph, note viewer, Ops/Ask endpoints, and served topic actions. Defaults to `127.0.0.1:8765`; keep it behind local access or an authenticated reverse proxy. See [Dashboard production runbook](docs/dashboard-production-runbook.md). |
+| `serve-dashboard` | Serve Library full-text search, Atlas, cross-filtered Analytics, the note viewer, Operations and contextual Ask. Defaults to `127.0.0.1:8765`; mutation/Ask requests require same-origin action headers and expensive endpoints are rate-limited. Keep it behind local access or an authenticated reverse proxy. See [Dashboard production runbook](docs/dashboard-production-runbook.md). |
 | `sync` | `extract` + `fetch` + `generate`, in order. |
 | `status` | Counts and last-run timestamps. |
 | `drive` | Manage Google Drive login, root-folder selection, sync and status. |
@@ -1156,12 +1179,15 @@ xbrain/
 │   ├── worksheet.py      # the enrich worksheet hand-off
 │   ├── topic_synth.py    # topic-overview synthesis (api + worksheet)
 │   ├── topics.py         # topic-page computation + rendering
+│   ├── dashboard.py      # dashboard metrics, Library rows and Atlas payload
+│   ├── dashboard_http.py # origin/header and in-process rate-limit primitives
 │   ├── validate.py       # the mechanical validator (guardrails)
 │   ├── rubrics.py        # load the declarative rubrics + guardrails
 │   ├── rubrics/          # rubric-*.md + guardrails.yaml (the processing rules)
 │   ├── generate.py       # render item notes + index + log
 │   └── notes_io.py       # shared markdown helpers
 ├── scripts/              # import_chrome_session.py / import_safari_session.py
+├── deploy/               # hardened systemd + Nginx production examples
 ├── tests/                # pytest suite (test-first; one test file per module)
 ├── config.toml.example   # configuration template
 └── pyproject.toml        # deps, tooling, `poe` tasks
@@ -1199,9 +1225,9 @@ client. Respect X's Terms of Service.
 | Document | Description |
 |----------|-------------|
 | [docs/tutorial.md](docs/tutorial.md) | **Start here** — end-to-end walkthrough from install to a searchable wiki. |
-| [docs/atlas-knowledge-graph.md](docs/atlas-knowledge-graph.md) | Atlas Knowledge Graph data contract, Map/Timeline/List controls, local layout persistence, served actions, and Obsidian Canvas export. |
-| [docs/dashboard-style-guide.md](docs/dashboard-style-guide.md) | Design tokens and UX rules for the forest dashboard, workspaces, Ops, KPIs and served note viewer. |
-| [docs/dashboard-production-runbook.md](docs/dashboard-production-runbook.md) | Production serving, smoke checks, Basic Auth proxy notes and rollback for the dashboard service. |
+| [docs/atlas-knowledge-graph.md](docs/atlas-knowledge-graph.md) | Atlas data contract, Map/Timeline/Documents controls, shared selection, stable layout persistence, served actions, and Canvas export. |
+| [docs/dashboard-style-guide.md](docs/dashboard-style-guide.md) | Design tokens and UX rules for Library, Atlas, Analytics, Operations, Ask, accessibility, and the note viewer. |
+| [docs/dashboard-production-runbook.md](docs/dashboard-production-runbook.md) | Hardened production serving, security/rate-limit smoke checks, systemd/Nginx examples, and rollback. |
 | [docs/digest-video.md](docs/digest-video.md) | Worked example: turn a bookmarked video caption into transcript + executive summary artifacts. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common failures & fixes (auth, PATH, digest-video, iCloud). |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How XBrain is shaped: pipeline stages, artifacts, rubrics, executors, invariants. |
@@ -1213,4 +1239,4 @@ code. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-*Last updated: 2026-08-01*
+*Last updated: 2026-09-01*

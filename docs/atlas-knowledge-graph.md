@@ -11,16 +11,19 @@ The dashboard payload includes `graph`:
 
 - `topics`: topic nodes with counts, related topic count, recent activity,
   confidence buckets, content type buckets, overview, and optional topic note.
-- `items`: compact document nodes with title label, 180-character summary, date,
-  primary topic, all topics, content type, confidence, author, domain, note path,
-  original URL, review signal, and suggested topics.
-- `topic_edges`: co-occurrence edges calculated from item topics.
+- `items`: compact document nodes with title label, 180-character summary,
+  acquisition date, publication date, primary/all topics, content type,
+  confidence, author, domain, note path, original URL, review signal, and
+  suggested topics.
+- `topic_edges`: co-occurrence edges with both shared-document volume and
+  normalized affinity.
 - `membership_edges`: topic-to-item edges, marked `primary` or `secondary`.
 - `emerging_topics`: suggested topics that have not been promoted to vocabulary.
 - `facets`: content, confidence, and month buckets.
 - `insights`: simple explainable signals such as most connected, isolated,
   needs review, recently active, and fastest growing.
-- `version`: deterministic hash used to invalidate incompatible local layouts.
+- `version`: deterministic schema/taxonomy hash. Adding documents no longer
+  discards a carefully arranged local layout.
 
 ## Atlas Views
 
@@ -30,9 +33,15 @@ Atlas exposes three internal views:
   only after search, explicit document toggle, or topic expansion.
 - `Timeline`: time scatter plot grouped by primary topic, sharing the same
   search, date, content type, and confidence filters.
-- `List`: accessible fallback for keyboard, mobile, and dense-corpus scanning.
+- `Documents`: accessible topic-and-document fallback for keyboard, mobile, and
+  dense-corpus scanning. It displays the actual filtered notes, not only topics.
 
-## Controls
+## Shared Selection and Controls
+
+The Library filter bar is shared by Library, Atlas, and Analytics. Topic,
+content, confidence, author, domain, full-text query, date basis, and date range
+therefore describe the same selection in every view. Filter state is reflected
+in URL parameters and persisted locally.
 
 - Search covers topic labels and slugs, item labels, summaries, authors,
   domains, item ids, and topic lists.
@@ -42,6 +51,8 @@ Atlas exposes three internal views:
 - Confidence filters are `All`, `High`, `Medium`, `Low`, `Unknown`,
   `Needs review`, and `Misc`.
 - `Documents` toggles document nodes globally.
+- `Affinity / Volume` switches edge width between normalized relatedness and
+  raw shared-document count.
 - Double-clicking a topic expands or collapses its documents.
 - Double-clicking a document opens its note via `/notes?path=...` when served
   and `obsidian://open?path=...` when opened locally.
@@ -57,7 +68,7 @@ Visual layout state is stored in browser `localStorage` under:
 xbrain.graph.layout.v1
 ```
 
-The stored payload is scoped by `graph.version` and can include:
+The stored payload records `graph.version` for compatibility and can include:
 
 - pinned node positions,
 - zoom and center,
@@ -67,8 +78,9 @@ The stored payload is scoped by `graph.version` and can include:
 - locally hidden topics.
 
 This does not modify `items.json`, generated Markdown, topic pages, or the
-Obsidian vault. `Reset layout` clears hidden topics and focus state. A new graph
-version invalidates stale layout state.
+Obsidian vault. `Reset layout` clears hidden topics and focus state. Layouts
+survive ordinary ingestion and change version only when the graph schema or
+taxonomy changes incompatibly.
 
 Topic drawers expose graph-only controls for local exploration:
 
@@ -91,6 +103,9 @@ reuse the existing local endpoints:
 - `POST /api/reprocess-note` for single-note reprocessing.
 - `GET /api/status` to wait for the background operation and reload the
   regenerated dashboard.
+
+Served POST actions require the dashboard's same-origin custom action header;
+direct browser forms and cross-site requests are rejected.
 
 When the dashboard is opened as a local HTML file, these write controls are
 disabled and the drawer states that topic editing requires the served dashboard.
@@ -129,8 +144,8 @@ uv run pytest
 For visual checks, generate a dashboard and verify:
 
 - `#atlas` renders a nonblank `#c-graph` canvas on desktop and mobile.
-- `Map`, `Timeline`, and `List` switch without page errors.
-- Date filters update all three views.
+- `Map`, `Timeline`, and `Documents` switch by click and arrow/Home/End keys.
+- Shared filters and acquisition/publication date choice update all three views.
 - Document drawers open notes locally and when served.
 - Served topic/reprocess actions start jobs and reload after completion.
 - `maps/xbrain-map.generated.canvas` is regenerated while

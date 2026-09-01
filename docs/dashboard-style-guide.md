@@ -36,24 +36,28 @@ Scale:
 
 - Cards are used only for repeated metrics, panels, modals, and the drawer. No card-in-card nesting.
 - Segmented controls express view or data range choices.
-- Workspace navigation separates Overview, Atlas, Ops, and Ask so the app never exposes the whole analytical surface at once.
+- Workspace navigation separates Library, Atlas, Analytics, and Operations; Ask remains available globally as a contextual drawer.
+- Library is the default route. Search, filters, quick views, sorting, and document detail belong there.
+- The shared filter bar is the single analytical state for Library, Atlas, and Analytics. It persists in both URL parameters and local storage.
 - Signal rail cards are compact command surfaces: they summarize one live metric, show proportional state, and navigate to the relevant detail.
 - Icon buttons are square, token-sized, and include accessible labels/tooltips.
 - Chips use the mono font, uppercase labels, and semantic colors.
 - Charts must use the active CSS theme, not hardcoded JS colors.
-- Drawers are used for drill-down detail so the primary dashboard remains dense.
+- Drawers are used for document/topic drill-down and contextual Ask so primary workspaces remain dense.
+- Every chart has a semantic label and a table or ranked-list alternative. Atlas Documents is the primary non-canvas graph alternative.
 - The served note viewer (`/notes`) uses the same forest tokens, theme persistence, compact controls, and editorial reading rhythm as the dashboard.
 
 ## Interaction Principles
 
-- First screen: live product dashboard, not a landing page.
+- First screen: searchable Library, not a landing page or undifferentiated KPI wall.
 - Preserve all existing dashboard actions: refresh, retry failures, command copy, drill-down charts, note links, and library chat.
 - Theme toggle persists in local storage and must not require a server.
 - Controls need clear hover, focus, active, disabled, and loading states.
-- Mobile layout keeps charts scannable with ranked fallbacks where a canvas chart is too dense.
+- Mobile layout keeps the primary search visible, folds secondary filters behind one 44px control, and uses ranked/table fallbacks where canvas is too dense.
+- All interactive controls expose visible focus, keyboard access, and at least a 44px touch target where they act as primary controls.
 - Production serving must stay local or behind authenticated reverse proxy access because the dashboard includes Ops and Ask actions.
-- KPI summaries stay as a compact 4-column system so eight metrics render as two dense rows on the primary dashboard surface.
-- Ops is a compact command surface: actions, pending counters, command copy, and triage signals should fit without turning the workspace into a second dashboard.
+- Analytics KPIs stay as a compact four-column system and always describe the current filtered selection.
+- Operations is the only home for maintenance and storage: actions, pending counters, failure evidence, command copy, and footprint.
 
 ## Copy Tone
 
