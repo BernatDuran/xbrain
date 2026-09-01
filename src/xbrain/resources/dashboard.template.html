@@ -478,17 +478,17 @@ footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--hairline);
 
 	  <section class="grid">
     <div class="panel span2" data-workspace-section="analytics">
-      <div class="phead"><div><span class="kick">01 · Acquisition</span><h3>Library growth over time</h3></div><div class="sub">added to library · cumulative</div></div>
+      <div class="phead"><div><span class="kick" id="analytics-growth-kick">01 · Acquisition</span><h3 id="analytics-growth-title">Library growth over time</h3></div><div class="sub" id="analytics-growth-sub">added to library · cumulative</div></div>
       <div class="chart-actions"><button class="chart-action" type="button" data-action="latest-month" aria-pressed="false">Latest month</button></div>
       <div class="chart chart-xl" id="c-growth"></div>
-      <details class="chart-fallback" id="table-growth"><summary>View acquisition data as a table</summary><div></div></details>
+      <details class="chart-fallback" id="table-growth"><summary id="analytics-growth-table-label">View acquisition data as a table</summary><div></div></details>
     </div>
 
     <div class="panel" data-workspace-section="analytics">
-      <div class="phead"><div><span class="kick">02 · Cadence</span><h3>Monthly acquisitions</h3></div><div class="sub">items added / month</div></div>
+      <div class="phead"><div><span class="kick">02 · Cadence</span><h3 id="analytics-activity-title">Monthly acquisitions</h3></div><div class="sub" id="analytics-activity-sub">items added / month</div></div>
       <div class="chart-actions"><button class="chart-action" type="button" data-action="latest-month" aria-pressed="false">Latest month</button></div>
       <div class="chart chart-md" id="c-activity"></div>
-      <details class="chart-fallback" id="table-activity"><summary>View monthly acquisitions as a table</summary><div></div></details>
+      <details class="chart-fallback" id="table-activity"><summary id="analytics-activity-table-label">View monthly acquisitions as a table</summary><div></div></details>
     </div>
 
     <div class="panel" data-workspace-section="analytics">
@@ -778,7 +778,12 @@ addEventListener('hashchange',()=>setView(viewFromHash(),{updateHash:false}));
 /* shared Library / Atlas / Analytics state */
 const FILTER_KEY='xbrain.filters.v2';
 const libraryById=Object.fromEntries(ITEMS.map(item=>[String(item.id),item]));
-const latestCaptured=ITEMS.map(item=>item.captured_date||item.date||'').sort().at(-1)||'';
+function itemDateValue(item,dateField){
+ const value=dateField==='published_date'?item?.published_date:(item?.captured_date||item?.date);
+ return String(value||'').slice(0,10);
+}
+function latestDateFor(dateField){return ITEMS.map(item=>itemDateValue(item,dateField)).filter(Boolean).sort().at(-1)||'';}
+const latestCaptured=latestDateFor('captured_date');
 function loadSharedState(){
  const params=new URLSearchParams(location.search);
  let saved={};try{saved=JSON.parse(localStorage.getItem(FILTER_KEY)||'{}')}catch(error){}
@@ -801,7 +806,7 @@ function itemPassesShared(item,{includeQuery=true}={}){
  if(!['all','review'].includes(sharedState.confidence)&&item.confidence!==sharedState.confidence)return false;
  if(sharedState.author!=='all'&&item.handle!==sharedState.author)return false;
  if(sharedState.domain!=='all'&&item.domain!==sharedState.domain)return false;
- const date=item[sharedState.dateField]||item.captured_date||item.date||'';
+ const date=itemDateValue(item,sharedState.dateField);
  if(sharedState.dateFrom&&date<sharedState.dateFrom)return false;
  if(sharedState.dateTo&&date>sharedState.dateTo)return false;
  if(sharedState.quick==='recent'&&latestCaptured&&String(item.captured_date||item.date).slice(0,7)!==latestCaptured.slice(0,7))return false;
@@ -1211,7 +1216,7 @@ function graphRange(){
 }
 function graphDateValue(item){
  const libraryItem=libraryById[String(item.item_id)];
- return libraryItem?.[sharedState.dateField]||item[sharedState.dateField]||item.captured_date||item.date||'';
+ return itemDateValue(libraryItem||item,sharedState.dateField);
 }
 function graphItemInDate(item){
  const range=graphRange();
@@ -1706,47 +1711,63 @@ function monthInterval(first,last){
 }
 function countRows(rows,key){const counts=new Map();rows.forEach(row=>{const value=typeof key==='function'?key(row):row[key];if(value)counts.set(value,(counts.get(value)||0)+1)});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0])))}
 function fallbackTable(id,headers,rows){const target=document.querySelector('#'+id+' > div');if(!target)return;target.innerHTML=`<table><thead><tr>${headers.map(value=>`<th>${esc(value)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody></table>`}
-function monthBounds(month){const [year,number]=month.split('-').map(Number);return {dateField:'captured_date',dateFrom:month+'-01',dateTo:new Date(Date.UTC(year,number,0)).toISOString().slice(0,10)};}
-function monthFilterActive(month){const bounds=monthBounds(month);return sharedState.dateField===bounds.dateField&&sharedState.dateFrom===bounds.dateFrom&&sharedState.dateTo===bounds.dateTo;}
-function setMonthFilter(month){
+function analyticsDateBasis(){
+ return sharedState.dateField==='published_date'
+  ? {field:'published_date',kpi:'Published · 30 days',context:'using publication date',growthKick:'01 · Publication',growthTitle:'Published corpus over time',growthSub:'published date · cumulative',activityTitle:'Monthly publications',activitySub:'items published / month',series:'Published items',monthHeader:'Publication month',growthTable:'View publication data as a table',activityTable:'View monthly publications as a table',latestTitle:'Filter Analytics to the latest publication month'}
+  : {field:'captured_date',kpi:'Added · 30 days',context:'using acquisition date',growthKick:'01 · Acquisition',growthTitle:'Library growth over time',growthSub:'added to library · cumulative',activityTitle:'Monthly acquisitions',activitySub:'items added / month',series:'Filtered library',monthHeader:'Acquisition month',growthTable:'View acquisition data as a table',activityTable:'View monthly acquisitions as a table',latestTitle:'Filter Analytics to the latest acquisition month'};
+}
+function monthBounds(month,dateField=sharedState.dateField){const [year,number]=month.split('-').map(Number);return {dateField,dateFrom:month+'-01',dateTo:new Date(Date.UTC(year,number,0)).toISOString().slice(0,10)};}
+function monthFilterActive(month,dateField=sharedState.dateField){const bounds=monthBounds(month,dateField);return sharedState.dateField===bounds.dateField&&sharedState.dateFrom===bounds.dateFrom&&sharedState.dateTo===bounds.dateTo;}
+function setMonthFilter(month,dateField=sharedState.dateField){
  if(!month)return;
- const bounds=monthBounds(month);
- if(!monthFilterActive(month))latestMonthUndoState={dateField:sharedState.dateField,dateFrom:sharedState.dateFrom,dateTo:sharedState.dateTo};
+ const bounds=monthBounds(month,dateField);
+ if(!monthFilterActive(month,dateField))latestMonthUndoState={dateField:sharedState.dateField,dateFrom:sharedState.dateFrom,dateTo:sharedState.dateTo};
  Object.assign(sharedState,bounds);renderSharedViews();
 }
 function undoMonthFilter(){
  Object.assign(sharedState,latestMonthUndoState||{dateField:'captured_date',dateFrom:'',dateTo:''});
  latestMonthUndoState=null;renderSharedViews();
 }
-function syncLatestMonthActions(month){
- const active=!!month&&monthFilterActive(month);
+function syncLatestMonthActions(month,basis){
+ const active=!!month&&monthFilterActive(month,basis.field);
  document.querySelectorAll('[data-action="latest-month"]').forEach(button=>{
   button.disabled=!month;button.classList.toggle('on',active);button.setAttribute('aria-pressed',String(active));
   button.textContent=active?'Undo latest month':'Latest month';
-  button.title=active?'Restore the previous date filter':'Filter Analytics to the latest acquisition month';
-  button.onclick=()=>{if(month){if(monthFilterActive(month))undoMonthFilter();else setMonthFilter(month)}};
+  button.title=active?'Restore the previous date filter':basis.latestTitle;
+  button.onclick=()=>{if(month){if(monthFilterActive(month,basis.field))undoMonthFilter();else setMonthFilter(month,basis.field)}};
  });
 }
 function renderAnalytics(){
  const rows=filteredItems();
- const latestStamp=latestCaptured?new Date(latestCaptured+'T00:00:00Z').getTime():Date.now();
- const added30=rows.filter(row=>{const age=latestStamp-new Date((row.captured_date||row.date)+'T00:00:00Z').getTime();return age>=0&&age<=30*86400000}).length;
+ const basis=analyticsDateBasis();
+ const latestBasisDate=latestDateFor(basis.field);
+ const latestStamp=latestBasisDate?new Date(latestBasisDate+'T00:00:00Z').getTime():Date.now();
+ const recent30=rows.filter(row=>{const date=itemDateValue(row,basis.field);if(!date)return false;const age=latestStamp-new Date(date+'T00:00:00Z').getTime();return age>=0&&age<=30*86400000}).length;
  const review=rows.filter(row=>row.needs_review).length;
  const ready=rows.filter(row=>row.processing_ready).length;
+ document.getElementById('analytics-growth-kick').textContent=basis.growthKick;
+ document.getElementById('analytics-growth-title').textContent=basis.growthTitle;
+ document.getElementById('analytics-growth-sub').textContent=basis.growthSub;
+ document.getElementById('analytics-activity-title').textContent=basis.activityTitle;
+ document.getElementById('analytics-activity-sub').textContent=basis.activitySub;
+ document.getElementById('analytics-growth-table-label').textContent=basis.growthTable;
+ document.getElementById('analytics-activity-table-label').textContent=basis.activityTable;
+ document.getElementById('c-growth').setAttribute('aria-label',basis.growthTitle+'. Use the data table below for a text alternative.');
+ document.getElementById('c-activity').setAttribute('aria-label',basis.activityTitle+'. Use the data table below for a text alternative.');
  renderSignals(rows);
- const analyticalKpis=[['Filtered items',nf(rows.length),'of '+nf(ITEMS.length)+' library items',false],['Added · 30 days',nf(added30),'using acquisition date',false],['Needs review',nf(review),'shared taxonomy rule',review>0],['Processing health',pct(ready,rows.length)+'%',nf(ready)+' current enrichments',rows.length>0&&pct(ready,rows.length)<95]];
+ const analyticalKpis=[['Filtered items',nf(rows.length),'of '+nf(ITEMS.length)+' library items',false],[basis.kpi,nf(recent30),basis.context,false],['Needs review',nf(review),'shared taxonomy rule',review>0],['Processing health',pct(ready,rows.length)+'%',nf(ready)+' current enrichments',rows.length>0&&pct(ready,rows.length)<95]];
  document.getElementById('kpis').innerHTML=analyticalKpis.map(k=>`<div class="kpi"><div class="lab">${esc(k[0])}</div><div class="num${k[3]?' accent':''}">${esc(k[1])}</div><div class="ctx">${esc(k[2])}</div></div>`).join('');
 
- const monthlyCounts=new Map();rows.forEach(row=>{const month=String(row.captured_date||row.date).slice(0,7);if(month)monthlyCounts.set(month,(monthlyCounts.get(month)||0)+1)});
+ const monthlyCounts=new Map();rows.forEach(row=>{const month=itemDateValue(row,basis.field).slice(0,7);if(month)monthlyCounts.set(month,(monthlyCounts.get(month)||0)+1)});
  const populated=[...monthlyCounts.keys()].sort();const months=populated.length?monthInterval(populated[0],populated.at(-1)):[];
  let running=0;const cumulative=months.map(month=>running+=(monthlyCounts.get(month)||0));const acquisitions=months.map(month=>monthlyCounts.get(month)||0);
- chGrowth.setOption({...CHART_MOTION,grid:{left:52,right:22,top:22,bottom:34},tooltip:{trigger:'axis',...TIP},legend:{show:false},xAxis:{type:'category',boundaryGap:false,data:months.map(mlabel),...axisX()},yAxis:{type:'value',...axisY()},series:[{name:'Filtered library',type:'line',smooth:.22,symbol:'circle',symbolSize:5,data:cumulative,lineStyle:{color:C.accent,width:2.6},itemStyle:{color:C.accent},areaStyle:area(C.accent)}]},true);
- chGrowth.off('click');chGrowth.on('click',event=>{if(event.dataIndex!=null)setMonthFilter(months[event.dataIndex])});
+ chGrowth.setOption({...CHART_MOTION,grid:{left:52,right:22,top:22,bottom:34},tooltip:{trigger:'axis',...TIP},legend:{show:false},xAxis:{type:'category',boundaryGap:false,data:months.map(mlabel),...axisX()},yAxis:{type:'value',...axisY()},series:[{name:basis.series,type:'line',smooth:.22,symbol:'circle',symbolSize:5,data:cumulative,lineStyle:{color:C.accent,width:2.6},itemStyle:{color:C.accent},areaStyle:area(C.accent)}]},true);
+ chGrowth.off('click');chGrowth.on('click',event=>{if(event.dataIndex!=null)setMonthFilter(months[event.dataIndex],basis.field)});
  chAct.setOption({...CHART_MOTION,grid:{left:44,right:16,top:18,bottom:30},tooltip:{trigger:'axis',...TIP},xAxis:{type:'category',data:months.map(mlabel),...axisX()},yAxis:{type:'value',...axisY()},series:[{type:'bar',data:acquisitions,barWidth:'56%',itemStyle:{color:C.accent,borderRadius:[3,3,0,0]}}]},true);
- chAct.off('click');chAct.on('click',event=>{if(event.dataIndex!=null)setMonthFilter(months[event.dataIndex])});
- syncLatestMonthActions(latestCaptured.slice(0,7));
- fallbackTable('table-growth',['Month','Cumulative'],months.map((month,index)=>[mlabelFull(month),cumulative[index]]));
- fallbackTable('table-activity',['Month','Items added'],months.map((month,index)=>[mlabelFull(month),acquisitions[index]]));
+ chAct.off('click');chAct.on('click',event=>{if(event.dataIndex!=null)setMonthFilter(months[event.dataIndex],basis.field)});
+ syncLatestMonthActions(latestBasisDate.slice(0,7),basis);
+ fallbackTable('table-growth',[basis.monthHeader,'Cumulative'],months.map((month,index)=>[mlabelFull(month),cumulative[index]]));
+ fallbackTable('table-activity',[basis.monthHeader,basis.field==='published_date'?'Items published':'Items added'],months.map((month,index)=>[mlabelFull(month),acquisitions[index]]));
 
  const contentKinds=[['article','Articles',C.accent],['video','Videos',C.sage],['article_failed','Unprocessed',C.failed],['post_only','Posts',C.faint]];
  const contentValues=contentKinds.map(([kind,label,color])=>({value:rows.filter(row=>row.content_type===kind).length,name:label,kind,itemStyle:{color}})).filter(entry=>entry.value);

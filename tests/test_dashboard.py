@@ -1063,6 +1063,72 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         browser.close()
 
 
+def test_dashboard_runtime_analytics_uses_selected_date_basis(tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    items = [
+        _item(
+            "1",
+            created=datetime(2026, 4, 12, tzinfo=timezone.utc),
+            captured=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        ),
+        _item(
+            "2",
+            created=datetime(2026, 5, 20, tzinfo=timezone.utc),
+            captured=datetime(2026, 6, 15, tzinfo=timezone.utc),
+        ),
+    ]
+    data = compute_dashboard_data(items, {}, {}, [], "x")
+    dashboard = tmp_path / "dashboard.html"
+    dashboard.write_text(render_dashboard_html(data), encoding="utf-8")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1000, "height": 800})
+        page.goto(dashboard.resolve().as_uri() + "#analytics", wait_until="networkidle")
+
+        rows = page.locator("#table-activity tbody tr").evaluate_all(
+            "rows => rows.map(row => [...row.cells].map(cell => cell.textContent))"
+        )
+        assert rows == [["June 2026", "2"]]
+        assert page.locator("#analytics-activity-title").text_content() == ("Monthly acquisitions")
+
+        page.select_option("#filter-date-field", "published_date")
+        rows = page.locator("#table-activity tbody tr").evaluate_all(
+            "rows => rows.map(row => [...row.cells].map(cell => cell.textContent))"
+        )
+        assert rows == [["April 2026", "1"], ["May 2026", "1"]]
+        assert page.locator("#analytics-growth-title").text_content() == (
+            "Published corpus over time"
+        )
+        assert page.locator("#analytics-activity-title").text_content() == ("Monthly publications")
+        assert page.locator("#analytics-activity-table-label").text_content() == (
+            "View monthly publications as a table"
+        )
+        assert (
+            page.locator("#c-activity")
+            .get_attribute("aria-label")
+            .startswith("Monthly publications.")
+        )
+        assert page.locator("#kpis .kpi").nth(1).locator(".lab").text_content() == (
+            "Published · 30 days"
+        )
+
+        latest_month = page.locator("[data-action='latest-month']").first
+        assert "publication month" in latest_month.get_attribute("title")
+        latest_month.click()
+        assert page.locator("#filter-date-field").input_value() == "published_date"
+        assert page.locator("#filter-date-from").input_value() == "2026-05-01"
+        assert page.locator("#filter-date-to").input_value() == "2026-05-31"
+        assert latest_month.get_attribute("aria-pressed") == "true"
+
+        latest_month.click()
+        assert page.locator("#filter-date-field").input_value() == "published_date"
+        assert page.locator("#filter-date-from").input_value() == ""
+        assert page.locator("#filter-date-to").input_value() == ""
+        browser.close()
+
+
 def test_dashboard_runtime_shared_filters_documents_and_mobile_accessibility(tmp_path):
     from playwright.sync_api import sync_playwright
 
