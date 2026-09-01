@@ -13,6 +13,7 @@ success-only field off a failure record (or vice versa). The persisted
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -40,6 +41,68 @@ _UA = "Mozilla/5.0 (compatible; XBrain/1.0)"
 _TIMEOUT = 20
 _FIRECRAWL_URL = "https://api.firecrawl.dev/v1/scrape"
 _FIRECRAWL_TIMEOUT = 60
+_MAX_ARTICLE_BYTES = 10 * 1024 * 1024
+
+
+class UnsafeArticleUrl(ValueError):
+    """Raised when an article URL could reach a local or private network."""
+
+
+def _validate_public_http_url(
+    url: str,
+    *,
+    resolver: Callable = socket.getaddrinfo,
+) -> None:
+    """Require HTTP(S), no credentials, and exclusively public resolved addresses."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise UnsafeArticleUrl("article URL must use http or https")
+    if parsed.username or parsed.password:
+        raise UnsafeArticleUrl("article URL must not contain credentials")
+    hostname = parsed.hostname.rstrip(".").casefold()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise UnsafeArticleUrl("article URL points to localhost")
+    try:
+        addresses = {
+            result[4][0]
+            for result in resolver(
+                hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+            )
+        }
+    except socket.gaierror as exc:
+        raise UnsafeArticleUrl(f"article hostname cannot be resolved: {hostname}") from exc
+    if not addresses:
+        raise UnsafeArticleUrl(f"article hostname cannot be resolved: {hostname}")
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise UnsafeArticleUrl("article hostname resolved to an invalid address") from exc
+        if not ip.is_global:
+            raise UnsafeArticleUrl("article URL resolves to a private or non-public address")
+
+
+class _PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Validate every redirect target before urllib follows it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        _validate_public_http_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _safe_fetch_url(url: str) -> bytes:
+    """Download one public article with redirect and response-size protection."""
+    _validate_public_http_url(url)
+    request = urllib.request.Request(url, headers={"User-Agent": _UA})
+    opener = urllib.request.build_opener(_PublicRedirectHandler())
+    with opener.open(request, timeout=_TIMEOUT) as response:
+        raw_length = response.headers.get("content-length")
+        if raw_length and int(raw_length) > _MAX_ARTICLE_BYTES:
+            raise ValueError("article response exceeds 10 MB")
+        body = response.read(_MAX_ARTICLE_BYTES + 1)
+    if len(body) > _MAX_ARTICLE_BYTES:
+        raise ValueError("article response exceeds 10 MB")
+    return body
 
 
 class FetchSuccess(BaseModel):
@@ -106,7 +169,7 @@ def _categorize_url_error(exc: urllib.error.URLError) -> FailureReason | None:
 
 
 def _probe_status(
-    url: str, opener: Callable = urllib.request.urlopen
+    url: str, opener: Callable | None = None
 ) -> tuple[int | None, FailureReason | None, str]:
     """Probe a URL trafilatura could not download, to categorise the failure.
 
@@ -116,7 +179,12 @@ def _probe_status(
     """
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     try:
-        with opener(req, timeout=_TIMEOUT) as resp:
+        if opener is None:
+            _validate_public_http_url(url)
+            active_opener = urllib.request.build_opener(_PublicRedirectHandler()).open
+        else:
+            active_opener = opener
+        with active_opener(req, timeout=_TIMEOUT) as resp:
             status = getattr(resp, "status", None) or 200
         return (
             status,
@@ -129,17 +197,27 @@ def _probe_status(
         return None, _categorize_url_error(exc), f"Error de red: {exc.reason}"
     except (TimeoutError, socket.timeout) as exc:
         return None, "timeout", f"Tiempo de espera agotado: {exc}"
+    except UnsafeArticleUrl as exc:
+        return None, "forbidden", str(exc)
 
 
 def trafilatura_extract(
     url: str,
     *,
-    fetch: Callable = trafilatura.fetch_url,
+    fetch: Callable | None = None,
     extract: Callable = trafilatura.extract,
     prober: Callable = _probe_status,
 ) -> FetchResult:
     """Extract an article with trafilatura, categorising any failure."""
-    downloaded = fetch(url)
+    try:
+        downloaded = (fetch or _safe_fetch_url)(url)
+    except UnsafeArticleUrl as exc:
+        return FetchFailure(failure_reason="forbidden", error=str(exc), attempts=1)
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        reason = _categorize_url_error(exc) if isinstance(exc, urllib.error.URLError) else "timeout"
+        return FetchFailure(failure_reason=reason, error=f"Error de red: {exc}", attempts=1)
+    except (OSError, ValueError) as exc:
+        return FetchFailure(failure_reason="unknown_error", error=str(exc), attempts=1)
     if downloaded is None:
         status, reason, error = prober(url)
         return FetchFailure(http_status=status, failure_reason=reason, error=error, attempts=1)

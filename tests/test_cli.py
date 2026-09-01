@@ -1,5 +1,6 @@
 # tests/test_cli.py
 import http.client
+import json
 import os
 import socket
 import subprocess
@@ -74,6 +75,11 @@ def test_serve_dashboard_supports_head_smoke_checks(tmp_path: Path, monkeypatch)
     dashboard = tmp_path / "vault" / "x-knowledge" / "dashboard.html"
     dashboard.parent.mkdir(parents=True)
     dashboard.write_text("<!doctype html><title>XBrain</title>", encoding="utf-8")
+    notes = dashboard.parent / "items"
+    notes.mkdir()
+    (notes / "2026-01-01-search-1.md").write_text(
+        "# Searchable note\n\nA distinctive library retrieval phrase.", encoding="utf-8"
+    )
 
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -120,6 +126,10 @@ def test_serve_dashboard_supports_head_smoke_checks(tmp_path: Path, monkeypatch)
         assert response.status == 200
         assert response.getheader("content-type") == "text/html; charset=utf-8"
         assert int(response.getheader("content-length") or "0") == len(dashboard.read_bytes())
+        assert response.getheader("cache-control") == "no-store"
+        assert response.getheader("x-content-type-options") == "nosniff"
+        assert response.getheader("x-frame-options") == "DENY"
+        assert "frame-ancestors 'none'" in (response.getheader("content-security-policy") or "")
         assert response.read() == b""
         conn.close()
 
@@ -129,6 +139,61 @@ def test_serve_dashboard_supports_head_smoke_checks(tmp_path: Path, monkeypatch)
         assert response.status == 200
         assert response.getheader("content-type") == "application/json"
         assert response.read() == b""
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/search?q=distinctive+retrieval")
+        response = conn.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["results"][0]["title"] == "Searchable note"
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("POST", "/api/refresh-all")
+        response = conn.getresponse()
+        assert response.status == 403
+        response.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/chat",
+            body=json.dumps({"question": "What is saved?", "item_ids": []}),
+            headers={
+                "Content-Type": "application/json",
+                "X-XBrain-Action": "1",
+                "Origin": f"http://127.0.0.1:{port}",
+            },
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["sources"] == []
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/chat",
+            body=json.dumps({"question": "What is saved?"}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = conn.getresponse()
+        assert response.status == 403
+        response.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/retry-failed",
+            headers={"X-XBrain-Action": "1", "Origin": "https://evil.example"},
+        )
+        response = conn.getresponse()
+        assert response.status == 403
+        response.read()
         conn.close()
     finally:
         proc.terminate()

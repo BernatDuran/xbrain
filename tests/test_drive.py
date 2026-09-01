@@ -1,4 +1,7 @@
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from xbrain.config import load_config
 from xbrain.drive import DriveClient, drive_write_session
@@ -105,6 +108,86 @@ def test_drive_write_session_is_noop_when_drive_disabled(tmp_path: Path):
         (tmp_path / "ran").write_text("yes", encoding="utf-8")
 
     assert (tmp_path / "ran").read_text(encoding="utf-8") == "yes"
+
+
+def test_drive_write_session_does_not_upload_after_command_failure(tmp_path: Path, monkeypatch):
+    _write_config(tmp_path)
+    cfg = replace(
+        load_config(tmp_path),
+        drive_enabled=True,
+        drive_root_folder_id="root",
+        drive_cache_dir=tmp_path / "cache",
+    )
+
+    class Client:
+        def __init__(self):
+            self.uploaded = False
+
+        def remote_manifest(self, _root):
+            return "same"
+
+        def sync_down(self, _root, cache):
+            cache.mkdir(parents=True)
+
+        def sync_up(self, _root, _cache):
+            self.uploaded = True
+
+    client = Client()
+    monkeypatch.setattr("xbrain.drive.authenticate", lambda _cfg: client)
+
+    with pytest.raises(RuntimeError, match="command failed"):
+        with drive_write_session(cfg):
+            raise RuntimeError("command failed")
+
+    assert client.uploaded is False
+
+
+def test_drive_write_session_detects_remote_conflict(tmp_path: Path, monkeypatch):
+    _write_config(tmp_path)
+    cfg = replace(
+        load_config(tmp_path),
+        drive_enabled=True,
+        drive_root_folder_id="root",
+        drive_cache_dir=tmp_path / "cache",
+    )
+
+    class Client:
+        manifests = iter(["before", "changed"])
+        uploaded = False
+
+        def remote_manifest(self, _root):
+            return next(self.manifests)
+
+        def sync_down(self, _root, cache):
+            cache.mkdir(parents=True)
+
+        def sync_up(self, _root, _cache):
+            self.uploaded = True
+
+    client = Client()
+    monkeypatch.setattr("xbrain.drive.authenticate", lambda _cfg: client)
+
+    with pytest.raises(RuntimeError, match="changed during this command"):
+        with drive_write_session(cfg):
+            (cfg.drive_cache_dir / "items.json").write_text("{}", encoding="utf-8")
+
+    assert client.uploaded is False
+
+
+def test_drive_sync_up_refuses_empty_cache(tmp_path: Path):
+    cache = tmp_path / "empty"
+    cache.mkdir()
+    with pytest.raises(RuntimeError, match="empty Drive cache"):
+        DriveClient(_Service()).sync_up("root", cache)
+
+
+def test_drive_sync_up_refuses_cache_without_library_roots(tmp_path: Path):
+    cache = tmp_path / "incomplete"
+    cache.mkdir()
+    (cache / ".DS_Store").write_text("metadata", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="empty Drive cache"):
+        DriveClient(_Service()).sync_up("root", cache)
 
 
 def test_drive_trashes_folder_without_recursing_into_children():

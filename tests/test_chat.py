@@ -44,6 +44,29 @@ def test_retrieve_sources_uses_hybrid_concept_matching(tmp_path):
     assert sources[0].title == "Business AI systems"
 
 
+def test_retrieve_sources_can_be_scoped_to_filtered_library_notes(tmp_path):
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    allowed = _write_item(
+        output_dir,
+        "2026-01-01-agents-1.md",
+        "# Selected agents\n\nAgents automate selected workflows.",
+    )
+    _write_item(
+        output_dir,
+        "2026-01-02-agents-2.md",
+        "# Hidden agents\n\nAgents automate unrelated workflows.",
+    )
+
+    sources, scanned = retrieve_sources(
+        output_dir,
+        "agents workflows",
+        allowed_paths={allowed},
+    )
+
+    assert scanned == 2
+    assert [source.title for source in sources] == ["Selected agents"]
+
+
 def test_answer_question_uses_configured_client_and_sources(tmp_path):
     output_dir = tmp_path / "vault" / "x-knowledge"
     _write_item(

@@ -25,12 +25,18 @@ from markdown_it import MarkdownIt
 
 from xbrain import snapshot
 from xbrain.archive import parse_archive
-from xbrain.chat import MAX_QUESTION_CHARS, answer_question
+from xbrain.chat import MAX_QUESTION_CHARS, answer_question, retrieve_sources
 from xbrain.config import Config, load_config
 from xbrain.content_policy import prune_store, retained_store, should_keep_item
 from xbrain.describe import apply_describe_worksheet, export_describe_worksheet
 from xbrain.describe import describe_all as run_describe_all
 from xbrain.describe import emit_summary_line as describe_emit_summary_line
+from xbrain.dashboard_http import (
+    ACTION_HEADER,
+    SlidingWindowRateLimiter,
+    has_action_header,
+    is_same_origin_request,
+)
 from xbrain.diff import diff_snapshots, format_json, format_text
 from xbrain.drive import (
     authenticate as drive_authenticate,
@@ -1402,7 +1408,7 @@ const setStatus = text => {{
 const postItemAction = async (endpoint, extra = {{}}) => {{
   const response = await fetch(endpoint, {{
     method: 'POST',
-    headers: {{'content-type': 'application/json'}},
+    headers: {{'content-type': 'application/json', 'x-xbrain-action': '1'}},
     body: JSON.stringify({{item_id: itemId, ...extra}})
   }});
   const payload = await response.json();
@@ -1791,6 +1797,7 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
     """Serve the generated dashboard and a localhost-only refresh endpoint."""
     run_state = DashboardRunState()
     lock = threading.Lock()
+    rate_limiter = SlidingWindowRateLimiter()
 
     def state_payload() -> dict[str, object]:
         with lock:
@@ -1894,16 +1901,76 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                 _run_generate(cfg, None, None)
         return dashboard.read_bytes()
 
-    def chat_payload(question: str) -> dict[str, object]:
+    def allowed_note_paths(
+        raw_paths: object,
+        raw_item_ids: object,
+    ) -> set[Path] | None:
+        if raw_paths is not None and raw_item_ids is not None:
+            raise ValueError("send paths or item_ids, not both")
+        if raw_item_ids is not None:
+            if not isinstance(raw_item_ids, list) or not all(
+                isinstance(item_id, str) for item_id in raw_item_ids
+            ):
+                raise ValueError("item_ids must be a list of strings")
+            if len(raw_item_ids) > 5000:
+                raise ValueError("item_ids contains too many items; max 5000")
+            if any(len(item_id) > 100 for item_id in raw_item_ids):
+                raise ValueError("item_ids contains an invalid identifier")
+            store = load_store(cfg.items_path)
+            item_paths: set[Path] = set()
+            for item_id in raw_item_ids:
+                item = store.get(item_id)
+                if item is None:
+                    continue
+                try:
+                    item_paths.add(
+                        _resolve_served_note(
+                            cfg.output_dir,
+                            str(cfg.output_dir / "items" / note_filename(item)),
+                        )
+                    )
+                except (FileNotFoundError, PermissionError, ValueError):
+                    continue
+            return item_paths
+        if raw_paths is None:
+            return None
+        if not isinstance(raw_paths, list) or not all(isinstance(path, str) for path in raw_paths):
+            raise ValueError("paths must be a list of strings")
+        if len(raw_paths) > 250:
+            raise ValueError("paths contains too many notes; max 250")
+        path_scope: set[Path] = set()
+        for raw_path in raw_paths:
+            try:
+                path_scope.add(_resolve_served_note(cfg.output_dir, raw_path))
+            except (FileNotFoundError, PermissionError, ValueError):
+                continue
+        return path_scope
+
+    def chat_payload(question: str, paths: set[Path] | None = None) -> dict[str, object]:
         return answer_question(
             cfg.output_dir,
             question,
             provider=cfg.llm_provider,
             model=cfg.llm_model,
             base_url=cfg.llm_base_url,
+            allowed_paths=paths,
         ).to_payload()
 
+    def search_payload(query: str) -> dict[str, object]:
+        sources, scanned_files = retrieve_sources(cfg.output_dir, query, limit=250)
+        return {
+            "query": query,
+            "scanned_files": scanned_files,
+            "results": [
+                {"title": source.title, "path": str(source.path), "score": round(source.score, 3)}
+                for source in sources
+            ],
+        }
+
     class Handler(BaseHTTPRequestHandler):
+        server_version = "XBrain"
+        sys_version = ""
+
         def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - stdlib API name
             logging.getLogger(__name__).info("dashboard: " + fmt, *args)
 
@@ -1914,10 +1981,29 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             content_type: str,
             *,
             include_body: bool = True,
+            headers: dict[str, str] | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(body)))
+            self.send_header("cache-control", "no-store")
+            self.send_header("x-content-type-options", "nosniff")
+            self.send_header("referrer-policy", "no-referrer")
+            self.send_header("x-frame-options", "DENY")
+            self.send_header("cross-origin-opener-policy", "same-origin")
+            self.send_header(
+                "permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()"
+            )
+            self.send_header(
+                "content-security-policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src https://fonts.gstatic.com data:; img-src 'self' data: https:; "
+                "connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                "form-action 'self'",
+            )
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             if include_body:
                 self.wfile.write(body)
@@ -1928,10 +2014,43 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             payload: dict[str, object],
             *,
             include_body: bool = True,
+            headers: dict[str, str] | None = None,
         ) -> None:
             self._send(
-                status, json.dumps(payload).encode(), "application/json", include_body=include_body
+                status,
+                json.dumps(payload).encode(),
+                "application/json",
+                include_body=include_body,
+                headers=headers,
             )
+
+        def _client_key(self, bucket: str) -> str:
+            return f"{self.client_address[0]}:{bucket}"
+
+        def _allow_rate(self, bucket: str, *, limit: int, window_seconds: int = 60) -> bool:
+            allowed, retry_after = rate_limiter.allow(
+                self._client_key(bucket), limit=limit, window_seconds=window_seconds
+            )
+            if allowed:
+                return True
+            self._send_json(
+                429,
+                {"error": "rate limit exceeded", "retry_after": retry_after},
+                headers={"retry-after": str(retry_after)},
+            )
+            return False
+
+        def _allow_action_request(self) -> bool:
+            same_origin = is_same_origin_request(
+                origin=self.headers.get("origin"),
+                host=self.headers.get("host"),
+                fetch_site=self.headers.get("sec-fetch-site"),
+            )
+            has_header = has_action_header(self.headers.get(ACTION_HEADER))
+            if same_origin and has_header:
+                return True
+            self._send_json(403, {"error": "mutating request failed origin or action check"})
+            return False
 
         def _read_json(self, *, max_bytes: int = 4096) -> dict[str, object]:
             raw_length = self.headers.get("content-length", "0")
@@ -1976,6 +2095,18 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
             path = parsed.path
             if path == "/api/status":
                 self._send_json(200, state_payload())
+                return
+            if path == "/api/search":
+                if not self._allow_rate("search", limit=60):
+                    return
+                query = parse_qs(parsed.query).get("q", [""])[0].strip()
+                if not query:
+                    self._send_json(400, {"error": "missing search query"})
+                    return
+                if len(query) > 300:
+                    self._send_json(400, {"error": "search query is too long; max 300 characters"})
+                    return
+                self._send_json(200, search_payload(query))
                 return
             if path == "/api/topic-state":
                 item_id = parse_qs(parsed.query).get("item_id", [""])[0].strip()
@@ -2036,9 +2167,20 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib API name
             path = self.path.split("?", 1)[0]
+            mutating_paths = {
+                "/api/refresh-all",
+                "/api/retry-failed",
+                "/api/reprocess-note",
+                "/api/topic-action",
+                "/api/delete-bookmark",
+            }
+            if path in {"/api/chat", *mutating_paths} and not self._allow_action_request():
+                return
             if path == "/api/chat":
+                if not self._allow_rate("chat", limit=12):
+                    return
                 try:
-                    payload = self._read_json()
+                    payload = self._read_json(max_bytes=131072)
                     raw_question = payload.get("question")
                     if not isinstance(raw_question, str):
                         raise ValueError("question must be a string")
@@ -2049,12 +2191,15 @@ def _serve_dashboard(cfg: Config, host: str, port: int) -> None:
                         raise ValueError(
                             f"question is too long; max {MAX_QUESTION_CHARS} characters"
                         )
-                    self._send_json(200, chat_payload(question))
+                    paths = allowed_note_paths(payload.get("paths"), payload.get("item_ids"))
+                    self._send_json(200, chat_payload(question, paths))
                 except ValueError as exc:
                     self._send_json(400, {"error": str(exc)})
                 except Exception as exc:  # noqa: BLE001 - HTTP handler should return cleanly
                     logging.getLogger(__name__).warning("dashboard chat failed", exc_info=True)
                     self._send_json(500, {"error": str(exc)})
+                return
+            if path in mutating_paths and not self._allow_rate("mutation", limit=20):
                 return
             if path == "/api/refresh-all":
                 if not start_refresh():

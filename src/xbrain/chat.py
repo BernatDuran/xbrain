@@ -455,10 +455,14 @@ def retrieve_sources(
     question: str,
     *,
     limit: int = MAX_SOURCES,
+    allowed_paths: set[Path] | None = None,
 ) -> tuple[list[ChatSource], int]:
-    """Retrieve the best source snippets with hybrid lexical/concept scoring."""
+    """Retrieve source snippets, optionally scoped to generated note paths."""
     query = Counter(_tokens(question))
     chunks, scanned_files = load_markdown_chunks(output_dir)
+    if allowed_paths is not None:
+        allowed = {path.resolve() for path in allowed_paths}
+        chunks = [chunk for chunk in chunks if chunk.path in allowed]
     if not query or not chunks:
         return [], scanned_files
     query_vector = _semantic_features(question)
@@ -627,6 +631,7 @@ def answer_question(
     base_url: str | None = None,
     client: Any = None,
     max_sources: int = MAX_SOURCES,
+    allowed_paths: set[Path] | None = None,
 ) -> ChatAnswer:
     """Answer one question using only generated markdown context."""
     cleaned = question.strip()
@@ -639,6 +644,7 @@ def answer_question(
         output_dir,
         cleaned,
         limit=max(max_sources, MAX_RETRIEVAL_CANDIDATES),
+        allowed_paths=allowed_paths,
     )
     if not candidates:
         return ChatAnswer(

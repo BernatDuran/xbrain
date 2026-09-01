@@ -7,9 +7,11 @@ local working cache and synchronizes it with a user-selected Drive folder.
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,7 +25,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from xbrain.config import Config
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
-_SESSION_DEPTH = 0
+_SESSION_DEPTH: ContextVar[int] = ContextVar("xbrain_drive_session_depth", default=0)
 _IGNORED_REMOTE_PATHS: set[tuple[str, ...]] = {
     ("data", "media"),
     ("vault", "x-knowledge"),
@@ -100,8 +102,38 @@ class DriveClient:
         return self._download_folder(root_folder_id, cache_dir, relative_path=())
 
     def sync_up(self, root_folder_id: str, cache_dir: Path) -> SyncReport:
+        library_roots = (cache_dir / "data", cache_dir / "vault")
+        has_library_file = cache_dir.exists() and any(
+            path.is_file() for root in library_roots if root.is_dir() for path in root.rglob("*")
+        )
+        if not has_library_file:
+            raise RuntimeError("refusing to mirror an empty Drive cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         return self._upload_folder(root_folder_id, cache_dir, relative_path=())
+
+    def remote_manifest(self, root_folder_id: str) -> str:
+        """Return a stable fingerprint used to detect concurrent remote edits."""
+        rows: list[tuple[str, str, str]] = []
+
+        def walk(folder_id: str, relative_path: tuple[str, ...]) -> None:
+            children = sorted(self._children(folder_id), key=lambda item: item["name"])
+            for item in children:
+                child_path = (*relative_path, item["name"])
+                if _ignored_remote_path(child_path):
+                    continue
+                rows.append(
+                    (
+                        "/".join(child_path),
+                        item["mimeType"],
+                        item.get("md5Checksum", ""),
+                    )
+                )
+                if item["mimeType"] == _FOLDER_MIME:
+                    walk(item["id"], child_path)
+
+        walk(root_folder_id, ())
+        payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _download_folder(
         self, folder_id: str, destination: Path, *, relative_path: tuple[str, ...]
@@ -268,27 +300,32 @@ def drive_sync_up(cfg: Config) -> SyncReport:
 
 @contextmanager
 def drive_write_session(cfg: Config) -> Iterator[None]:
-    """Sync before and after a write command when Drive mode is enabled."""
-    global _SESSION_DEPTH
+    """Sync around a successful write and reject concurrent remote changes."""
     if not cfg.drive_enabled:
         yield
         return
-    if _SESSION_DEPTH:
-        _SESSION_DEPTH += 1
+    depth = _SESSION_DEPTH.get()
+    if depth:
+        token = _SESSION_DEPTH.set(depth + 1)
         try:
             yield
         finally:
-            _SESSION_DEPTH -= 1
+            _SESSION_DEPTH.reset(token)
         return
-    _SESSION_DEPTH = 1
-    drive_sync_down(cfg)
+    token = _SESSION_DEPTH.set(1)
     try:
+        client = authenticate(cfg)
+        remote_before = client.remote_manifest(cfg.drive_root_folder_id)
+        client.sync_down(cfg.drive_root_folder_id, cfg.drive_cache_dir)
         yield
+        remote_after = client.remote_manifest(cfg.drive_root_folder_id)
+        if remote_after != remote_before:
+            raise RuntimeError(
+                "Google Drive changed during this command; local changes were not uploaded"
+            )
+        client.sync_up(cfg.drive_root_folder_id, cfg.drive_cache_dir)
     finally:
-        try:
-            drive_sync_up(cfg)
-        finally:
-            _SESSION_DEPTH = 0
+        _SESSION_DEPTH.reset(token)
 
 
 def _credentials(

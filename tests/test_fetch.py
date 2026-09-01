@@ -3,6 +3,8 @@ import socket
 import urllib.error
 from datetime import datetime, timezone
 
+import pytest
+
 from xbrain.enrich import items_pending_enrichment
 from xbrain.fetch import (
     FetchFailure,
@@ -11,11 +13,13 @@ from xbrain.fetch import (
     _categorize_url_error,
     _probe_status,
     _reason_for_status,
+    _validate_public_http_url,
     _should_refetch,
     _sources_materially_equal,
     fetch_item,
     fetch_pending,
     trafilatura_extract,
+    UnsafeArticleUrl,
 )
 from xbrain.models import (
     Author,
@@ -58,6 +62,24 @@ def test_categorize_url_error_detects_timeout_and_dns():
     assert _categorize_url_error(urllib.error.URLError(socket.timeout())) == "timeout"
     assert _categorize_url_error(urllib.error.URLError(socket.gaierror())) == "dns_error"
     assert _categorize_url_error(urllib.error.URLError("other")) is None
+
+
+def test_article_url_validation_rejects_private_and_credentialed_targets():
+    def private_resolver(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", 80))]
+
+    with pytest.raises(UnsafeArticleUrl):
+        _validate_public_http_url("http://internal.example/report", resolver=private_resolver)
+    credentialed_url = "https://" + "account" + ":" + "credential" + "@example.com/report"
+    with pytest.raises(UnsafeArticleUrl):
+        _validate_public_http_url(credentialed_url, resolver=private_resolver)
+
+
+def test_article_url_validation_accepts_public_https_target():
+    def public_resolver(*_args):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    _validate_public_http_url("https://example.com/report", resolver=public_resolver)
 
 
 def test_probe_status_categorizes_http_error():
