@@ -542,7 +542,9 @@ def test_render_dashboard_includes_atlas_knowledge_graph_controls():
     assert 'id="graph-emerging"' in html
     assert 'id="graph-hop-1"' in html
     assert 'id="graph-hop-2"' in html
+    assert 'id="graph-focusbar"' in html
     assert 'id="graph-clear-focus"' in html
+    assert 'id="graph-clear-all"' in html
     assert 'id="graph-reset"' in html
     assert 'id="c-graph"' in html
     assert 'id="c-graph-timeline"' in html
@@ -998,10 +1000,22 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
             page.locator(".chart-actions").first.evaluate("el => getComputedStyle(el).display")
             == "flex"
         )
+        page.fill("#filter-date-from", "2026-01-01")
+        page.fill("#filter-date-to", "2026-12-31")
+        latest_month = page.locator("[data-action='latest-month']").first
         page.click("[data-action='latest-month']")
         page.wait_for_timeout(120)
         assert page.locator("#filter-date-from").input_value() == "2026-06-01"
         assert page.locator("#filter-date-to").input_value() == "2026-06-30"
+        assert latest_month.get_attribute("aria-pressed") == "true"
+        assert latest_month.text_content() == "Undo latest month"
+        assert 32 <= latest_month.bounding_box()["height"] < 44
+        latest_month.click()
+        page.wait_for_timeout(120)
+        assert page.locator("#filter-date-from").input_value() == "2026-01-01"
+        assert page.locator("#filter-date-to").input_value() == "2026-12-31"
+        assert latest_month.get_attribute("aria-pressed") == "false"
+        assert latest_month.text_content() == "Latest month"
 
         page.click("#nav-library")
         page.click('[data-library-id="1"]')
@@ -1019,6 +1033,28 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         page.wait_for_timeout(120)
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "true"
         assert page.locator("#drawer").evaluate("el => el.inert === true")
+
+        page.click('[data-library-id="1"]')
+        page.click('[data-item-atlas="1"]')
+        page.wait_for_timeout(180)
+        assert page.evaluate("location.hash") == "#atlas"
+        assert page.locator("#graph-focusbar").is_visible()
+        assert page.locator("#graph-focus-label").inner_text().startswith("Document ·")
+        assert "Document ·" in page.locator("#graph-meta").text_content()
+        page.keyboard.press("Escape")
+        page.click("#graph-clear-focus")
+        assert page.locator("#graph-focusbar").is_hidden()
+        assert "Document ·" not in page.locator("#graph-meta").text_content()
+
+        page.evaluate("openGraphTopic('ai-coding')")
+        page.click('[data-graph-focus="ai-coding"]')
+        assert page.locator("#graph-focusbar").is_visible()
+        assert page.locator("#graph-focus-label").inner_text() == "Topic · AI Coding"
+        page.select_option("#filter-content", "video")
+        assert page.locator("#filter-content").input_value() == "video"
+        page.click("#graph-clear-all")
+        assert page.locator("#graph-focusbar").is_hidden()
+        assert page.locator("#filter-content").input_value() == "all"
 
         page.click("#nav-analytics")
         page.click("[data-signal='readiness']")
