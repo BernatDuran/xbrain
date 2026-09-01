@@ -476,6 +476,100 @@ def test_render_note_page_topic_review_modal_is_explanatory_and_keyboard_safe(tm
         browser.close()
 
 
+def test_render_note_page_opens_video_artifacts_in_modal_and_copies_transcript(
+    tmp_path: Path,
+):
+    from playwright.sync_api import sync_playwright
+
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    notes_dir = output_dir / "items"
+    video_dir = output_dir / "videos" / "video-42"
+    notes_dir.mkdir(parents=True)
+    video_dir.mkdir(parents=True)
+    note = notes_dir / "source.md"
+    note.write_text(
+        f"{GEN_START}\n---\nid: 42\n---\n# Video source\n\n"
+        "[Resumen ejecutivo](../videos/video-42/summary.md) · "
+        "[Transcripción original](../videos/video-42/transcript.md)\n\n"
+        "### Executive Summary\n\nInline summary.\n"
+        f"{GEN_END}",
+        encoding="utf-8",
+    )
+    (video_dir / "summary.md").write_text(
+        f"{GEN_START}\n---\nkind: video_summary\n---\n# Summary\n\n"
+        "[Transcripción original](transcript.md)\n\n"
+        "### Executive Summary\n\nUseful **summary**.\n\n### Main Ideas\n\n- One\n"
+        f"{GEN_END}",
+        encoding="utf-8",
+    )
+    (video_dir / "transcript.md").write_text(
+        f"{GEN_START}\n---\nkind: video_transcript\n---\n# Original Transcript\n\n"
+        "[Video digest](summary.md)\n\n## Transcript\n\n"
+        "First original line.\n\nSecond original line.\n"
+        f"{GEN_END}",
+        encoding="utf-8",
+    )
+
+    rendered = _render_note_page(note, output_dir).decode()
+
+    assert 'id="video-artifact-modal"' in rendered
+    assert 'data-video-artifact="summary"' in rendered
+    assert 'data-video-artifact="transcript"' in rendered
+    assert 'id="video-copy-transcript"' in rendered
+    assert "../videos/video-42/summary.md" not in rendered
+    assert "../videos/video-42/transcript.md" not in rendered
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1000, "height": 900})
+        errors: list[str] = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.set_content(rendered)
+        page.evaluate(
+            """
+            Object.defineProperty(navigator, 'clipboard', {
+              configurable: true,
+              value: {writeText: async text => { window.__copiedTranscript = text; }}
+            })
+            """
+        )
+
+        summary_link = page.locator(
+            '.note-body .video-artifact-link[data-video-artifact="summary"]'
+        ).first
+        summary_link.click()
+        assert page.locator("#video-artifact-modal").is_visible()
+        assert page.locator("#video-artifact-title").text_content() == "Executive summary"
+        assert (
+            page.locator("#video-artifact-panel-summary")
+            .get_by_text("Useful summary.")
+            .is_visible()
+        )
+        assert page.evaluate("document.activeElement.id") == "video-artifact-close"
+
+        page.click("#video-artifact-tab-transcript")
+        assert page.locator("#video-artifact-title").text_content() == "Original transcript"
+        assert (
+            page.locator("#video-artifact-panel-transcript")
+            .get_by_text("First original line.")
+            .is_visible()
+        )
+        copy_button = page.locator("#video-copy-transcript")
+        assert copy_button.is_visible()
+        assert copy_button.bounding_box()["height"] <= 32
+        copy_button.click()
+        assert page.evaluate("window.__copiedTranscript") == (
+            "First original line.\n\nSecond original line."
+        )
+        assert page.locator("#video-copy-status").text_content() == "Copied"
+
+        page.keyboard.press("Escape")
+        assert page.locator("#video-artifact-modal").is_hidden()
+        assert summary_link.evaluate("element => document.activeElement === element")
+        assert errors == []
+        browser.close()
+
+
 def test_render_note_page_renders_obsidian_image_embeds(tmp_path: Path):
     output_dir = tmp_path / "vault" / "x-knowledge"
     notes_dir = output_dir / "items"

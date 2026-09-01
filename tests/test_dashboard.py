@@ -1028,6 +1028,20 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         assert page.locator(".article-media-card figcaption").inner_text() == (
             "Diagrama <clave> & seguro."
         )
+        drawer_actions = page.locator("#drawer .drawer-actions .drawer-action")
+        assert drawer_actions.count() == 4
+        assert (
+            max(
+                drawer_actions.evaluate_all(
+                    "actions => actions.map(action => action.getBoundingClientRect().height)"
+                )
+            )
+            <= 32
+        )
+        original_action = page.locator("#drawer .drawer-action", has_text="Open original")
+        assert original_action.get_attribute("href") == "https://x.com/alice/status/1"
+        assert original_action.get_attribute("target") == "_blank"
+        assert original_action.locator(".external-mark").text_content() == "↗"
 
         page.keyboard.press("Escape")
         page.wait_for_timeout(120)

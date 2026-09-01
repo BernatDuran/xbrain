@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import typer
 from markdown_it import MarkdownIt
@@ -1327,6 +1327,260 @@ def _render_note_markdown(markdown: str) -> str:
     return parser.render(markdown).replace("<a ", '<a target="_blank" rel="noopener" ')
 
 
+_VIDEO_ARTIFACT_LINK = re.compile(r"(?<!!)\[(?P<label>[^\]\n]+)\]\((?P<target>[^)\n]+)\)")
+
+
+@dataclass(frozen=True)
+class _VideoArtifact:
+    kind: str
+    title: str
+    body_html: str
+    copy_text: str = ""
+
+
+def _resolve_video_artifact_link(
+    note_path: Path,
+    output_dir: Path,
+    target: str,
+) -> tuple[str, Path] | None:
+    """Resolve a generated summary/transcript link without exposing arbitrary notes."""
+    raw_target = target.strip().strip("<>")
+    parsed = urlparse(raw_target)
+    if parsed.scheme or parsed.netloc or not parsed.path:
+        return None
+    candidate_name = Path(unquote(parsed.path)).name
+    if candidate_name not in {"summary.md", "transcript.md"}:
+        return None
+    try:
+        candidate = (note_path.parent / unquote(parsed.path)).resolve(strict=True)
+    except OSError:
+        return None
+    video_root = (output_dir / "videos").resolve()
+    try:
+        candidate.relative_to(video_root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate.stem, candidate
+
+
+def _rewrite_video_artifact_links(
+    markdown: str,
+    note_path: Path,
+    output_dir: Path,
+) -> tuple[str, dict[str, Path]]:
+    """Turn safe generated video artifact links into in-page modal targets."""
+    paths: dict[str, Path] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        resolved = _resolve_video_artifact_link(
+            note_path,
+            output_dir,
+            match.group("target"),
+        )
+        if resolved is None:
+            return match.group(0)
+        kind, path = resolved
+        paths.setdefault(kind, path)
+        return f"[{match.group('label')}](#video-{kind})"
+
+    return _VIDEO_ARTIFACT_LINK.sub(replace, markdown), paths
+
+
+def _video_artifact_body(kind: str, markdown: str) -> str:
+    """Remove artifact metadata/navigation so the modal starts with useful content."""
+    display = _note_view_markdown(markdown)
+    marker = "### Executive Summary" if kind == "summary" else "## Transcript"
+    match = re.search(rf"^{re.escape(marker)}\s*$", display, flags=re.M)
+    if match is None:
+        return display
+    return display[match.end() :].strip()
+
+
+def _decorate_video_artifact_links(body_html: str) -> str:
+    for kind in ("summary", "transcript"):
+        body_html = body_html.replace(
+            f'href="#video-{kind}"',
+            f'href="#video-{kind}" class="video-artifact-link" data-video-artifact="{kind}"',
+        )
+    return body_html
+
+
+def _load_video_artifacts(
+    paths: dict[str, Path],
+    output_dir: Path,
+) -> dict[str, _VideoArtifact]:
+    artifacts: dict[str, _VideoArtifact] = {}
+    for kind in ("summary", "transcript"):
+        path = paths.get(kind)
+        if path is None:
+            continue
+        markdown = path.read_text(encoding="utf-8")
+        body = _video_artifact_body(kind, markdown)
+        body, _ = _rewrite_video_artifact_links(body, path, output_dir)
+        artifacts[kind] = _VideoArtifact(
+            kind=kind,
+            title="Executive summary" if kind == "summary" else "Original transcript",
+            body_html=_decorate_video_artifact_links(_render_note_markdown(body)),
+            copy_text=body if kind == "transcript" else "",
+        )
+    return artifacts
+
+
+def _video_artifact_modal(artifacts: dict[str, _VideoArtifact]) -> tuple[str, str]:
+    if not artifacts:
+        return "", ""
+    ordered = [artifacts[kind] for kind in ("summary", "transcript") if kind in artifacts]
+    tabs = "".join(
+        '<button class="video-artifact-tab" type="button" role="tab" '
+        f'id="video-artifact-tab-{artifact.kind}" '
+        f'aria-controls="video-artifact-panel-{artifact.kind}" '
+        f'aria-selected="{str(index == 0).lower()}" '
+        f'data-video-artifact-tab="{artifact.kind}">{html.escape(artifact.title)}</button>'
+        for index, artifact in enumerate(ordered)
+    )
+    panels = "".join(
+        '<section class="video-artifact-panel" role="tabpanel" '
+        f'id="video-artifact-panel-{artifact.kind}" '
+        f'aria-labelledby="video-artifact-tab-{artifact.kind}" '
+        f'data-video-artifact-panel="{artifact.kind}"'
+        f"{'' if index == 0 else ' hidden'}>"
+        f'<div class="video-artifact-content">{artifact.body_html}</div></section>'
+        for index, artifact in enumerate(ordered)
+    )
+    transcript = artifacts.get("transcript")
+    copy_source = (
+        '<textarea id="video-transcript-copy-source" hidden>'
+        f"{html.escape(transcript.copy_text)}"
+        "</textarea>"
+        if transcript is not None
+        else ""
+    )
+    modal = f"""
+<div class="modal video-artifact-modal" id="video-artifact-modal" hidden>
+  <div class="modal-card video-artifact-card" role="dialog" aria-modal="true"
+       aria-labelledby="video-artifact-title">
+    <div class="modal-header video-artifact-header">
+      <div>
+        <div class="modal-eyebrow">Video digest</div>
+        <h2 id="video-artifact-title">{html.escape(ordered[0].title)}</h2>
+      </div>
+      <button class="modal-close" id="video-artifact-close" type="button"
+              aria-label="Close video content" title="Close">×</button>
+    </div>
+    <div class="video-artifact-tabs" role="tablist" aria-label="Video content">
+      {tabs}
+    </div>
+    <div class="video-artifact-body">{panels}</div>
+    <div class="video-artifact-footer">
+      <span id="video-copy-status" role="status" aria-live="polite"></span>
+      <button class="video-copy" id="video-copy-transcript" type="button" hidden>Copy transcript</button>
+      {copy_source}
+    </div>
+  </div>
+</div>"""
+    script = """
+<script>
+(() => {
+  const modal = document.getElementById('video-artifact-modal');
+  if (!modal) return;
+  const card = modal.querySelector('.video-artifact-card');
+  const closeButton = document.getElementById('video-artifact-close');
+  const title = document.getElementById('video-artifact-title');
+  const copyButton = document.getElementById('video-copy-transcript');
+  const copySource = document.getElementById('video-transcript-copy-source');
+  const copyStatus = document.getElementById('video-copy-status');
+  const tabs = Array.from(modal.querySelectorAll('[data-video-artifact-tab]'));
+  const panels = Array.from(modal.querySelectorAll('[data-video-artifact-panel]'));
+  let returnFocus = null;
+  const artifactTitle = kind => kind === 'transcript' ? 'Original transcript' : 'Executive summary';
+  const selectArtifact = kind => {
+    title.textContent = artifactTitle(kind);
+    tabs.forEach(tab => {
+      const active = tab.dataset.videoArtifactTab === kind;
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach(panel => {
+      panel.hidden = panel.dataset.videoArtifactPanel !== kind;
+    });
+    copyButton.hidden = kind !== 'transcript' || !copySource;
+    copyStatus.textContent = '';
+  };
+  const openModal = (kind, trigger) => {
+    const wasHidden = modal.hidden;
+    if (wasHidden) returnFocus = trigger;
+    selectArtifact(kind);
+    modal.hidden = false;
+    document.body.classList.add('modal-open');
+    if (wasHidden) requestAnimationFrame(() => closeButton.focus());
+  };
+  const closeModal = () => {
+    modal.hidden = true;
+    document.body.classList.remove('modal-open');
+    if (returnFocus instanceof HTMLElement) returnFocus.focus();
+  };
+  document.querySelectorAll('.video-artifact-link').forEach(link => {
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      openModal(link.dataset.videoArtifact, link);
+    });
+  });
+  tabs.forEach(tab => tab.addEventListener('click', () => {
+    selectArtifact(tab.dataset.videoArtifactTab);
+    tab.focus();
+  }));
+  closeButton.addEventListener('click', closeModal);
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeModal();
+  });
+  modal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(card.querySelectorAll(
+      'button:not([disabled]):not([hidden]), a[href]:not([hidden])'
+    )).filter(element => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  copyButton.addEventListener('click', async () => {
+    const text = copySource ? copySource.value.trim() : '';
+    if (!text) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const helper = document.createElement('textarea');
+        helper.value = text;
+        helper.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand('copy');
+        helper.remove();
+      }
+      copyStatus.textContent = 'Copied';
+    } catch (error) {
+      copyStatus.textContent = 'Could not copy';
+    }
+  });
+})();
+</script>"""
+    return modal, script
+
+
 def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     """Render a generated markdown note as a safe, mobile-readable HTML page."""
     markdown = note_path.read_text(encoding="utf-8")
@@ -1336,7 +1590,14 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
     title = _note_title(markdown, note_path)
     escaped_title = html.escape(title)
     escaped_rel = html.escape(str(rel))
-    body_html = _render_note_markdown(display_markdown)
+    display_markdown, video_artifact_paths = _rewrite_video_artifact_links(
+        display_markdown,
+        note_path,
+        output_dir,
+    )
+    body_html = _decorate_video_artifact_links(_render_note_markdown(display_markdown))
+    video_artifacts = _load_video_artifacts(video_artifact_paths, output_dir)
+    video_artifact_modal, video_artifact_script = _video_artifact_modal(video_artifacts)
     obsidian_href = "obsidian://open?path=" + quote(str(note_path.resolve()))
     item_id = _note_frontmatter_id(markdown)
     reprocess_control = ""
@@ -1912,7 +2173,7 @@ body {{
 .btn.icon {{ width:34px; padding:0; margin-left:auto; font-size:14px; line-height:1; }}
 button.btn {{ cursor:pointer; }}
 .btn:hover {{ color:var(--ink); border-color:var(--color-border-strong); }}
-.btn:focus-visible,.note-icon:focus-visible,.modal-btn:focus-visible,.modal-close:focus-visible,.topic-action-option:focus-visible {{ outline:0; box-shadow:var(--shadow-focus); }}
+.btn:focus-visible,.note-icon:focus-visible,.modal-btn:focus-visible,.modal-close:focus-visible,.topic-action-option:focus-visible,.video-artifact-tab:focus-visible,.video-copy:focus-visible,.video-artifact-link:focus-visible {{ outline:0; box-shadow:var(--shadow-focus); }}
 button.btn:disabled {{ opacity:.52; cursor:wait; }}
 .note-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:-4px 0 18px; }}
 .note-icon {{
@@ -1945,6 +2206,49 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
 .modal-btn.primary {{ color:var(--accent); border-color:var(--color-border-strong); }}
 .modal-btn.danger {{ color:var(--color-danger); border-color:color-mix(in srgb,var(--color-danger) 44%, transparent); }}
 .modal-btn:disabled {{ opacity:.52; cursor:wait; }}
+.video-artifact-modal {{ z-index:12; }}
+.video-artifact-card {{
+  width:min(880px, 100%); max-height:min(90vh, 900px); display:flex; flex-direction:column;
+  overflow:hidden; padding:0;
+}}
+.video-artifact-header {{ flex:0 0 auto; }}
+.video-artifact-tabs {{
+  flex:0 0 auto; display:flex; gap:4px; padding:9px 24px; border-bottom:1px solid var(--hair);
+  background:var(--color-panel-soft);
+}}
+.video-artifact-tab {{
+  min-height:30px; padding:4px 9px; border:1px solid transparent; border-radius:var(--radius-3);
+  color:var(--faint); background:transparent; font:700 9px/1.2 var(--mono);
+  letter-spacing:.08em; text-transform:uppercase; cursor:pointer;
+}}
+.video-artifact-tab[aria-selected="true"] {{
+  color:var(--accent); border-color:var(--color-border-strong); background:var(--color-accent-soft);
+}}
+.video-artifact-body {{ padding:8px 24px 24px; overflow:auto; overscroll-behavior:contain; }}
+.video-artifact-panel[hidden],.video-copy[hidden] {{ display:none; }}
+.video-artifact-content {{ color:var(--muted); font-size:14px; line-height:1.65; overflow-wrap:anywhere; }}
+.video-artifact-content > *:first-child {{ margin-top:0; }}
+.video-artifact-content h2,.video-artifact-content h3,.video-artifact-content h4 {{
+  margin:1.25em 0 .5em; color:var(--ink); font-family:var(--display); line-height:1.2;
+}}
+.video-artifact-content h2 {{ font-size:22px; }}
+.video-artifact-content h3 {{ font-size:18px; }}
+.video-artifact-content h4 {{ font-size:15px; }}
+.video-artifact-content p {{ margin:.78em 0; }}
+.video-artifact-content ul,.video-artifact-content ol {{ margin:.78em 0; padding-left:1.35em; }}
+.video-artifact-content li {{ margin:.3em 0; }}
+.video-artifact-content a {{ color:var(--accent); }}
+.video-artifact-footer {{
+  flex:0 0 auto; min-height:48px; display:flex; align-items:center; justify-content:flex-end; gap:8px;
+  padding:8px 24px; border-top:1px solid var(--hair); background:var(--color-panel-soft);
+}}
+#video-copy-status {{ color:var(--faint); font:10px/1.3 var(--mono); }}
+.video-copy {{
+  min-height:30px; padding:4px 9px; color:var(--faint); background:transparent;
+  border:1px solid var(--hair); border-radius:var(--radius-3); font:700 9px/1.2 var(--mono);
+  letter-spacing:.07em; text-transform:uppercase; cursor:pointer;
+}}
+.video-copy:hover {{ color:var(--accent); border-color:var(--color-border-strong); }}
 .topic-modal-card {{
   width:min(760px, 100%); max-height:min(88vh, 840px); overflow:auto; padding:0;
 }}
@@ -2073,6 +2377,13 @@ h1 {{ margin:0 0 10px; font-family:var(--display); font-size:clamp(28px, 7vw, 48
 .note-body h3 {{ font-size:19px; }}
 .note-body p {{ margin:.85em 0; }}
 .note-body a {{ color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px; }}
+.note-body a.video-artifact-link {{
+  min-height:30px; display:inline-flex; align-items:center; margin:2px 2px 2px 0; padding:4px 8px;
+  color:var(--muted); background:var(--color-panel-soft); border:1px solid var(--hair);
+  border-radius:var(--radius-3); font:700 9px/1.2 var(--mono); letter-spacing:.06em;
+  text-transform:uppercase; text-decoration:none;
+}}
+.note-body a.video-artifact-link:hover {{ color:var(--accent); border-color:var(--color-border-strong); }}
 .note-body ul,.note-body ol {{ padding-left:1.35em; margin:.85em 0; }}
 .note-body li {{ margin:.35em 0; }}
 .note-body blockquote {{
@@ -2101,6 +2412,13 @@ h1 {{ margin:0 0 10px; font-family:var(--display); font-size:clamp(28px, 7vw, 48
   .btn {{ flex:1 1 auto; text-align:center; }}
   .btn.icon {{ flex:0 0 34px; margin-left:0; }}
   .action-status {{ flex:1 0 100%; }}
+  .video-artifact-modal {{ align-items:flex-end; padding:0; }}
+  .video-artifact-card {{ width:100%; max-height:94dvh; border-radius:var(--radius-5) var(--radius-5) 0 0; }}
+  .video-artifact-tabs {{ padding:8px 16px; }}
+  .video-artifact-tab {{ min-height:44px; flex:1; }}
+  .video-artifact-body {{ padding:6px 16px 20px; }}
+  .video-artifact-footer {{ min-height:60px; padding:8px 16px; }}
+  .video-copy,.note-body a.video-artifact-link {{ min-height:44px; }}
   .topic-modal {{ align-items:flex-end; padding:0; }}
   .topic-modal-card {{ width:100%; max-height:94dvh; border-radius:var(--radius-5) var(--radius-5) 0 0; }}
   .modal-header {{ padding:18px 16px 14px; }}
@@ -2139,7 +2457,9 @@ h1 {{ margin:0 0 10px; font-family:var(--display); font-size:clamp(28px, 7vw, 48
 </main>
 {topic_modal}
 {delete_modal}
+{video_artifact_modal}
 {note_theme_script}
+{video_artifact_script}
 {note_actions_script}
 </body>
 </html>
