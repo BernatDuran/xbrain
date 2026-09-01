@@ -118,11 +118,17 @@ def _summary(item: Item) -> str:
 
 
 def _date(item: Item) -> str:
-    return item.created_at.date().isoformat()
+    """Library acquisition date kept under the legacy row key ``date``."""
+    return item.captured_at.date().isoformat()
 
 
 def _month(item: Item) -> str:
-    return item.created_at.strftime("%Y-%m")
+    """Library acquisition month, not the source publication month."""
+    return item.captured_at.strftime("%Y-%m")
+
+
+def _published_date(item: Item) -> str:
+    return item.created_at.date().isoformat()
 
 
 def _primary(item: Item) -> str | None:
@@ -161,16 +167,28 @@ def _row(
     suggestions = _suggested_topics(item)
     return {
         "id": item.id,
+        "title": _graph_item_label(item),
         "handle": item.author.handle,
         "name": item.author.name,
         "source": item.source,
         "content_type": _content_type(item),
         "date": _date(item),
+        "captured_date": _date(item),
+        "published_date": _published_date(item),
         "topic": slug2label.get(topic or "", topic or "—"),
         "topic_slug": topic,
+        "topics": _topics(item),
+        "topic_labels": [humanize_topic(slug) for slug in _topics(item)],
         "confidence": _confidence(item) or "unknown",
         "suggested_topics": suggestions,
+        "needs_review": _needs_topic_review(item),
+        "processing_ready": _processing_ready(item),
         "summary": _summary(item),
+        "post_text": _compact_text(item.text, 600),
+        "domain": _graph_domain(item),
+        "word_count": _item_word_count(item),
+        "article_sources": _item_article_source_counts(item),
+        "media_counts": _item_media_counts(item),
         "url": item.url,
         "note": id2note.get(item.id),
         "storage": item_storage.get(item.id),
@@ -197,6 +215,28 @@ def _failed_article_sources(item: Item) -> list[ContentSourceFailure]:
     return [source for source in _article_sources(item) if isinstance(source, ContentSourceFailure)]
 
 
+def _item_article_source_counts(item: Item) -> dict[str, int]:
+    counts = {"ext_saved": 0, "ext_failed": 0, "x_saved": 0, "x_failed": 0}
+    for source in _article_sources(item):
+        prefix = "ext" if source.kind == "external_article" else "x"
+        outcome = "saved" if isinstance(source, ContentSourceSuccess) else "failed"
+        counts[f"{prefix}_{outcome}"] += 1
+    return counts
+
+
+def _item_media_counts(item: Item) -> dict[str, int]:
+    article_downloaded, article_pending, _ = _article_media_counts(item)
+    return {
+        "photos_downloaded": sum(
+            1 for entry in item.media if isinstance(entry, _DOWNLOADED_PHOTO_TYPES)
+        ),
+        "photos_pending": sum(1 for entry in item.media if isinstance(entry, MediaPhotoPending)),
+        "article_images_downloaded": article_downloaded,
+        "article_images_pending": article_pending,
+        "videos": sum(1 for entry in item.media if isinstance(entry, _VIDEO_TYPES)),
+    }
+
+
 def _has_processed_content(item: Item) -> bool:
     """True when an item already has useful generated content for the note."""
     if item.enriched is not None:
@@ -211,6 +251,15 @@ def _blocking_article_failures(item: Item) -> list[ContentSourceFailure]:
     if _has_processed_content(item):
         return []
     return _failed_article_sources(item)
+
+
+def _item_word_count(item: Item) -> int:
+    """Approximate readable words across retained successful content."""
+    sources = item.content.sources if item.content else []
+    source_words = sum(
+        len(source.text.split()) for source in sources if isinstance(source, ContentSourceSuccess)
+    )
+    return source_words or len(item.text.split())
 
 
 def _content_type(item: Item) -> str:
@@ -279,11 +328,12 @@ def collect_thumbnails(
 
 
 def _growth(items: list[Item]) -> dict[str, Any]:
-    """Monthly new counts and cumulative totals (all / bookmarks / own posts)."""
+    """Monthly acquisitions and cumulative totals, including zero-count months."""
     per_month: dict[str, list[Item]] = defaultdict(list)
     for item in items:
         per_month[_month(item)].append(item)
-    months = sorted(per_month)
+    populated_months = sorted(per_month)
+    months = _month_range(populated_months[0], populated_months[-1]) if populated_months else []
     new_total, cum_total, cum_bm, cum_own = [], [], [], []
     run_t = run_b = run_o = 0
     for month in months:
@@ -303,6 +353,20 @@ def _growth(items: list[Item]) -> dict[str, Any]:
         "cum_own": cum_own,
         "_per_month": per_month,
     }
+
+
+def _month_range(first: str, last: str) -> list[str]:
+    """Return every calendar month in an inclusive ``YYYY-MM`` interval."""
+    year, month = map(int, first.split("-"))
+    last_year, last_month = map(int, last.split("-"))
+    out: list[str] = []
+    while (year, month) <= (last_year, last_month):
+        out.append(f"{year:04d}-{month:02d}")
+        month += 1
+        if month == 13:
+            year += 1
+            month = 1
+    return out
 
 
 def _longform(
@@ -347,10 +411,11 @@ def _longform(
 
 
 def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
-    """Recent article failures that block useful note processing."""
+    """Recent article failures, whether or not another source was processed."""
     rows: list[dict[str, Any]] = []
     for item in items:
-        for source in _blocking_article_failures(item):
+        blocking_sources = set(id(source) for source in _blocking_article_failures(item))
+        for source in _failed_article_sources(item):
             rows.append(
                 {
                     "handle": item.author.handle,
@@ -362,21 +427,24 @@ def _article_failures(items: list[Item], id2note: dict[str, str]) -> list[dict[s
                     "post": item.url,
                     "note": id2note.get(item.id),
                     "summary": _summary(item),
+                    "blocking": id(source) in blocking_sources,
                 }
             )
     return _recent(rows, 20)
 
 
 def _article_failure_count(items: list[Item]) -> int:
-    """Total linked article failures that block useful note processing."""
+    """Total failed linked article sources, including non-blocking failures."""
+    return sum(len(_failed_article_sources(item)) for item in items)
+
+
+def _blocking_article_failure_count(items: list[Item]) -> int:
     return sum(len(_blocking_article_failures(item)) for item in items)
 
 
 def _failed_bookmark_count(items: list[Item]) -> int:
-    """Bookmarks with article failures that still block useful processing."""
-    return sum(
-        1 for item in items if item.source == "bookmark" and _blocking_article_failures(item)
-    )
+    """Bookmarks containing any article failure, matching ``retry-failed``."""
+    return sum(1 for item in items if item.source == "bookmark" and _failed_article_sources(item))
 
 
 def _media_counts(items: list[Item]) -> dict[str, int]:
@@ -416,6 +484,7 @@ def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, A
     pending_enrich = sum(1 for item in items if item.enriched is None)
     failures = _article_failures(items, id2note)
     failure_count = _article_failure_count(items)
+    blocking_failure_count = _blocking_article_failure_count(items)
     failed_bookmarks = _failed_bookmark_count(items)
     recent_bookmarks = _recent(rows([item for item in items if item.source == "bookmark"]), 8)
     return {
@@ -432,6 +501,7 @@ def _ops(items: list[Item], id2note: dict[str, str], rows: _Rows) -> dict[str, A
             "describe": downloaded_undescribed + article_undescribed,
             "enrich": pending_enrich,
             "article_failures": failure_count,
+            "blocking_article_failures": blocking_failure_count,
         },
         "recent_bookmarks": recent_bookmarks,
         "article_failures": failures,
@@ -562,6 +632,8 @@ def _library_section(items: list[Item]) -> dict[str, Any]:
         "articles": counts["article"],
         "videos": counts["video"],
         "article_failed": counts["article_failed"],
+        "source_failures": _article_failure_count(items),
+        "blocking_failures": _blocking_article_failure_count(items),
         "post_only": counts["post_only"],
     }
 
@@ -576,7 +648,7 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
         item.id: item
         for item in sorted(
             [item for item in items if _needs_topic_review(item)],
-            key=lambda i: i.created_at,
+            key=lambda i: i.captured_at,
             reverse=True,
         )
     }
@@ -589,6 +661,9 @@ def _taxonomy_section(items: list[Item], rows: _Rows) -> dict[str, Any]:
         },
         "misc": len(misc_items),
         "low": len(low_items),
+        "review_count": len(review_items),
+        "suggestion_assignments": sum(suggested.values()),
+        "suggestion_unique": len(suggested),
         "suggested": [{"slug": slug, "count": count} for slug, count in suggested.most_common(20)],
         "review_items": rows(list(review_items.values()))[:12],
     }
@@ -648,9 +723,18 @@ def _graph_topic_nodes(
         content_types = Counter(_content_type(item) for item in group)
         last_activity = max((_date(item) for item in group), default=None)
         recent_count = 0
+        previous_count = 0
         if latest_date is not None:
             latest_month = latest_date[:7]
+            previous_month = _previous_month(latest_month)
             recent_count = sum(1 for item in group if _date(item)[:7] == latest_month)
+            previous_count = sum(1 for item in group if _date(item)[:7] == previous_month)
+        growth_delta = recent_count - previous_count
+        growth_rate = (
+            round(growth_delta / previous_count * 100, 1)
+            if previous_count
+            else (100.0 if recent_count else 0.0)
+        )
         out.append(
             {
                 "id": f"topic:{slug}",
@@ -659,6 +743,9 @@ def _graph_topic_nodes(
                 "count": len(group),
                 "related_count": len(neighbours[slug]),
                 "recent_count": recent_count,
+                "previous_count": previous_count,
+                "growth_delta": growth_delta,
+                "growth_rate": growth_rate,
                 "last_activity": last_activity,
                 "confidence": {
                     "high": confidence["high"],
@@ -679,9 +766,16 @@ def _graph_topic_nodes(
     return out
 
 
+def _previous_month(month: str) -> str:
+    year, number = map(int, month.split("-"))
+    if number == 1:
+        return f"{year - 1:04d}-12"
+    return f"{year:04d}-{number - 1:02d}"
+
+
 def _graph_item_nodes(items: list[Item], id2note: dict[str, str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for item in sorted(items, key=lambda i: (i.created_at, i.id), reverse=True):
+    for item in sorted(items, key=lambda i: (i.captured_at, i.id), reverse=True):
         topics = _topics(item)
         if not topics:
             continue
@@ -692,6 +786,8 @@ def _graph_item_nodes(items: list[Item], id2note: dict[str, str]) -> list[dict[s
                 "label": _graph_item_label(item),
                 "summary": _compact_text(_summary(item), 180),
                 "date": _date(item),
+                "captured_date": _date(item),
+                "published_date": _published_date(item),
                 "primary_topic": _primary(item),
                 "topics": topics,
                 "content_type": _content_type(item),
@@ -710,13 +806,21 @@ def _graph_item_nodes(items: list[Item], id2note: dict[str, str]) -> list[dict[s
 
 def _graph_topic_edges(items: list[Item], limit: int = 200) -> list[dict[str, Any]]:
     weights: Counter[tuple[str, str]] = Counter()
+    topic_counts: Counter[str] = Counter()
     for item in items:
         topics = sorted(_topics(item))
+        topic_counts.update(topics)
         for source, target in combinations(topics, 2):
             weights[(source, target)] += 1
 
     candidates: list[dict[str, Any]] = [
-        {"source": f"topic:{s}", "target": f"topic:{t}", "kind": "cooccurrence", "weight": w}
+        {
+            "source": f"topic:{s}",
+            "target": f"topic:{t}",
+            "kind": "cooccurrence",
+            "weight": w,
+            "affinity": round(w / (topic_counts[s] + topic_counts[t] - w), 4),
+        }
         for (s, t), w in weights.items()
         if w >= 1
     ]
@@ -740,7 +844,7 @@ def _graph_topic_edges(items: list[Item], limit: int = 200) -> list[dict[str, An
 def _graph_membership_edges(items: list[Item], per_topic_limit: int = 40) -> list[dict[str, Any]]:
     used: Counter[str] = Counter()
     out: list[dict[str, Any]] = []
-    for item in sorted(items, key=lambda i: (i.created_at, i.id), reverse=True):
+    for item in sorted(items, key=lambda i: (i.captured_at, i.id), reverse=True):
         primary = _primary(item)
         for slug in _topics(item):
             if used[slug] >= per_topic_limit:
@@ -823,7 +927,9 @@ def _graph_insights(
     )
     active = sorted(topic_nodes, key=lambda node: node["last_activity"] or "", reverse=True)
     fastest = sorted(
-        topic_nodes, key=lambda node: (node["recent_count"], node["count"]), reverse=True
+        topic_nodes,
+        key=lambda node: (node["growth_delta"], node["growth_rate"], node["recent_count"]),
+        reverse=True,
     )
     return {
         "most_connected": by_slug.get(connected_slug) if connected_slug else None,
@@ -836,22 +942,11 @@ def _graph_insights(
 
 
 def _graph_version(graph: dict[str, Any]) -> str:
+    """Stable taxonomy version so new documents do not discard saved positions."""
     payload = json.dumps(
         {
-            "topics": graph["topics"],
-            "items": [
-                {
-                    "id": item["id"],
-                    "date": item["date"],
-                    "primary_topic": item["primary_topic"],
-                    "topics": item["topics"],
-                    "confidence": item["confidence"],
-                }
-                for item in graph["items"]
-            ],
-            "topic_edges": graph["topic_edges"],
-            "membership_edges": graph["membership_edges"],
-            "emerging_topics": graph["emerging_topics"],
+            "schema": 2,
+            "topics": sorted(topic["slug"] for topic in graph["topics"]),
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -900,12 +995,17 @@ def _meta(
     storage: dict[str, Any],
 ) -> dict[str, Any]:
     """The KPI header block (totals, enrichment, long-form, media, timestamp)."""
+    assigned_topics = {slug for item in items for slug in _topics(item)}
+    ready_items = sum(1 for item in items if _processing_ready(item))
     return {
         "total": len(items),
         "bookmarks": bookmarks,
         "own": own,
         "enriched": sum(1 for i in items if i.enriched),
-        "topics_count": len(topic_freq),
+        "topics_count": len(assigned_topics),
+        "primary_topics_count": len(topic_freq),
+        "processing_ready": ready_items,
+        "processing_ready_pct": round(ready_items / len(items) * 100, 1) if items else 0.0,
         "longform": {k: longform[k] for k in _META_LONGFORM_KEYS},
         "media": media,
         "library": library,
@@ -913,6 +1013,15 @@ def _meta(
         "storage": storage,
         "updated": updated,
     }
+
+
+def _processing_ready(item: Item) -> bool:
+    """True when enrichment exists and is not older than fetched content."""
+    if item.enriched is None:
+        return False
+    if item.links and item.content is None:
+        return False
+    return item.content is None or item.enriched.enriched_at >= item.content.fetched_at
 
 
 def compute_dashboard_data(
@@ -952,6 +1061,9 @@ def compute_dashboard_data(
     bookmark_items = [i for i in items if i.source == "bookmark"]
     own_items = [i for i in items if i.source == "own_tweet"]
     photo_posts = [i for i in items if _downloaded_image_entries(i)]
+    library_items = sorted(
+        rows(items), key=lambda row: (str(row["captured_date"]), str(row["id"])), reverse=True
+    )
 
     return {
         "meta": _meta(
@@ -974,6 +1086,7 @@ def compute_dashboard_data(
         "domains": domains,
         "domain_data": domain_data,
         "months_data": months_data,
+        "library_items": library_items,
         "longform_full": longform,
         "taxonomy": taxonomy,
         "graph": graph,

@@ -62,6 +62,7 @@ def _item(
     media=None,
     content=None,
     created=DT,
+    captured=DT,
     summary="resumen",
     confidence=None,
     suggested_topics=None,
@@ -75,7 +76,7 @@ def _item(
         author=Author(handle=handle, name=name),
         text=f"text {item_id}",
         created_at=created,
-        captured_at=DT,
+        captured_at=captured,
         links=links or [],
         media=media or [],
         content=content,
@@ -124,6 +125,7 @@ def test_compute_counts_topics_authors_and_deep_links():
         3,
         2,
     )
+    assert (m["processing_ready"], m["processing_ready_pct"]) == (2, 66.7)
     assert data["topics_sorted"][0] == {"slug": "ai-coding", "label": "AI Coding", "count": 2}
     # own_tweet authors are excluded from the "bookmarked authors" chart
     assert {a["handle"] for a in data["authors"]} == {"alice", "bob"}
@@ -314,6 +316,8 @@ def test_long_form_and_media_counts():
         "articles": 2,
         "videos": 1,
         "article_failed": 0,
+        "source_failures": 1,
+        "blocking_failures": 0,
         "post_only": 2,
     }
 
@@ -413,17 +417,18 @@ def test_ops_section_counts_pending_work_and_article_failures():
     ops = data["ops"]
     assert ops["command"] == "uv run xbrain refresh-all --headless --video-max-size 4GB"
     assert ops["retry_failed_command"] == "uv run xbrain retry-failed --source bookmarks --headless"
-    assert ops["retry_failed_bookmarks"] == 1
+    assert ops["retry_failed_bookmarks"] == 2
     assert ops["pending"] == {
         "fetch": 1,
         "media": 2,
         "describe": 2,
         "enrich": 2,
-        "article_failures": 1,
+        "article_failures": 2,
+        "blocking_article_failures": 1,
     }
     assert ops["article_failures"][0]["reason"] == "js_required"
     assert ops["article_failures"][0]["note"] == "/v/2.md"
-    assert {row["id"] for row in ops["article_failures"]} == {"2"}
+    assert {row["id"] for row in ops["article_failures"]} == {"2", "4"}
     assert len(ops["recent_bookmarks"]) == 4
 
 
@@ -470,18 +475,27 @@ def test_render_dashboard_includes_library_chat():
     assert 'id="chat-view"' in html
     assert "/api/chat" in html
     assert "Ask XBrain" in html
+    assert 'id="library-browser"' in html
+    assert 'id="filter-query"' in html
+    assert 'id="filter-author"' in html
+    assert 'id="filter-domain"' in html
+    assert "/api/search" in html
+    assert 'id="chat-scope"' in html
+    assert "item_ids:itemIds" in html
+    assert "'x-xbrain-action':'1'" in html
 
 
 def test_render_dashboard_declares_workspace_navigation_sections():
     html = render_dashboard_html({"meta": {"total": 1}})
-    assert 'data-workspace="overview"' in html
+    assert 'data-workspace="library"' in html
     assert 'data-workspace="atlas"' in html
+    assert 'data-workspace="analytics"' in html
     assert 'data-workspace="ops"' in html
     assert 'id="signal-rail"' in html
-    assert 'data-workspace-section="overview atlas ops"' in html
+    assert 'data-workspace-section="library atlas analytics"' in html
     assert "const WORKSPACES=" in html
     assert "viewFromHash" in html
-    assert "ask:'chat'" in html
+    assert "ask:'library'" in html
     assert "signal-card" in html
     assert 'style="height:' not in html
     assert 'style="width:' not in html
@@ -505,6 +519,7 @@ def test_render_dashboard_includes_atlas_knowledge_graph_controls():
     assert 'id="graph-content"' in html
     assert 'id="graph-confidence"' in html
     assert 'id="graph-docs"' in html
+    assert 'id="graph-edge-mode"' in html
     assert 'id="graph-emerging"' in html
     assert 'id="graph-hop-1"' in html
     assert 'id="graph-hop-2"' in html
@@ -526,6 +541,17 @@ def test_render_dashboard_includes_atlas_knowledge_graph_controls():
     assert "All time" in html
     assert "90 days" in html
     assert "Topic editing requires the served dashboard." in html
+    assert 'role="tablist"' in html
+    assert ">Documents</button>" in html
+
+
+def test_render_dashboard_includes_accessible_chart_alternatives():
+    html = render_dashboard_html({"meta": {"total": 1}})
+
+    assert 'class="chart-fallback"' in html
+    assert "Use the data table below for a text alternative." in html
+    assert "element.setAttribute('role','img')" in html
+    assert "element.setAttribute('tabindex','0')" in html
 
 
 def test_render_dashboard_includes_forest_theme_controls_and_tokens():
@@ -655,7 +681,11 @@ def test_render_survives_lone_surrogate():
 def test_growth_is_cumulative_across_months_with_month_slices():
     items = [
         _item(
-            "1", "bookmark", "ai-coding", "alice", created=datetime(2026, 5, 3, tzinfo=timezone.utc)
+            "1",
+            "bookmark",
+            "ai-coding",
+            "alice",
+            captured=datetime(2026, 5, 3, tzinfo=timezone.utc),
         ),
         _item(
             "2",
@@ -663,14 +693,14 @@ def test_growth_is_cumulative_across_months_with_month_slices():
             "ai-coding",
             "bob",
             "Bob",
-            created=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            captured=datetime(2026, 6, 4, tzinfo=timezone.utc),
         ),
         _item(
             "3",
             "own_tweet",
             "claude-code",
             "vgonpa",
-            created=datetime(2026, 6, 5, tzinfo=timezone.utc),
+            captured=datetime(2026, 6, 5, tzinfo=timezone.utc),
         ),
     ]
     data = compute_dashboard_data(items, {}, {}, [], "x")
@@ -683,6 +713,67 @@ def test_growth_is_cumulative_across_months_with_month_slices():
     assert (june["count"], june["bm"], june["own"]) == (2, 1, 1)
     assert june["top_topics"][0]["label"] == "AI Coding"
     assert "vgonpa" not in {a["handle"] for a in june["top_authors"]}
+
+
+def test_growth_uses_acquisition_date_and_fills_empty_months():
+    items = [
+        _item(
+            "1",
+            created=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            captured=datetime(2026, 1, 5, tzinfo=timezone.utc),
+        ),
+        _item(
+            "2",
+            created=datetime(2025, 8, 4, tzinfo=timezone.utc),
+            captured=datetime(2026, 3, 7, tzinfo=timezone.utc),
+        ),
+    ]
+
+    data = compute_dashboard_data(items, {}, {}, [], "x")
+
+    assert data["months"] == ["2026-01", "2026-02", "2026-03"]
+    assert data["new_total"] == [1, 0, 1]
+    assert data["cum_total"] == [1, 1, 2]
+    assert data["months_data"]["2026-02"]["count"] == 0
+    assert data["library_items"][0]["captured_date"] == "2026-03-07"
+    assert data["library_items"][0]["published_date"] == "2025-08-04"
+
+
+def test_meta_uses_all_assigned_topics_and_truthful_review_counts():
+    items = [
+        _item(
+            "1",
+            topic="primary",
+            topics=["primary", "secondary"],
+            confidence="medium",
+            suggested_topics=["new-one", "new-two"],
+        ),
+        _item(
+            "2",
+            topic="primary",
+            confidence="low",
+            suggested_topics=["new-one"],
+        ),
+    ]
+
+    data = compute_dashboard_data(items, {}, {}, [], "x")
+
+    assert data["meta"]["topics_count"] == 2
+    assert data["meta"]["primary_topics_count"] == 1
+    assert data["taxonomy"]["review_count"] == 2
+    assert data["taxonomy"]["suggestion_assignments"] == 3
+    assert data["taxonomy"]["suggestion_unique"] == 2
+
+
+def test_graph_layout_version_is_stable_when_only_documents_change():
+    first = compute_dashboard_data([_item("1")], {}, {}, [], "x")["graph"]["version"]
+    second = compute_dashboard_data([_item("1"), _item("2")], {}, {}, [], "x")["graph"]["version"]
+    changed_taxonomy = compute_dashboard_data(
+        [_item("1"), _item("2", topic="new-topic")], {}, {}, [], "x"
+    )["graph"]["version"]
+
+    assert first == second
+    assert changed_taxonomy != first
 
 
 def test_domains_exclude_x_com():
@@ -851,18 +942,25 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 900, "height": 700})
         page.goto(dashboard.resolve().as_uri() + "#ask", wait_until="networkidle")
-        assert page.locator("#chat-view").evaluate("el => el.classList.contains('on')")
-        assert not page.locator("#dashboard-view").evaluate("el => el.classList.contains('on')")
-        assert page.locator("#dashboard-view").evaluate("el => el.getClientRects().length") == 0
-        assert page.locator("[aria-current='page']").evaluate("el => el.id") == "nav-chat"
+        assert page.locator("#chat-view").evaluate("el => el.classList.contains('open')")
+        assert page.locator("#chat-view").get_attribute("aria-hidden") == "false"
+        assert page.locator("#dashboard-view").evaluate("el => el.classList.contains('on')")
+        assert page.locator("[aria-current='page']").evaluate("el => el.id") == "nav-library"
         assert page.locator("#drawer").evaluate("el => el.inert === true")
 
-        page.click("#nav-dashboard")
+        page.keyboard.press("Escape")
+        page.click("#nav-analytics")
         assert (
             page.locator(".chart-actions").first.evaluate("el => getComputedStyle(el).display")
             == "flex"
         )
         page.click("[data-action='latest-month']")
+        page.wait_for_timeout(120)
+        assert page.locator("#filter-date-from").input_value() == "2026-06-01"
+        assert page.locator("#filter-date-to").input_value() == "2026-06-30"
+
+        page.click("#nav-library")
+        page.click(".library-title")
         page.wait_for_timeout(120)
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "false"
         assert page.locator("#drawer").evaluate("el => el.inert === false")
@@ -873,9 +971,60 @@ def test_dashboard_runtime_workspace_drawer_and_chart_actions(tmp_path):
         assert page.locator("#drawer").evaluate("el => el.getAttribute('aria-hidden')") == "true"
         assert page.locator("#drawer").evaluate("el => el.inert === true")
 
+        page.click("#nav-analytics")
         page.click("[data-signal='readiness']")
         page.wait_for_timeout(120)
-        assert page.evaluate("location.hash") == "#overview"
+        assert page.evaluate("location.hash") == "#analytics"
+        browser.close()
+
+
+def test_dashboard_runtime_shared_filters_documents_and_mobile_accessibility(tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    items = [
+        _item("1", topic="ai-coding", confidence="high"),
+        _item(
+            "2",
+            topic="learning",
+            confidence="low",
+            media=[MediaVideoPending(url="https://v")],
+        ),
+    ]
+    data = compute_dashboard_data(items, {}, {"1": "/v/1.md", "2": "/v/2.md"}, [], "x")
+    dashboard = tmp_path / "dashboard.html"
+    dashboard.write_text(render_dashboard_html(data), encoding="utf-8")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(dashboard.resolve().as_uri() + "#library", wait_until="networkidle")
+
+        assert page.locator(".library-table tbody tr").count() == 2
+        page.click("#filter-more")
+        page.select_option("#filter-content", "video")
+        assert page.locator(".library-table tbody tr").count() == 1
+        page.click("#nav-atlas")
+        page.locator("#atlas-tab-map").focus()
+        page.keyboard.press("ArrowRight")
+        assert page.locator("#atlas-tab-timeline").get_attribute("aria-selected") == "true"
+        page.keyboard.press("End")
+        assert page.locator("#atlas-tab-list").get_attribute("aria-selected") == "true"
+        page.locator("#graph-list [data-graph-item]").wait_for()
+        assert page.locator("#graph-list [data-graph-item]").count() == 1
+        page.click("#nav-analytics")
+        assert page.locator("#kpis .kpi").first.locator(".num").inner_text() == "1"
+        assert page.locator("#c-growth").get_attribute("role") == "img"
+        assert page.locator("#table-growth").count() == 1
+        assert page.evaluate("document.documentElement.scrollWidth") == 390
+        assert (
+            page.evaluate(
+                "Math.min(...[...document.querySelectorAll('button')].filter(e=>e.offsetParent).map(e=>e.getBoundingClientRect().height))"
+            )
+            >= 44
+        )
+        assert errors == []
         browser.close()
 
 
