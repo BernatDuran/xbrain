@@ -1362,18 +1362,98 @@ def _render_note_page(note_path: Path, output_dir: Path) -> bytes:
   </div>
 </div>"""
         topic_modal = """
-<div class="modal" id="topic-modal" hidden>
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="topic-title">
-    <h2 id="topic-title">Topics</h2>
-    <div class="topic-state" id="topic-state">Loading...</div>
-    <div class="topic-suggestions" id="topic-suggestions" hidden></div>
-    <div class="modal-actions">
-      <button class="modal-btn" id="topic-cancel" type="button">Close</button>
-      <button class="modal-btn" id="topic-accept" type="button">Accept</button>
-      <button class="modal-btn" id="topic-reject" type="button">Reject</button>
-      <button class="modal-btn" id="topic-regenerate" type="button">Regenerate</button>
-      <button class="modal-btn" id="topic-prioritize" type="button">Prioritize</button>
-      <button class="modal-btn primary" id="topic-promote" type="button">Promote + regenerate</button>
+<div class="modal topic-modal" id="topic-modal" hidden>
+  <div class="modal-card topic-modal-card" role="dialog" aria-modal="true"
+       aria-labelledby="topic-title" aria-describedby="topic-intro">
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">Taxonomy review</div>
+        <h2 id="topic-title">Review topics</h2>
+        <p id="topic-intro">Check the current classification and choose one outcome. Closing this window never changes the document.</p>
+      </div>
+      <button class="modal-close" id="topic-close" type="button"
+              aria-label="Close topic review without changes" title="Close without changes">×</button>
+    </div>
+    <div class="topic-modal-body">
+      <section class="topic-panel" aria-labelledby="topic-current-title">
+        <div class="topic-section-heading">
+          <div>
+            <h3 id="topic-current-title">Current assignment</h3>
+            <p>These topics currently organize this document across XBrain.</p>
+          </div>
+          <span class="topic-review-state" id="topic-review-state">Loading</span>
+        </div>
+        <div class="topic-state" id="topic-state" role="status" aria-live="polite">Loading...</div>
+      </section>
+
+      <section class="topic-suggestions" id="topic-suggestions" aria-labelledby="topic-suggestions-title" hidden>
+        <div class="topic-section-heading compact">
+          <div>
+            <h3 id="topic-suggestions-title">New topic suggestions</h3>
+            <p>Select only the suggestions you want XBrain to consider.</p>
+          </div>
+        </div>
+        <div class="topic-suggestion-list" id="topic-suggestion-list"></div>
+      </section>
+
+      <div class="topic-action-groups" aria-label="Topic review actions">
+        <section class="topic-action-group" aria-labelledby="topic-finish-title">
+          <div class="topic-section-heading compact">
+            <div>
+              <h3 id="topic-finish-title">Finish the review</h3>
+              <p>Use the current result as-is or deliberately file it under Misc.</p>
+            </div>
+          </div>
+          <div class="topic-action-grid">
+            <button class="topic-action-option primary" id="topic-accept" type="button" disabled>
+              <span class="topic-action-label">Confirm current topics</span>
+              <span class="topic-action-help">Keep this assignment, mark its confidence high, and dismiss all suggestions.</span>
+            </button>
+            <button class="topic-action-option" id="topic-reject" type="button" disabled>
+              <span class="topic-action-label">Move to Misc</span>
+              <span class="topic-action-help">Replace every assigned topic with Misc and mark the review complete.</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="topic-action-group" aria-labelledby="topic-reclassify-title">
+          <div class="topic-section-heading compact">
+            <div>
+              <h3 id="topic-reclassify-title">Reclassify with AI</h3>
+              <p>Runs the classifier again for this document and refreshes derived topic views.</p>
+            </div>
+          </div>
+          <div class="topic-action-grid">
+            <button class="topic-action-option wide" id="topic-regenerate" type="button" disabled>
+              <span class="topic-action-label">Reclassify automatically</span>
+              <span class="topic-action-help">Try again using only the existing controlled vocabulary.</span>
+            </button>
+            <button class="topic-action-option" id="topic-prioritize" type="button" hidden disabled>
+              <span class="topic-action-label">Try selected suggestions</span>
+              <span class="topic-action-help">Use checked suggestions as guidance without adding them to the vocabulary.</span>
+            </button>
+            <button class="topic-action-option warning" id="topic-promote" type="button" hidden disabled>
+              <span class="topic-action-label">Add to vocabulary &amp; reclassify</span>
+              <span class="topic-action-help">Add checked suggestions globally, then reclassify this document. Confirmation required.</span>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <div class="topic-confirm" id="topic-promote-confirm" role="alert" hidden>
+        <div>
+          <strong>Add selected topics to the shared vocabulary?</strong>
+          <span id="topic-promote-summary">They will become available to future classifications.</span>
+        </div>
+        <div class="topic-confirm-actions">
+          <button class="modal-btn" id="topic-promote-cancel" type="button">Go back</button>
+          <button class="modal-btn primary" id="topic-promote-confirm-button" type="button">Confirm &amp; reclassify</button>
+        </div>
+      </div>
+    </div>
+    <div class="topic-modal-footer">
+      <div class="topic-action-status" id="topic-action-status" role="status" aria-live="polite">Choose an action, or close without changes.</div>
+      <button class="modal-btn" id="topic-cancel" type="button">Close without changes</button>
     </div>
   </div>
 </div>"""
@@ -1385,12 +1465,21 @@ const topicButton = document.getElementById('topics-note');
 const topicModal = document.getElementById('topic-modal');
 const topicState = document.getElementById('topic-state');
 const topicSuggestions = document.getElementById('topic-suggestions');
+const topicSuggestionList = document.getElementById('topic-suggestion-list');
+const topicSuggestionsTitle = document.getElementById('topic-suggestions-title');
+const topicReviewState = document.getElementById('topic-review-state');
+const topicActionStatus = document.getElementById('topic-action-status');
+const topicClose = document.getElementById('topic-close');
 const topicCancel = document.getElementById('topic-cancel');
 const topicAccept = document.getElementById('topic-accept');
 const topicReject = document.getElementById('topic-reject');
 const topicRegenerate = document.getElementById('topic-regenerate');
 const topicPrioritize = document.getElementById('topic-prioritize');
 const topicPromote = document.getElementById('topic-promote');
+const topicPromotePanel = document.getElementById('topic-promote-confirm');
+const topicPromoteSummary = document.getElementById('topic-promote-summary');
+const topicPromoteCancel = document.getElementById('topic-promote-cancel');
+const topicPromoteConfirm = document.getElementById('topic-promote-confirm-button');
 const reprocessButton = document.getElementById('reprocess-note');
 const deleteButton = document.getElementById('delete-note');
 const deleteModal = document.getElementById('delete-modal');
@@ -1416,13 +1505,13 @@ const postItemAction = async (endpoint, extra = {{}}) => {{
   return payload;
 }};
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const waitForAction = async (actionName, onDone, progressText) => {{
+const waitForAction = async (actionName, onDone, progressText, onProgress = setStatus) => {{
   for (;;) {{
     await sleep(1000);
     const response = await fetch('/api/status');
     const state = await response.json();
     if (state.running) {{
-      setStatus(progressText);
+      onProgress(progressText);
       continue;
     }}
     if (state.last_action === actionName && state.last_error) {{
@@ -1449,103 +1538,249 @@ if (reprocessButton) {{
   }});
 }}
 if (topicButton && topicModal && topicState) {{
-  const topicControls = [
-    topicAccept,
-    topicReject,
-    topicRegenerate,
-    topicPrioritize,
-    topicPromote
-  ].filter(Boolean);
-  const setTopicModal = open => {{
-    topicModal.hidden = !open;
-    if (open) topicButton.focus();
+  let topicPayload = null;
+  let topicBusy = false;
+  let topicReturnFocus = null;
+  const selectedSuggestions = () => Array.from(
+    topicSuggestionList
+      ? topicSuggestionList.querySelectorAll('input[type="checkbox"]:checked')
+      : []
+  ).map(input => input.value);
+  const closeTopicPromoteConfirmation = restoreFocus => {{
+    if (topicPromotePanel) topicPromotePanel.hidden = true;
+    if (restoreFocus && topicPromote) topicPromote.focus();
   }};
-  const setTopicDisabled = disabled => topicControls.forEach(button => {{ button.disabled = disabled; }});
+  const setTopicFeedback = (text, tone = 'neutral') => {{
+    if (topicActionStatus) {{
+      topicActionStatus.textContent = text;
+      topicActionStatus.dataset.tone = tone;
+    }}
+    setStatus(text);
+  }};
+  const updateTopicControls = () => {{
+    const loaded = topicPayload !== null;
+    const hasAssignment = Boolean(topicPayload && topicPayload.enriched);
+    const hasSuggestions = Boolean(
+      topicPayload && (topicPayload.suggested_new_topics || []).length
+    );
+    const hasSelection = selectedSuggestions().length > 0;
+    if (topicAccept) topicAccept.disabled = topicBusy || !loaded || !hasAssignment;
+    if (topicReject) topicReject.disabled = topicBusy || !loaded || !hasAssignment;
+    if (topicRegenerate) topicRegenerate.disabled = topicBusy || !loaded;
+    if (topicPrioritize) {{
+      topicPrioritize.hidden = !loaded || !hasSuggestions;
+      topicPrioritize.disabled = topicBusy || !loaded || !hasSelection;
+    }}
+    if (topicPromote) {{
+      topicPromote.hidden = !loaded || !hasSuggestions;
+      topicPromote.disabled = topicBusy || !loaded || !hasSelection;
+    }}
+    if (topicPromoteCancel) topicPromoteCancel.disabled = topicBusy;
+    if (topicPromoteConfirm) topicPromoteConfirm.disabled = topicBusy || !hasSelection;
+  }};
+  const setTopicBusy = busy => {{
+    topicBusy = busy;
+    updateTopicControls();
+  }};
+  const setTopicModal = open => {{
+    if (open) {{
+      topicReturnFocus = document.activeElement;
+      topicModal.hidden = false;
+      document.body.classList.add('modal-open');
+      requestAnimationFrame(() => (topicClose || topicCancel || topicModal).focus());
+      return;
+    }}
+    topicModal.hidden = true;
+    document.body.classList.remove('modal-open');
+    closeTopicPromoteConfirmation(false);
+    if (topicReturnFocus instanceof HTMLElement) topicReturnFocus.focus();
+  }};
+  const topicPills = values => values.length
+    ? '<div class="topic-pills">' + values.map(value =>
+        '<span class="topic-pill">' + escapeHtml(value) + '</span>'
+      ).join('') + '</div>'
+    : '<span class="topic-empty-value">None</span>';
   const renderTopicState = payload => {{
-    const topics = payload.topics && payload.topics.length ? payload.topics.join(', ') : 'none';
-    const suggestions = payload.suggested_new_topics || [];
-    topicState.textContent = payload.enriched
-      ? 'Primary: ' + (payload.primary_topic || 'none') + ' · topics: ' + topics +
-        ' · confidence: ' + (payload.topic_confidence || 'unknown') +
-        ' · suggested: ' + (suggestions.length ? suggestions.join(', ') : 'none')
-      : 'No topic assignment yet. Use regenerate to create one.';
-    if (topicSuggestions) {{
+    topicPayload = payload;
+    const topics = Array.isArray(payload.topics) ? payload.topics : [];
+    const suggestions = Array.isArray(payload.suggested_new_topics)
+      ? payload.suggested_new_topics
+      : [];
+    if (payload.enriched) {{
+      topicState.innerHTML =
+        '<dl class="topic-facts">' +
+          '<div class="topic-fact"><dt>Primary topic</dt><dd>' +
+            escapeHtml(payload.primary_topic || 'None') + '</dd></div>' +
+          '<div class="topic-fact"><dt>Confidence</dt><dd class="topic-confidence">' +
+            escapeHtml(payload.topic_confidence || 'unknown') + '</dd></div>' +
+          '<div class="topic-fact wide"><dt>All assigned topics</dt><dd>' +
+            topicPills(topics) + '</dd></div>' +
+        '</dl>';
+      if (topicReviewState) {{
+        const confirmed = payload.topic_confidence === 'high' && !suggestions.length;
+        topicReviewState.textContent = confirmed ? 'Confirmed' : 'Needs review';
+        topicReviewState.dataset.tone = confirmed ? 'confirmed' : 'review';
+      }}
+    }} else {{
+      topicState.innerHTML =
+        '<div class="topic-empty-state"><strong>No topic assignment yet.</strong>' +
+        '<span>Reclassify automatically to create the first assignment.</span></div>';
+      if (topicReviewState) {{
+        topicReviewState.textContent = 'Unassigned';
+        topicReviewState.dataset.tone = 'empty';
+      }}
+    }}
+    if (topicSuggestions && topicSuggestionList) {{
       if (suggestions.length) {{
         topicSuggestions.hidden = false;
-        topicSuggestions.innerHTML =
-          '<div class="topic-suggestions-title">Suggestions to review</div>' +
-          suggestions.map(slug =>
+        if (topicSuggestionsTitle) {{
+          topicSuggestionsTitle.textContent = 'New topic suggestions · ' + suggestions.length;
+        }}
+        topicSuggestionList.innerHTML = suggestions.map(slug =>
             '<label class="topic-suggestion">' +
             '<input type="checkbox" value="' + escapeHtml(slug) + '" checked>' +
             '<span>' + escapeHtml(slug) + '</span>' +
             '</label>'
           ).join('');
+        topicSuggestionList.querySelectorAll('input').forEach(input => {{
+          input.addEventListener('change', () => {{
+            closeTopicPromoteConfirmation(false);
+            updateTopicControls();
+          }});
+        }});
       }} else {{
         topicSuggestions.hidden = true;
-        topicSuggestions.innerHTML = '';
+        topicSuggestionList.innerHTML = '';
       }}
     }}
-    const hasSuggestions = suggestions.length > 0;
-    if (topicPrioritize) topicPrioritize.disabled = !hasSuggestions;
-    if (topicPromote) topicPromote.disabled = !hasSuggestions;
+    closeTopicPromoteConfirmation(false);
+    updateTopicControls();
   }};
-  const selectedSuggestions = () => Array.from(
-    topicSuggestions ? topicSuggestions.querySelectorAll('input[type="checkbox"]:checked') : []
-  ).map(input => input.value);
   const loadTopicState = async () => {{
+    topicPayload = null;
+    setTopicBusy(true);
     topicState.textContent = 'Loading...';
-    if (topicSuggestions) {{
-      topicSuggestions.hidden = true;
-      topicSuggestions.innerHTML = '';
+    if (topicReviewState) {{
+      topicReviewState.textContent = 'Loading';
+      topicReviewState.dataset.tone = 'empty';
     }}
+    if (topicSuggestions && topicSuggestionList) {{
+      topicSuggestions.hidden = true;
+      topicSuggestionList.innerHTML = '';
+    }}
+    setTopicFeedback('Loading topic assignment...', 'progress');
     const response = await fetch('/api/topic-state?item_id=' + encodeURIComponent(itemId));
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'request failed');
     renderTopicState(payload);
+    setTopicBusy(false);
+    setTopicFeedback('Choose an action, or close without changes.');
   }};
-  const runTopicAction = async (action, extra = {{}}) => {{
-    setTopicDisabled(true);
-    setStatus('topic ' + action + ' started...');
+  const runTopicAction = async (action, extra, startText, progressText) => {{
+    setTopicBusy(true);
+    closeTopicPromoteConfirmation(false);
+    setTopicFeedback(startText, 'progress');
     try {{
       await postItemAction('/api/topic-action', {{action, ...extra}});
-      await waitForAction('topic-' + action + ':' + itemId, () => window.location.reload(), 'updating topics...');
+      await waitForAction(
+        'topic-' + action + ':' + itemId,
+        () => window.location.reload(),
+        progressText,
+        text => setTopicFeedback(text, 'progress')
+      );
     }} catch (error) {{
-      setTopicDisabled(false);
-      setStatus('could not update topics: ' + error.message);
+      setTopicBusy(false);
+      setTopicFeedback('Could not update topics: ' + error.message, 'error');
     }}
   }};
   topicButton.addEventListener('click', async () => {{
     setTopicModal(true);
-    setTopicDisabled(false);
     try {{
       await loadTopicState();
     }} catch (error) {{
-      topicState.textContent = 'Could not load topics: ' + error.message;
+      topicPayload = null;
+      setTopicBusy(false);
+      if (topicReviewState) {{
+        topicReviewState.textContent = 'Unavailable';
+        topicReviewState.dataset.tone = 'error';
+      }}
+      topicState.innerHTML = '<div class="topic-empty-state"><strong>Could not load topics.</strong><span>' +
+        escapeHtml(error.message) + '</span></div>';
+      setTopicFeedback('Close and reopen this review to try again.', 'error');
     }}
   }});
+  if (topicClose) topicClose.addEventListener('click', () => setTopicModal(false));
   if (topicCancel) topicCancel.addEventListener('click', () => setTopicModal(false));
   topicModal.addEventListener('click', event => {{
     if (event.target === topicModal) setTopicModal(false);
   }});
-  if (topicAccept) topicAccept.addEventListener('click', () => runTopicAction('accept'));
-  if (topicReject) topicReject.addEventListener('click', () => runTopicAction('reject'));
-  if (topicRegenerate) topicRegenerate.addEventListener('click', () => runTopicAction('regenerate'));
-  if (topicPrioritize) topicPrioritize.addEventListener('click', () => runTopicAction('regenerate', {{
-    prioritize_suggestions: true,
-    suggested_topics: selectedSuggestions()
-  }}));
+  topicModal.addEventListener('keydown', event => {{
+    if (event.key === 'Escape') {{
+      event.preventDefault();
+      setTopicModal(false);
+      return;
+    }}
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(topicModal.querySelectorAll(
+      'button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden])'
+    )).filter(element => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {{
+      event.preventDefault();
+      last.focus();
+    }} else if (!event.shiftKey && document.activeElement === last) {{
+      event.preventDefault();
+      first.focus();
+    }}
+  }});
+  if (topicAccept) topicAccept.addEventListener('click', () => runTopicAction(
+    'accept', {{}}, 'Confirming current topics...', 'Refreshing topic views...'
+  ));
+  if (topicReject) topicReject.addEventListener('click', () => runTopicAction(
+    'reject', {{}}, 'Moving this document to Misc...', 'Refreshing topic views...'
+  ));
+  if (topicRegenerate) topicRegenerate.addEventListener('click', () => runTopicAction(
+    'regenerate', {{}}, 'Starting automatic reclassification...', 'Reclassifying this document...'
+  ));
+  if (topicPrioritize) topicPrioritize.addEventListener('click', () => runTopicAction(
+    'regenerate',
+    {{prioritize_suggestions: true, suggested_topics: selectedSuggestions()}},
+    'Starting guided reclassification...',
+    'Reclassifying with selected suggestions...'
+  ));
   if (topicPromote) topicPromote.addEventListener('click', () => {{
     const selected = selectedSuggestions();
     if (!selected.length) {{
-      setStatus('select at least one suggestion');
+      setTopicFeedback('Select at least one suggestion first.', 'error');
+      return;
+    }}
+    if (topicPromoteSummary) {{
+      topicPromoteSummary.textContent = selected.join(', ') +
+        ' will become available to future classifications. This document will then be reclassified.';
+    }}
+    if (topicPromotePanel) topicPromotePanel.hidden = false;
+    if (topicPromoteConfirm) topicPromoteConfirm.focus();
+  }});
+  if (topicPromoteCancel) topicPromoteCancel.addEventListener('click', () => {{
+    closeTopicPromoteConfirmation(true);
+  }});
+  if (topicPromoteConfirm) topicPromoteConfirm.addEventListener('click', () => {{
+    const selected = selectedSuggestions();
+    if (!selected.length) {{
+      closeTopicPromoteConfirmation(false);
+      setTopicFeedback('Select at least one suggestion first.', 'error');
+      updateTopicControls();
       return;
     }}
     runTopicAction('regenerate', {{
       prioritize_suggestions: true,
       promote_suggestions: true,
       suggested_topics: selected
-    }});
+    }}, 'Adding topics to the vocabulary...', 'Adding topics and reclassifying this document...');
   }});
+  updateTopicControls();
 }}
 if (deleteButton && deleteModal && deleteCancel && deleteConfirm) {{
   const setDeleteModal = open => {{
@@ -1667,7 +1902,7 @@ body {{
 .btn.icon {{ width:34px; padding:0; margin-left:auto; font-size:14px; line-height:1; }}
 button.btn {{ cursor:pointer; }}
 .btn:hover {{ color:var(--ink); border-color:var(--color-border-strong); }}
-.btn:focus-visible,.note-icon:focus-visible,.modal-btn:focus-visible {{ outline:0; box-shadow:var(--shadow-focus); }}
+.btn:focus-visible,.note-icon:focus-visible,.modal-btn:focus-visible,.modal-close:focus-visible,.topic-action-option:focus-visible {{ outline:0; box-shadow:var(--shadow-focus); }}
 button.btn:disabled {{ opacity:.52; cursor:wait; }}
 .note-actions {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin:-4px 0 18px; }}
 .note-icon {{
@@ -1680,6 +1915,7 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
 .note-icon.danger:hover {{ color:var(--color-danger); border-color:color-mix(in srgb,var(--color-danger) 44%, transparent); }}
 .note-icon:disabled {{ opacity:.45; cursor:wait; }}
 .action-status {{ align-self:center; color:var(--faint); font-size:11px; min-height:1em; }}
+.modal-open {{ overflow:hidden; }}
 .modal[hidden] {{ display:none; }}
 .modal {{
   position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
@@ -1699,18 +1935,113 @@ button.btn:disabled {{ opacity:.52; cursor:wait; }}
 .modal-btn.primary {{ color:var(--accent); border-color:var(--color-border-strong); }}
 .modal-btn.danger {{ color:var(--color-danger); border-color:color-mix(in srgb,var(--color-danger) 44%, transparent); }}
 .modal-btn:disabled {{ opacity:.52; cursor:wait; }}
+.topic-modal-card {{
+  width:min(760px, 100%); max-height:min(88vh, 840px); overflow:auto; padding:0;
+}}
+.modal-header {{
+  position:sticky; top:0; z-index:2; display:flex; align-items:flex-start; justify-content:space-between;
+  gap:18px; padding:22px 24px 18px; background:color-mix(in srgb,var(--surface) 96%, transparent);
+  border-bottom:1px solid var(--hair); backdrop-filter:blur(10px);
+}}
+.modal-header h2 {{ margin:2px 0 6px; font-size:23px; }}
+.modal-eyebrow {{
+  color:var(--accent); font-family:var(--mono); font-size:9px; font-weight:700;
+  letter-spacing:.16em; text-transform:uppercase;
+}}
+.modal-close {{
+  flex:0 0 36px; width:36px; height:36px; display:grid; place-items:center; border:1px solid var(--hair);
+  border-radius:var(--radius-3); color:var(--muted); background:var(--color-panel-soft);
+  font:500 20px/1 var(--ui); cursor:pointer;
+}}
+.modal-close:hover {{ color:var(--ink); border-color:var(--color-border-strong); }}
+.topic-modal-body {{ display:grid; gap:18px; padding:20px 24px 22px; }}
+.topic-panel,.topic-action-group,.topic-suggestions {{
+  border:1px solid var(--hair); border-radius:var(--radius-4); background:var(--color-input); padding:16px;
+}}
+.topic-section-heading {{
+  display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:12px;
+}}
+.topic-section-heading.compact {{ margin-bottom:11px; }}
+.topic-section-heading h3 {{ margin:0 0 3px; color:var(--ink); font-size:14px; line-height:1.3; }}
+.topic-section-heading p {{ color:var(--faint); font-size:12px; line-height:1.45; }}
+.topic-review-state {{
+  flex:0 0 auto; border:1px solid var(--hair); border-radius:999px; padding:4px 8px;
+  color:var(--faint); background:var(--color-panel-soft); font:700 9px/1.3 var(--mono);
+  letter-spacing:.08em; text-transform:uppercase;
+}}
+.topic-review-state[data-tone="confirmed"] {{ color:var(--color-forest); }}
+.topic-review-state[data-tone="review"] {{ color:var(--accent); }}
+.topic-review-state[data-tone="error"] {{ color:var(--color-danger); }}
 .topic-state {{
-  color:var(--muted); font-size:12.5px; line-height:1.5; border:1px solid var(--hair);
-  background:var(--color-input); border-radius:var(--radius-3); padding:10px; overflow-wrap:anywhere;
+  color:var(--muted); font-size:12.5px; line-height:1.5; overflow-wrap:anywhere;
 }}
+.topic-facts {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:9px; }}
+.topic-fact {{
+  min-width:0; border:1px solid var(--hair); border-radius:var(--radius-3);
+  background:var(--color-panel-soft); padding:10px 11px;
+}}
+.topic-fact.wide {{ grid-column:1 / -1; }}
+.topic-fact dt {{
+  margin-bottom:6px; color:var(--faint); font:700 9px/1.3 var(--mono);
+  letter-spacing:.09em; text-transform:uppercase;
+}}
+.topic-fact dd {{ margin:0; color:var(--ink); font-size:13px; overflow-wrap:anywhere; }}
+.topic-confidence {{ text-transform:capitalize; }}
+.topic-pills {{ display:flex; flex-wrap:wrap; gap:6px; }}
+.topic-pill {{
+  display:inline-flex; align-items:center; min-height:26px; border:1px solid var(--color-border-strong);
+  border-radius:999px; padding:3px 8px; color:var(--ink); background:var(--surface);
+  font:600 11px/1.2 var(--mono);
+}}
+.topic-empty-value {{ color:var(--faint); }}
+.topic-empty-state {{ display:grid; gap:3px; padding:5px 0; }}
+.topic-empty-state strong {{ color:var(--ink); }}
+.topic-empty-state span {{ color:var(--faint); }}
+.topic-action-groups {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+.topic-action-group {{ min-width:0; }}
+.topic-action-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:9px; }}
+.topic-action-option {{
+  min-width:0; min-height:104px; display:flex; flex-direction:column; align-items:flex-start;
+  gap:6px; padding:12px; text-align:left; color:var(--ink); background:var(--color-panel-soft);
+  border:1px solid var(--hair); border-radius:var(--radius-3); cursor:pointer;
+}}
+.topic-action-option.wide {{ grid-column:1 / -1; min-height:82px; }}
+.topic-action-option:hover {{ border-color:var(--color-border-strong); background:var(--surface-2); }}
+.topic-action-option.primary {{ border-color:color-mix(in srgb,var(--accent) 42%, transparent); }}
+.topic-action-option.warning {{ border-color:color-mix(in srgb,var(--color-danger) 34%, transparent); }}
+.topic-action-option:disabled {{ opacity:.46; cursor:not-allowed; }}
+.topic-action-option:disabled:hover {{ border-color:var(--hair); background:var(--color-panel-soft); }}
+.topic-action-label {{ font-size:13px; font-weight:700; line-height:1.25; }}
+.topic-action-help {{ color:var(--faint); font-size:11.5px; line-height:1.42; }}
 .topic-suggestions {{
-  margin-top:10px; color:var(--muted); font-size:12.5px; line-height:1.4;
-  border:1px solid var(--hair); background:var(--color-input); border-radius:var(--radius-3); padding:10px;
-  max-height:190px; overflow:auto;
+  color:var(--muted); font-size:12.5px; line-height:1.4;
 }}
-.topic-suggestions-title {{ color:var(--ink); font-weight:650; margin-bottom:8px; }}
-.topic-suggestion {{ display:flex; align-items:center; gap:8px; margin:6px 0; overflow-wrap:anywhere; }}
-.topic-suggestion input {{ margin:0; accent-color:var(--accent); flex:0 0 auto; }}
+.topic-suggestion-list {{ display:flex; flex-wrap:wrap; gap:8px; max-height:150px; overflow:auto; }}
+.topic-suggestion {{
+  display:flex; align-items:center; gap:8px; min-height:36px; padding:7px 9px;
+  border:1px solid var(--hair); border-radius:var(--radius-3); background:var(--color-panel-soft);
+  color:var(--ink); overflow-wrap:anywhere; cursor:pointer;
+}}
+.topic-suggestion:has(input:checked) {{ border-color:color-mix(in srgb,var(--accent) 42%, transparent); }}
+.topic-suggestion input {{ width:16px; height:16px; margin:0; accent-color:var(--accent); flex:0 0 auto; }}
+.topic-confirm {{
+  display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px;
+  border:1px solid color-mix(in srgb,var(--color-danger) 38%, transparent);
+  border-radius:var(--radius-4); background:var(--color-danger-soft);
+}}
+.topic-confirm[hidden] {{ display:none; }}
+.topic-confirm > div:first-child {{ display:grid; gap:3px; min-width:0; }}
+.topic-confirm strong {{ color:var(--ink); font-size:13px; }}
+.topic-confirm span {{ color:var(--muted); font-size:11.5px; line-height:1.45; overflow-wrap:anywhere; }}
+.topic-confirm-actions {{ display:flex; flex:0 0 auto; gap:8px; }}
+.topic-modal-footer {{
+  position:sticky; bottom:0; z-index:2; display:flex; align-items:center; justify-content:space-between;
+  gap:16px; padding:14px 24px; border-top:1px solid var(--hair);
+  background:color-mix(in srgb,var(--surface) 96%, transparent); backdrop-filter:blur(10px);
+}}
+.topic-action-status {{ color:var(--faint); font-size:11.5px; line-height:1.4; }}
+.topic-action-status[data-tone="progress"] {{ color:var(--accent); }}
+.topic-action-status[data-tone="error"] {{ color:var(--color-danger); }}
 article {{
   background:var(--surface); border:1px solid var(--hair); border-radius:var(--radius-panel);
   padding:28px 32px; overflow:hidden; box-shadow:var(--shadow-panel);
@@ -1760,6 +2091,19 @@ h1 {{ margin:0 0 10px; font-family:var(--display); font-size:clamp(28px, 7vw, 48
   .btn {{ flex:1 1 auto; text-align:center; }}
   .btn.icon {{ flex:0 0 34px; margin-left:0; }}
   .action-status {{ flex:1 0 100%; }}
+  .topic-modal {{ align-items:flex-end; padding:0; }}
+  .topic-modal-card {{ width:100%; max-height:94dvh; border-radius:var(--radius-5) var(--radius-5) 0 0; }}
+  .modal-header {{ padding:18px 16px 14px; }}
+  .modal-header h2 {{ font-size:21px; }}
+  .topic-modal-body {{ gap:14px; padding:16px; }}
+  .topic-panel,.topic-action-group,.topic-suggestions {{ padding:13px; }}
+  .topic-action-groups,.topic-action-grid,.topic-facts {{ grid-template-columns:1fr; }}
+  .topic-fact.wide,.topic-action-option.wide {{ grid-column:auto; }}
+  .topic-action-option,.topic-action-option.wide {{ min-height:82px; }}
+  .topic-confirm {{ align-items:stretch; flex-direction:column; }}
+  .topic-confirm-actions {{ justify-content:flex-end; }}
+  .topic-modal-footer {{ align-items:stretch; flex-direction:column; gap:10px; padding:12px 16px; }}
+  .topic-modal-footer .modal-btn {{ width:100%; min-height:44px; }}
   .note-body {{ font-size:14.5px; line-height:1.64; }}
   .note-body h1 {{ font-size:25px; }}
   .note-body h2 {{ font-size:20px; }}

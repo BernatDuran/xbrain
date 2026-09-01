@@ -442,6 +442,14 @@ def test_render_dashboard_includes_ops_controls():
     assert "/api/topic-action" in html
     assert "data-reprocess" not in html
     assert "Daily refresh" in html
+    assert "Confirm topics" in html
+    assert "Move to Misc" in html
+    assert "Try suggestions" in html
+    assert "Add suggestions" in html
+    assert "Rebuild note" in html
+    assert "Adding suggestions changes the shared vocabulary" in html
+    assert ">Accept</button>" not in html
+    assert ">Reject</button>" not in html
 
 
 def test_render_dashboard_declares_escape_before_storage_strip_use():

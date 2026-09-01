@@ -95,11 +95,29 @@ matching drawer.
 
 ## Served Actions
 
-When the dashboard is served with `xbrain serve-dashboard`, document drawers can
-reuse the existing local endpoints:
+When the dashboard is served with `xbrain serve-dashboard`, document drawers and
+the note viewer expose the same topic-review decisions with consequence-based
+labels:
 
-- `POST /api/topic-action` for accept, reject, regenerate, prioritize, and
-  promote suggested topics before regeneration.
+- `Confirm current topics` keeps the assignment, sets confidence to high, and
+  clears pending suggestions.
+- `Move to Misc` replaces all assigned topics with `misc` and completes the
+  review. This is the explicit replacement for the ambiguous `Reject` label.
+- `Reclassify automatically` runs classification again against the current
+  controlled vocabulary.
+- `Try selected suggestions` uses checked suggestions as hints without changing
+  the shared vocabulary.
+- `Add to vocabulary & reclassify` adds checked suggestions to the global
+  vocabulary and then reclassifies only the current document. It requires an
+  additional confirmation.
+- Closing the topic-review modal makes no changes.
+
+These decisions use `POST /api/topic-action`. The wider note-viewer modal groups
+confirmation and AI actions separately, explains each consequence, keeps status
+feedback visible, and traps keyboard focus while open.
+
+Document drawers also reuse the existing local endpoints:
+
 - `POST /api/reprocess-note` for single-note reprocessing.
 - `GET /api/status` to wait for the background operation and reload the
   regenerated dashboard.

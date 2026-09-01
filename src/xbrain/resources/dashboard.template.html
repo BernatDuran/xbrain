@@ -260,6 +260,9 @@ body{background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:15px;
 .chart-action:hover{color:var(--ink);border-color:var(--color-border-strong)}
 .chart-action:disabled{opacity:.45;cursor:not-allowed}
 .chart-action:focus-visible{outline:0;box-shadow:var(--shadow-focus)}
+.action-guide{flex:1 0 100%;display:grid;gap:3px;margin-top:8px;padding:10px 11px;border:1px solid var(--hairline);border-radius:var(--radius-3);background:var(--color-input)}
+.action-guide strong{font-size:12px;color:var(--ink);font-weight:650}
+.action-guide span{font-size:11px;line-height:1.45;color:var(--ink-faint)}
 
 /* topic controls */
 .controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:2px 0 12px}
@@ -1454,25 +1457,28 @@ async function graphWaitForAction(actionName,statusEl){
 function bindGraphItemActions(item){
  const statusEl=document.getElementById('graph-action-status');
  if(!statusEl)return;
+ const actionButtons=[...document.querySelectorAll('[data-graph-topic-action],[data-graph-reprocess]')];
+ const setActionButtonsDisabled=disabled=>actionButtons.forEach(button=>{button.disabled=disabled;});
  document.querySelectorAll('[data-graph-topic-action]').forEach(btn=>btn.onclick=async()=>{
-  const action=btn.dataset.graphTopicAction;
-  const prioritize=btn.dataset.graphPrioritize==='true';
+ const action=btn.dataset.graphTopicAction;
+ const prioritize=btn.dataset.graphPrioritize==='true';
   const promote=btn.dataset.graphPromote==='true';
-  btn.disabled=true;statusEl.textContent='topic '+action+' started...';
+  if(promote&&!window.confirm('Add the suggested topics to the shared vocabulary, then reclassify this document?'))return;
+  setActionButtonsDisabled(true);statusEl.textContent=btn.dataset.graphStatus||'Updating topics...';
   try{
    await graphPostItemAction('/api/topic-action',item.item_id,{action,prioritize_suggestions:prioritize,promote_suggestions:promote,suggested_topics:(prioritize||promote)?(item.suggested_topics||[]):[]});
    await graphWaitForAction('topic-'+action+':'+item.item_id,statusEl);
   }catch(error){
-   btn.disabled=false;statusEl.textContent='could not update topics: '+error.message;
+   setActionButtonsDisabled(false);statusEl.textContent='could not update topics: '+error.message;
   }
  });
  document.querySelectorAll('[data-graph-reprocess]').forEach(btn=>btn.onclick=async()=>{
-  btn.disabled=true;statusEl.textContent='reprocess started...';
+  setActionButtonsDisabled(true);statusEl.textContent='rebuild started...';
   try{
    await graphPostItemAction('/api/reprocess-note',item.item_id);
    await graphWaitForAction('reprocess-note:'+item.item_id,statusEl);
   }catch(error){
-   btn.disabled=false;statusEl.textContent='could not reprocess: '+error.message;
+   setActionButtonsDisabled(false);statusEl.textContent='could not rebuild: '+error.message;
   }
  });
 }
@@ -1482,8 +1488,8 @@ function openGraphItem(id){
  const served=WEB_NOTES;
  const suggestions=(item.suggested_topics||[]).map(s=>badge('+'+s)).join('');
  const servedActions=served
-  ? `<button class="chart-action" type="button" data-graph-topic-action="accept">Accept</button><button class="chart-action" type="button" data-graph-topic-action="reject">Reject</button><button class="chart-action" type="button" data-graph-topic-action="regenerate">Regenerate</button>${(item.suggested_topics||[]).length?'<button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true">Prioritize</button><button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true" data-graph-promote="true">Promote</button>':''}<button class="chart-action" type="button" data-graph-reprocess>Reprocess</button><span class="ops-status" id="graph-action-status" aria-live="polite"></span>`
-  : `<button class="chart-action graph-disabled" type="button" disabled>Review topics</button><button class="chart-action graph-disabled" type="button" disabled>Reprocess</button>`;
+  ? `<div class="action-guide"><strong>Review topics</strong><span>Confirm the assignment, move the document to Misc, or ask XBrain to classify it again. Adding suggestions changes the shared vocabulary.</span></div><button class="chart-action" type="button" data-graph-topic-action="accept" data-graph-status="Confirming current topics..." title="Keep the current topics, set confidence to high, and dismiss suggestions">Confirm topics</button><button class="chart-action" type="button" data-graph-topic-action="reject" data-graph-status="Moving document to Misc..." title="Replace all assigned topics with Misc and complete the review">Move to Misc</button><button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-status="Starting automatic reclassification..." title="Classify this document again using the current vocabulary">Reclassify</button>${(item.suggested_topics||[]).length?'<button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true" data-graph-status="Reclassifying with suggestions..." title="Use the suggested topics as guidance without adding them to the vocabulary">Try suggestions</button><button class="chart-action" type="button" data-graph-topic-action="regenerate" data-graph-prioritize="true" data-graph-promote="true" data-graph-status="Adding suggestions to the vocabulary..." title="Add suggestions to the shared vocabulary, then reclassify this document">Add suggestions</button>':''}<button class="chart-action" type="button" data-graph-reprocess title="Refetch, enrich, and regenerate this complete note">Rebuild note</button><span class="ops-status" id="graph-action-status" aria-live="polite"></span>`
+  : `<div class="action-guide"><strong>Review topics</strong><span>Start the served dashboard to change topics or rebuild this note.</span></div><button class="chart-action graph-disabled" type="button" disabled>Topic review unavailable</button><button class="chart-action graph-disabled" type="button" disabled>Rebuild unavailable</button>`;
  openDrawer('Document',item.label,contentLabel(item.content_type)+' · '+graphDateValue(item)+' · @'+item.author,
   `<p class="ov">${esc(item.summary||'')}</p>`+
   `<div class="badges">${topicLinks}${badge(item.confidence,item.confidence)}${item.needs_review?badge('needs review','low'):''}${suggestions}</div>`+

@@ -373,6 +373,18 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert 'id="topic-suggestions"' in html
     assert 'id="topic-prioritize"' in html
     assert 'id="topic-promote"' in html
+    assert 'aria-describedby="topic-intro"' in html
+    assert "Review topics" in html
+    assert "Confirm current topics" in html
+    assert "Move to Misc" in html
+    assert "Reclassify automatically" in html
+    assert "Try selected suggestions" in html
+    assert "Add to vocabulary &amp; reclassify" in html
+    assert "Close without changes" in html
+    assert 'id="topic-action-status"' in html
+    assert 'id="topic-promote-confirm"' in html
+    assert ">Accept</button>" not in html
+    assert ">Reject</button>" not in html
     assert "selectedSuggestions" in html
     assert "/api/topic-state" in html
     assert "/api/topic-action" in html
@@ -386,6 +398,82 @@ def test_render_note_page_escapes_markdown_for_mobile_view(tmp_path: Path):
     assert "'reprocess-note:' + itemId" in html
     assert "/api/delete-bookmark" in html
     assert "connect-src 'self'" in html
+
+
+def test_render_note_page_topic_review_modal_is_explanatory_and_keyboard_safe(tmp_path: Path):
+    from playwright.sync_api import sync_playwright
+
+    output_dir = tmp_path / "vault" / "x-knowledge"
+    notes_dir = output_dir / "items"
+    notes_dir.mkdir(parents=True)
+    note = notes_dir / "source.md"
+    note.write_text(
+        f"{GEN_START}\n---\nid: 42\n---\n# Topic review\n\nBody\n{GEN_END}",
+        encoding="utf-8",
+    )
+    html = _render_note_page(note, output_dir).decode()
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1000, "height": 900})
+        errors: list[str] = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.set_content(html)
+        page.evaluate(
+            """
+            () => {
+              window.fetch = async url => {
+                if (String(url).startsWith('/api/topic-state')) {
+                  return {
+                    ok: true,
+                    json: async () => ({
+                      enriched: true,
+                      primary_topic: 'ai-coding',
+                      topics: ['ai-coding', 'developer-tools'],
+                      topic_confidence: 'medium',
+                      suggested_new_topics: ['agentic-workflows', 'coding-agents']
+                    })
+                  };
+                }
+                throw new Error('Unexpected request: ' + url);
+              };
+            }
+            """
+        )
+
+        page.click("#topics-note")
+        page.locator("#topic-state .topic-facts").wait_for()
+
+        assert page.locator("#topic-modal").is_visible()
+        assert page.locator(".topic-modal-card").bounding_box()["width"] > 650
+        assert page.evaluate("document.activeElement.id") == "topic-close"
+        assert page.locator("#topic-accept").is_enabled()
+        assert page.locator("#topic-prioritize").is_enabled()
+        assert page.locator("#topic-promote").is_enabled()
+        assert page.locator(".topic-action-help").count() == 5
+
+        page.locator("#topic-suggestion-list input").evaluate_all(
+            """inputs => inputs.forEach(input => {
+              input.checked = false;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+            })"""
+        )
+        assert page.locator("#topic-prioritize").is_disabled()
+        assert page.locator("#topic-promote").is_disabled()
+
+        page.locator("#topic-suggestion-list input").first.check()
+        page.click("#topic-promote")
+        assert page.locator("#topic-promote-confirm").is_visible()
+        assert page.evaluate("document.activeElement.id") == "topic-promote-confirm-button"
+        page.click("#topic-promote-cancel")
+        assert page.locator("#topic-promote-confirm").is_hidden()
+        assert page.evaluate("document.activeElement.id") == "topic-promote"
+
+        page.keyboard.press("Escape")
+        assert page.locator("#topic-modal").is_hidden()
+        assert page.evaluate("document.activeElement.id") == "topics-note"
+        assert errors == []
+        browser.close()
 
 
 def test_render_note_page_renders_obsidian_image_embeds(tmp_path: Path):
