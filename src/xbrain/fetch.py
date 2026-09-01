@@ -375,15 +375,27 @@ def _sources_materially_equal(old: list[ContentSource], new: list[ContentSource]
     return Counter(map(_source_signature, old)) == Counter(map(_source_signature, new))
 
 
-def _build_external_sources(item: Item, extractor: ArticleExtractor) -> list[ContentSource]:
+def _external_urls(item: Item) -> list[str]:
+    """Unique non-X links on an item, preserving their captured order."""
+    return list(dict.fromkeys(link.url for link in item.links if not is_x_url(link.url)))
+
+
+def _build_external_sources(
+    item: Item,
+    extractor: ArticleExtractor,
+    *,
+    urls: list[str] | None = None,
+) -> list[ContentSource]:
     """Extract the `external_article` sources for an item's non-x links.
 
     Dedups repeated URLs and isolates a per-URL extractor exception as a
     transient (`unknown_error`) failure so one bad link cannot abort the batch.
     """
     sources: list[ContentSource] = []
-    non_x_urls = dict.fromkeys(link.url for link in item.links if not is_x_url(link.url))
-    for url in non_x_urls:
+    selected = set(_external_urls(item) if urls is None else urls)
+    for url in _external_urls(item):
+        if url not in selected:
+            continue
         try:
             result = extractor(url)
         except Exception as exc:  # noqa: BLE001 - one bad URL must not abort the batch
@@ -410,6 +422,7 @@ def fetch_item(
     extractor: ArticleExtractor = extract_article,
     *,
     now: Callable[[], datetime] = _utcnow,
+    urls: list[str] | None = None,
 ) -> Content:
     """Build/refresh the `external_article` sources of an item.
 
@@ -429,9 +442,25 @@ def fetch_item(
     that becomes a success, new/edited text, a changed title, a changed failure
     reason/status). `now` is injectable for deterministic tests.
     """
-    new_sources = _build_external_sources(item, extractor)
+    direct_urls = _external_urls(item)
+    selected = set(direct_urls if urls is None else urls)
+    new_by_url = {
+        source.url: source
+        for source in _build_external_sources(item, extractor, urls=list(selected))
+    }
+    existing_by_url = {
+        source.url: source
+        for source in (item.content.sources if item.content else [])
+        if source.kind == "external_article"
+    }
+    external_sources = [
+        source
+        for url in direct_urls
+        if (source := new_by_url.get(url) if url in selected else existing_by_url.get(url))
+        is not None
+    ]
     kept = [s for s in item.content.sources if s.kind != "external_article"] if item.content else []
-    sources = kept + new_sources
+    sources = kept + external_sources
     # Preserve the prior timestamp on a no-material-change re-fetch (see docstring);
     # only stamp a fresh `now()` when the content set actually changed.
     if item.content is not None and _sources_materially_equal(item.content.sources, sources):
@@ -456,13 +485,11 @@ def _should_refetch(content: Content | None, force: bool) -> bool:
 
     - `content is None` (never fetched) → True.
     - `force=True` → True regardless of recorded state.
-    - Otherwise, True only if every `external_article` source on `content`
-      is a `ContentSourceFailure` whose `failure_reason` is in
-      `_TRANSIENT_FAILURES`. A single successful source (any
-      `ContentSourceSuccess`) or a categorised terminal failure (e.g.
-      `not_found`, `paywall`) skips. No `external_article` sources at all
-      → skip (there is nothing here for `fetch_pending`; the x.com sources
-      are handled by `fetch_x`).
+    - Otherwise, True when at least one `external_article` source is a transient
+      failure. Retry selection itself is URL-granular in `fetch_pending`: a good
+      sibling link and a terminally broken sibling are preserved untouched.
+      No `external_article` sources at all → skip (there is nothing here for
+      `fetch_pending`; the x.com sources are handled by `fetch_x`).
 
     The pre-#20 helper read `src.ok` / `src.failure_reason` as Optionals;
     after the tagged-union refactor the variant `isinstance` check is the
@@ -480,10 +507,29 @@ def _should_refetch(content: Content | None, force: bool) -> bool:
     external = [s for s in content.sources if s.kind == "external_article"]
     if not external:
         return False
-    return all(
+    return any(
         isinstance(src, ContentSourceFailure) and src.failure_reason in _TRANSIENT_FAILURES
         for src in external
     )
+
+
+def _external_urls_to_fetch(item: Item, force: bool) -> list[str]:
+    """Direct external URLs that are new or individually retryable."""
+    direct_urls = _external_urls(item)
+    if force or item.content is None:
+        return direct_urls
+    existing = {
+        source.url: source for source in item.content.sources if source.kind == "external_article"
+    }
+    return [
+        url
+        for url in direct_urls
+        if (source := existing.get(url)) is None
+        or (
+            isinstance(source, ContentSourceFailure)
+            and source.failure_reason in _TRANSIENT_FAILURES
+        )
+    ]
 
 
 def fetch_pending(
@@ -497,24 +543,24 @@ def fetch_pending(
 ) -> int:
     """Fetch external content for items that have non-x links and no content yet.
 
-    A previous fetch whose only failures were transient (timeout, dns_error)
-    is automatically retried — `--force` is only needed to retry terminal
-    failures (404, paywall, …) or to re-hit already-successful items. A retry
-    that reproduces the same content does NOT advance `content.fetched_at` (see
-    `fetch_item`), so it cannot spuriously re-trigger enrichment. `now` is
-    injectable for deterministic tests.
+    Each new or transiently failed URL is retried independently. Successful
+    siblings and terminal failures (404, paywall, …) remain untouched unless
+    `--force` is used. A retry that reproduces the same content does NOT advance
+    `content.fetched_at` (see `fetch_item`), so it cannot spuriously re-trigger
+    enrichment. `now` is injectable for deterministic tests.
     """
     fetched = 0
     for item in store.values():
         # all links are x.com — handled by fetch_x
         if all(is_x_url(link.url) for link in item.links):
             continue
-        if not _should_refetch(item.content, force):
+        urls = _external_urls_to_fetch(item, force)
+        if not urls:
             continue
         if since and item.created_at < since:
             continue
         if until and item.created_at > until:
             continue
-        item.content = fetch_item(item, extractor, now=now)
+        item.content = fetch_item(item, extractor, now=now, urls=urls)
         fetched += 1
     return fetched

@@ -778,7 +778,8 @@ def test_run_reprocess_note_refreshes_single_item_pipeline(tmp_path: Path, monke
         calls.append(f"fetch:{sorted(selected)}:{force}")
         return 1
 
-    def _fake_fetch_x_articles(selected, _storage_state, force, *, headless):
+    def _fake_fetch_x_articles(selected, _storage_state, force, *, headless, linked_store):
+        assert sorted(linked_store) == ["42", "43"]
         calls.append(f"x_fetch:{sorted(selected)}:{force}:{headless}")
         return 2
 

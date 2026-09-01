@@ -612,7 +612,13 @@ def _run_retry_failed_articles(
     try:
         articles = fetch_pending(external_scoped, force=True) if external_scoped else 0
         x_articles = (
-            fetch_x_articles(x_scoped, cfg.storage_state_path, True, headless=headless)
+            fetch_x_articles(
+                x_scoped,
+                cfg.storage_state_path,
+                True,
+                headless=headless,
+                linked_store=store,
+            )
             if x_scoped
             else 0
         )
@@ -651,7 +657,11 @@ def _run_reprocess_note(cfg: Config, item_id: str, *, headless: bool = True) -> 
     try:
         articles = fetch_pending(selected, force=True)
         x_articles = fetch_x_articles(
-            selected, cfg.storage_state_path, force=True, headless=headless
+            selected,
+            cfg.storage_state_path,
+            force=True,
+            headless=headless,
+            linked_store=store,
         )
     finally:
         save_store(store, cfg.items_path)
