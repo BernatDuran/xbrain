@@ -22,5 +22,7 @@ jobs:
         run: uv python install 3.12
       - name: Install locked dependencies
         run: uv sync --locked --all-extras
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
       - name: Quality gate
         run: bash scripts/check.sh
